@@ -1,0 +1,60 @@
+name: 'Orleans build y push'
+#on:
+#  push:
+#    branches:
+#      - main
+#      - testBuild
+#    tags:
+#      - 'test*'
+#on:
+# push:
+#    branches:
+#      - main
+#    paths:
+#      - "grains/**"
+inputs:
+  variable:
+    description: "variables que recibo de la llamada al pipeline"
+    required: true
+  appName:
+    description: "Nombre de la aplicacion"
+    required: true
+    default: orleans
+  TeamProject:
+    description: "Nombre del equipo"
+    required: true
+    default: orleans-poc
+
+      
+env:
+  #Es un valor que viene del secreto, pero el install de helm lo espera cmo variable 'plana'
+  GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+jobs:
+  build:
+    using: "composite"
+    steps:
+      - name: checkout
+        uses: actions/checkout@v3.5.0 #actions/checkout@v2
+        with:
+          fetch-depth: 0
+      - name: setear docker
+        uses: docker/setup-buildx-action@v3
+#      - name: Leo archivo .env
+#        uses: xom9ikk/dotenv@v2
+#        with:
+#          path: .github/workflows
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: Orleanspoc-main
+          file: Orleanspoc-main/Dockerfile
+          push: true
+#          tags: ${{ secrets.DOCKERHUB_USERNAME }}/test:latest
+#          tags: ${{ env.registryServerName}}/${{env.TeamProject}}-${{env.appName}}:${{ env.appVersionGit}}
+           tags: ocpregistry.azurecr.io/orleans-poc/orleans:latest
+#                     ocpregistry.azurecr.io/orleans-test/orleans-poc:latest
