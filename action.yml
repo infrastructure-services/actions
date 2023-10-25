@@ -13,19 +13,19 @@ name: 'Orleans build y push'
 #    paths:
 #      - "grains/**"
 inputs:
-  aCR_USERNAME:
+  ACR_USERNAME:
     description: "user de acr"
     required: true
     default: ''
-  aCR_PASSWORD:
+  ACR_PASSWORD:
     description: "passwrd de acr"
     required: true
     default: ''
-  aCR_NAME:
+  ACR_NAME:
     description: "nommbre del acr"
     required: true
     default: ''
-  aCR_FULL_NAME:
+  ACR_FULL_NAME:
     description: "nombre del acr con azurecr.io"
     required: true
     default: ''
@@ -50,10 +50,9 @@ inputs:
 #env:
   #Es un valor que viene del secreto, pero el install de helm lo espera cmo variable 'plana'
 #  GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
-jobs:
-  build:
-    using: "composite"
-    steps:
+runs:
+  using: "composite"
+  steps:
       - name: checkout
         uses: actions/checkout@v3.5.0 #actions/checkout@v2
         with:
@@ -62,15 +61,15 @@ jobs:
         uses: docker/setup-buildx-action@v3
       - name: Run a multi-line script
         run: |-
-          echo  ${{ inputs.aCR_USERNAME }}
-          echo ${{ inputs.aCR_PASSWORD }}
+          echo  ${{ inputs.ACR_USERNAME }}
+          echo ${{ inputs.ACR_PASSWORD }}
           echo ${{inputs.teamProject}}-${{inputs.appName}}
       - name: Login to Azure Container Registry
         uses: azure/docker-login@v1
         with:
           login-server: ${{ inputs.aCR_NAME }}.azurecr.io #ACR_FULL_NAME incluye el azurecr.io
-          username: ${{ inputs.aCR_USERNAME }}
-          password: ${{ inputs.aCR_PASSWORD }}
+          username: ${{ inputs.ACR_USERNAME }}
+          password: ${{ inputs.ACR_PASSWORD }}
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
@@ -78,5 +77,5 @@ jobs:
           file: Dockerfile #Orleanspoc-main/Dockerfile
           push: true
 #          tags: ${{ inputs.DOCKERHUB_USERNAME }}/test:latest
-          tags: ${{ inputs.aCR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}
+          tags: ${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}
 
