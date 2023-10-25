@@ -13,6 +13,18 @@ name: 'Orleans build y push'
 #    paths:
 #      - "grains/**"
 inputs:
+  ACR_USERNAME:
+    description: "user de acr"
+    required: true
+  ACR_PASSWORD:
+    description: "passwrd de acr"
+    required: true
+  ACR_NAME:
+    description: "nommbre del acr"
+    required: true
+  ACR_FULL_NAME:
+    description: "nombre del acr con azurecr.io"
+    required: true
   variable:
     description: "variables que recibo de la llamada al pipeline"
     required: true
@@ -28,18 +40,7 @@ inputs:
     description: "tag para subir imagen"
     required: true
     default: latest
-  ACR_USERNAME:
-    description: "user de acr"
-    required: true
-  ACR_PASSWORD:
-    description: "passwrd de acr"
-    required: true
-  ACR_NAME:
-    description: "nommbre del acr"
-    required: true
-  ACR_FULL_NAME:
-    description: "nombre del acr con azurecr.io"
-    required: true
+
 
       
 #env:
