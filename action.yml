@@ -63,7 +63,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: Orleanspoc-main
-          file: Orleanspoc-main/Dockerfile
+          file: Dockerfile #Orleanspoc-main/Dockerfile
           push: true
 #          tags: ${{ secrets.DOCKERHUB_USERNAME }}/test:latest
           tags: ${{ secrets.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}
