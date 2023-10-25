@@ -77,7 +77,7 @@ runs:
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
-          context: Orleanspoc-main
+          context: . #Orleanspoc-main
           file: Dockerfile #Orleanspoc-main/Dockerfile
           push: true
 #          tags: ${{ inputs.DOCKERHUB_USERNAME }}/test:latest
