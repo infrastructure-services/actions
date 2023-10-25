@@ -17,18 +17,23 @@ inputs:
     description: "variables que recibo de la llamada al pipeline"
     required: true
   appName:
-    description: "Nombre de la aplicacion"
+    description: "Nombre de la aplicacion (dentro del proyecto)"
     required: true
-    default: orleans
-  TeamProject:
-    description: "Nombre del equipo"
+    default: orleans-grain
+  teamProject:
+    description: "Nombre del proyecto/equipo"
     required: true
     default: orleans-poc
+  appVersion:
+    description: "tag para subir imagen"
+    required: true
+    default: latest
+    
 
       
-env:
+#env:
   #Es un valor que viene del secreto, pero el install de helm lo espera cmo variable 'plana'
-  GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+#  GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
 jobs:
   build:
     using: "composite"
@@ -51,7 +56,7 @@ jobs:
       - name: Login to Azure Container Registry
         uses: azure/docker-login@v1
         with:
-          login-server: ocpregistry.azurecr.io #${{ env.registryServerName}}
+          login-server: ${{ secrets.ACR_NAME }}.azurecr.io #ACR_FULL_NAME incluye el azurecr.io
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
       - name: Build and push
@@ -61,6 +66,5 @@ jobs:
           file: Orleanspoc-main/Dockerfile
           push: true
 #          tags: ${{ secrets.DOCKERHUB_USERNAME }}/test:latest
-#          tags: ${{ env.registryServerName}}/${{env.TeamProject}}-${{env.appName}}:${{ env.appVersionGit}}
-           tags: ocpregistry.azurecr.io/orleans-poc/orleans:latest
-#                     ocpregistry.azurecr.io/orleans-test/orleans-poc:latest
+          tags: ${{ secrets.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}
+
