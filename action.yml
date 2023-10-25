@@ -53,6 +53,9 @@ inputs:
 runs:
   using: "composite"
   steps:
+      - run: echo hi!, we working.
+        shell: bash
+        # Setup .NET Core SDK
       - name: checkout
         uses: actions/checkout@v3.5.0 #actions/checkout@v2
         with:
@@ -60,6 +63,7 @@ runs:
       - name: setear docker
         uses: docker/setup-buildx-action@v3
       - name: Run a multi-line script
+        shell: bash
         run: |-
           echo  ${{ inputs.ACR_USERNAME }}
           echo ${{ inputs.ACR_PASSWORD }}
