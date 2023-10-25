@@ -28,7 +28,18 @@ inputs:
     description: "tag para subir imagen"
     required: true
     default: latest
-    
+  ACR_USERNAME:
+    description: "user de acr"
+    required: true
+  ACR_PASSWORD:
+    description: "passwrd de acr"
+    required: true
+  ACR_NAME:
+    description: "nommbre del acr"
+    required: true
+  ACR_FULL_NAME:
+    description: "nombre del acr con azurecr.io"
+    required: true
 
       
 #env:
@@ -56,15 +67,15 @@ jobs:
       - name: Login to Azure Container Registry
         uses: azure/docker-login@v1
         with:
-          login-server: ${{ secrets.ACR_NAME }}.azurecr.io #ACR_FULL_NAME incluye el azurecr.io
-          username: ${{ secrets.ACR_USERNAME }}
-          password: ${{ secrets.ACR_PASSWORD }}
+          login-server: ${{ inputs.ACR_NAME }}.azurecr.io #ACR_FULL_NAME incluye el azurecr.io
+          username: ${{ inputs.ACR_USERNAME }}
+          password: ${{ inputs.ACR_PASSWORD }}
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: Orleanspoc-main
           file: Dockerfile #Orleanspoc-main/Dockerfile
           push: true
-#          tags: ${{ secrets.DOCKERHUB_USERNAME }}/test:latest
-          tags: ${{ secrets.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}
+#          tags: ${{ inputs.DOCKERHUB_USERNAME }}/test:latest
+          tags: ${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}
 
