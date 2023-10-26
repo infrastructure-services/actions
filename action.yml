@@ -44,7 +44,7 @@ runs:
         shell: bash
 #Si tenemos un runner con Helm instalado no haria falta
       - name: Install Helm
-        uses: azure/setup-helm@v3.5.0
+        uses: azure/setup-helm@v3
 #Obtengo el codigo base remoto para los manifiestos
       - name: Checkout code
         uses: actions/checkout@v3.5.0
