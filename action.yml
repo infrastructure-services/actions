@@ -40,7 +40,7 @@ inputs:
 runs:
   using: "composite"
   steps:
-      - run: Inicia el proceso
+      - run: echo 'Inicia el proceso'
         shell: bash
 #Si tenemos un runner con Helm instalado no haria falta
       - name: Install Helm
