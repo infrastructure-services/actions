@@ -1,0 +1,68 @@
+name: 'Orleans helm package'
+inputs:
+#  ACR_USERNAME:
+#    description: "user de acr"
+#    required: true
+#    default: ''
+#  ACR_PASSWORD:
+#    description: "passwrd de acr"
+#    required: true
+#    default: ''
+#  ACR_NAME:
+#    description: "nommbre del acr"
+#    required: true
+#    default: ''
+#  ACR_FULL_NAME:
+#    description: "nombre del acr con azurecr.io"
+#    required: true
+#    default: ''
+  variable:
+    description: "variables que recibo de la llamada al pipeline"
+    required: true
+  appName:
+    description: "Nombre de la aplicacion (dentro del proyecto)"
+    required: true
+    default: orleans-grain
+  teamProject:
+    description: "Nombre del proyecto/equipo"
+    required: true
+    default: qa
+  appVersion:
+    description: "tag para subir imagen"
+    required: true
+    default: latest
+
+
+      
+#env:
+  #Es un valor que viene del secreto, pero el install de helm lo espera cmo variable 'plana'
+#  GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+runs:
+  using: "composite"
+  steps:
+      - run: echo hi!, we working.
+        shell: bash
+#Si tenemos un runner con Helm instalado no haria falta
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+#Obtengo el codigo base remoto para los manifiestos
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          repository: infrastructure-services/poc-orleans
+          ref: main
+      - name: Reviso archivos y version helm
+        run: |-
+           cat poc-manifiestos-main/Chart.yaml
+           cat poc-manifiestos-main/values.yaml
+           helm version --short
+      - name: Helm Lint, verifica helm por errores (deberia ser bloqueante)
+        run: |-
+          helmLint="helm lint poc-manifiestos-main/ --values=poc-manifiestos-main/values.yaml > /dev/null 2>&1"
+          if eval "$helmLint"; then
+             echo "HELM Lint OK - The template folder and values file format is OK";
+          else
+             echo "HELM Lint FAIL - There is a problem with the folder 'templates' or the values file format";
+             exit 1
+          fi
+           
