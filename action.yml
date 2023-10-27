@@ -54,22 +54,31 @@ runs:
 #        with:
 #           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 #Obtengo el codigo base remoto para los manifiestos
+      - name: checkout codigo desarrollador
+        uses: actions/checkout@v3.5.0 #actions/checkout@v2
+        with:
+          fetch-depth: 0
+      - name: copio Chart y values
+        shell: bash
+        run: |-
+           ls
+           cat Chart.yaml
+           cat values.yaml
+           cp Chart.yaml ../Chart.yaml
+           cp values.yaml ../values.yaml
       - name: Checkout code helm templates
         uses: actions/checkout@v3.5.0
         with:
           repository: infrastructure-services/poc-orleans
           ref: main
           ssh-key: ${{ inputs.GITHUB_HELMREPO_TOKEN }}
-      - name: checkout codigo desarrollador
-        uses: actions/checkout@v3.5.0 #actions/checkout@v2
-        with:
-          fetch-depth: 0
+
       - name: Reviso archivos y version helm
         shell: bash
         run: |-
            ls
-           cat Chart.yaml
-           cat values.yaml
+           cat ../Chart.yaml
+           cat ../values.yaml
            helm version --short
       - name: Helm Lint, verifica helm por errores (deberia ser bloqueante)
         shell: bash
