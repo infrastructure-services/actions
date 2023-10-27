@@ -54,10 +54,14 @@ runs:
 #        with:
 #           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 #Obtengo el codigo base remoto para los manifiestos
-      - name: checkout codigo desarrollador
-        uses: actions/checkout@v3.5.0 #actions/checkout@v2
+
+
+      - name: Checkout code helm templates
+        uses: actions/checkout@v3.5.0
         with:
-          fetch-depth: 0
+          repository: infrastructure-services/poc-orleans
+          ref: main
+          ssh-key: ${{ inputs.GITHUB_HELMREPO_TOKEN }}
       - name: copio Chart y values
         shell: bash
         run: |-
@@ -66,12 +70,10 @@ runs:
            cat values.yaml
            cp Chart.yaml ../Chart.yaml
            cp values.yaml ../values.yaml
-      - name: Checkout code helm templates
-        uses: actions/checkout@v3.5.0
+      - name: checkout codigo desarrollador
+        uses: actions/checkout@v3.5.0 #actions/checkout@v2
         with:
-          repository: infrastructure-services/poc-orleans
-          ref: main
-          ssh-key: ${{ inputs.GITHUB_HELMREPO_TOKEN }}
+          fetch-depth: 0
 
       - name: Reviso archivos y version helm
         shell: bash
