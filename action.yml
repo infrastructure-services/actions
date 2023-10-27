@@ -34,7 +34,9 @@ inputs:
   GITHUB_TOKEN:
     description: "Secret que helm necesita"
     required: true
-    default: latest
+  GITHUB_HELMREPO_TOKEN:
+    description: "Token para descargar el codigo de templates HELM"
+    required: true
 
 
       
@@ -55,6 +57,7 @@ runs:
         with:
           repository: infrastructure-services/poc-orleans
           ref: main
+          ssh-key: ${{ inputs.GITHUB_HELMREPO_TOKEN }}
       - name: Reviso archivos y version helm
         shell: bash
         run: |-
