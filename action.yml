@@ -31,7 +31,7 @@ inputs:
     description: "tag para subir imagen"
     required: true
     default: latest
-  GITHUB_TOKENB:
+  GITHUB_TOKEN:
     description: "Secret que helm necesita"
     required: true
   GITHUB_HELMREPO_TOKEN:
@@ -40,9 +40,9 @@ inputs:
 
 
       
-env:
+#env:
   #Es un valor que viene del secreto, pero el install de helm lo espera cmo variable 'plana'
-  GITHUB_TOKEN: ${{ inputs.GITHUB_TOKENB }}
+#  GITHUB_TOKEN: ${{ inputs.GITHUB_TOKENB }}
 runs:
   using: "composite"
   steps:
