@@ -31,9 +31,9 @@ inputs:
     description: "tag para subir imagen"
     required: true
     default: latest
-  GITHUB_TOKEN:
-    description: "Secret que helm necesita"
-    required: true
+#  GITHUB_TOKEN:
+#    description: "Secret que helm necesita"
+#    required: true
   GITHUB_HELMREPO_TOKEN:
     description: "Token para descargar el codigo de templates HELM"
     required: true
@@ -51,6 +51,8 @@ runs:
 #Si tenemos un runner con Helm instalado no haria falta
       - name: Install Helm
         uses: azure/setup-helm@v3
+#        with:
+#           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 #Obtengo el codigo base remoto para los manifiestos
       - name: Checkout code
         uses: actions/checkout@v3.5.0
@@ -61,8 +63,9 @@ runs:
       - name: Reviso archivos y version helm
         shell: bash
         run: |-
-           cat poc-manifiestos-main/Chart.yaml
-           cat poc-manifiestos-main/values.yaml
+           ls
+           cat poc-orleans/Chart.yaml
+           cat poc-orleans/values.yaml
            helm version --short
       - name: Helm Lint, verifica helm por errores (deberia ser bloqueante)
         shell: bash
