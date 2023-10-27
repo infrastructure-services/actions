@@ -31,9 +31,9 @@ inputs:
     description: "tag para subir imagen"
     required: true
     default: latest
-  GITHUB_TOKEN:
-    description: "Secret que helm necesita"
-    required: true
+#  GITHUB_TOKEN:
+#    description: "Secret que helm necesita"
+#    required: true
   GITHUB_HELMREPO_TOKEN:
     description: "Token para descargar el codigo de templates HELM"
     required: true
