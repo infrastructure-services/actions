@@ -88,7 +88,7 @@ runs:
       - name: Helm Lint, verifica helm por errores (deberia ser bloqueante)
         shell: bash
         run: |-
-          helmLint="helm lint poc-manifiestos-main/ --values=poc-manifiestos-main/values.yaml > /dev/null 2>&1"
+          helmLint="helm lint --values=values.yaml > /dev/null 2>&1"
           if eval "$helmLint"; then
              echo "HELM Lint OK - The template folder and values file format is OK";
           else
