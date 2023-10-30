@@ -77,7 +77,7 @@ runs:
         shell: bash
         run: |-
            ls ../
-           cp .devops/values-qa.yaml values.yaml
+           cp .devops/value-qa.yaml values.yaml
            cp ../Chart.yaml Chart.yaml 
            cp -R ../templates templates
       - name: Reviso archivos y version helm
