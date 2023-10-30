@@ -68,6 +68,7 @@ runs:
            ls
            cp Chart.yaml ../Chart.yaml
            cp -R templates ../templates
+           ls ../
       - name: checkout codigo desarrollador
         uses: actions/checkout@v3.5.0 #actions/checkout@v2
         with:
@@ -75,6 +76,7 @@ runs:
       - name: Traigo los archivos al repo actual
         shell: bash
         run: |-
+           ls ../
            cp .devops/values-qa.yaml values.yaml
            cp ../Chart.yaml Chart.yaml 
            cp -R ../templates templates
