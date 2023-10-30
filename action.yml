@@ -71,7 +71,7 @@ runs:
       - name: Login to Azure Container Registry
         uses: azure/docker-login@v1
         with:
-          login-server: ${{ inputs.aCR_NAME }}.azurecr.io #ACR_FULL_NAME incluye el azurecr.io
+          login-server: ${{ inputs.ACR_NAME }}.azurecr.io #ACR_FULL_NAME incluye el azurecr.io
           username: ${{ inputs.ACR_USERNAME }}
           password: ${{ inputs.ACR_PASSWORD }}
       - name: Build and push
