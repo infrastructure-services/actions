@@ -62,6 +62,8 @@ runs:
           fetch-depth: 0
       - name: setear docker
         uses: docker/setup-buildx-action@v3
+        with:
+           install: true
       - name: Run a multi-line script
         shell: bash
         run: |-
