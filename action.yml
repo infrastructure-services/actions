@@ -62,25 +62,31 @@ runs:
           repository: infrastructure-services/poc-orleans
           ref: main
           ssh-key: ${{ inputs.GITHUB_HELMREPO_TOKEN }}
-      - name: copio Chart y values
+      - name: copio Chart y values (y templates)
         shell: bash
         run: |-
            ls
-           cat Chart.yaml
-           cat values.yaml
+#           cat Chart.yaml
+#           cat values.yaml
            cp Chart.yaml ../Chart.yaml
-           cp values.yaml ../values.yaml
+#           cp values.yaml ../values.yaml
+           cp -R templates ../templates
       - name: checkout codigo desarrollador
         uses: actions/checkout@v3.5.0 #actions/checkout@v2
         with:
           fetch-depth: 0
-
+      - name: Traigo los archivos al repo actual
+        shell: bash
+        run: |-
+           cp .devops/values-qa.yaml values.yaml
+           cp ../Chart.yaml Chart.yaml 
+           cp -R ../templates templates
       - name: Reviso archivos y version helm
         shell: bash
         run: |-
            ls
-           cat ../Chart.yaml
-           cat ../values.yaml
+#           cat ../Chart.yaml
+#           cat ../values.yaml
            helm version --short
       - name: Helm Lint, verifica helm por errores (deberia ser bloqueante)
         shell: bash
