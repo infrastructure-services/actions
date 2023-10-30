@@ -43,6 +43,9 @@ inputs:
   appVersionGit:
      description: "VersionGit"
      required: true
+  clusterFqdn:
+     description: "FQDN para pasarle a helm"
+     required: true
       
 #env:
   #Es un valor que viene del secreto, pero el install de helm lo espera cmo variable 'plana'
@@ -99,6 +102,13 @@ runs:
              echo "HELM Lint FAIL - There is a problem with the folder 'templates' or the values file format";
              exit 1
           fi
+      - name: Helm customizer le agregan valores al values y al chart
+        shell: bash
+        run: |-
+          echo -e 'cluster:\n  fqdn: ${{ inputs.clusterFqdn}}' >> values.yaml
+          echo 'namespace: ${{inputs.TeamProject}}-qa' >> values.yaml
+          echo 'appname: ${{inputs.appName}}' >> values.yaml
+          echo 'name: ${{inputs.TeamProject}}-${{inputs.appName}}' >> Chart.yaml
       - name: Enpaquetar y subir helm a acr
         shell: bash
         run: |-
