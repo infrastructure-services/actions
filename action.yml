@@ -70,7 +70,8 @@ runs:
         with:
           repository: infrastructure-services/poc-orleans
           ref: main
-          ssh-key: ${{ inputs.GITHUB_HELMREPO_TOKEN }}
+          token: ${{ inputs.GITHUB_HELMREPO_TOKEN }}
+#          ssh-key: ${{ inputs.GITHUB_HELMREPO_TOKEN }}
       - name: copio Chart y values (y templates)
         shell: bash
         run: |-
