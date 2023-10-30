@@ -106,6 +106,6 @@ runs:
           helm package --version ${{ inputs.helmChartVersionLatestQa}} --app-version ${{ inputs.appVersionGit}} --namespace ${{ inputs.TeamProject}}-qa .
           echo '${{ inputs.ACR_PASSWORD }}' | helm registry login ${{ inputs.ACR_FULL_NAME}} --username ${{ inputs.ACR_USERNAME}} --password-stdin
           echo ${{inputs.ACR_FULL_NAME }}/helm/${{ inputs.TeamProject}}-${{ inputs.appName}}
-       #   helm push ${{inputs.TeamProject}}-${{inputs.appName }}-${{inputs.helmChartVersionLatestQa}}.tgz  oci://${{inputs.ACR_FULL_NAME }}/helm/${{ inputs.TeamProject}}-${{ inputs.appName}}  # :${{ env.helmChartVersionLatestQa}}
+          helm push ${{inputs.TeamProject}}-${{inputs.appName }}-${{inputs.helmChartVersionLatestQa}}.tgz  oci://${{inputs.ACR_FULL_NAME }}/helm/${{ inputs.TeamProject}}-${{ inputs.appName}}  # :${{ env.helmChartVersionLatestQa}}
 
            
