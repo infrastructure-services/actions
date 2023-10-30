@@ -99,7 +99,6 @@ runs:
           echo 'namespace: ${{inputs.TeamProject}}-qa' >> values.yaml
           echo 'appname: ${{inputs.appName}}' >> values.yaml
           echo 'name: ${{inputs.TeamProject}}-${{inputs.appName}}' >> Chart.yaml
-      - name: Enpaquetar y subir helm a acr
       - name: Helm Lint, verifica helm por errores (deberia ser bloqueante)
         shell: bash
         run: |-
@@ -110,6 +109,7 @@ runs:
              echo "HELM Lint FAIL - There is a problem with the folder 'templates' or the values file format";
              exit 1
           fi
+      - name: Enpaquetar y subir helm a acr
         shell: bash
         run: |-
           export HELM_EXPERIMENTAL_OCI=1 #Es necesario para el chart save}}
