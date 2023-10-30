@@ -104,7 +104,7 @@ runs:
           export HELM_EXPERIMENTAL_OCI=1 #Es necesario para el chart save}}
           helm package --version ${{ inputs.helmChartVersionLatestQa}} --app-version ${{ inputs.appVersionGit}} --namespace ${{ inputs.TeamProject}}-qa .
           echo '${{ inputs.ACR_PASSWORD }}' | helm registry login ${{ insputs.ACR_FULL_NAME}} --username ${{ inputs.ACR_USERNAME}} --password-stdin
-          echo ${{insputs.ACR_FULL_NAME }}/helm/${{ inputs.TeamProject}}-${{ inputs.appName}}
-       #   helm push ${{inputs.TeamProject}}-${{inputs.appName }}-${{inputs.helmChartVersionLatestQa}}.tgz  oci://${{insputs.ACR_FULL_NAME }}/helm/${{ inputs.TeamProject}}-${{ inputs.appName}}  # :${{ env.helmChartVersionLatestQa}}
+          echo ${{inputs.ACR_FULL_NAME }}/helm/${{ inputs.TeamProject}}-${{ inputs.appName}}
+       #   helm push ${{inputs.TeamProject}}-${{inputs.appName }}-${{inputs.helmChartVersionLatestQa}}.tgz  oci://${{inputs.ACR_FULL_NAME }}/helm/${{ inputs.TeamProject}}-${{ inputs.appName}}  # :${{ env.helmChartVersionLatestQa}}
 
            
