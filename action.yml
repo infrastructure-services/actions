@@ -1,21 +1,21 @@
 name: 'Orleans helm package'
 inputs:
-#  ACR_USERNAME:
-#    description: "user de acr"
-#    required: true
-#    default: ''
-#  ACR_PASSWORD:
-#    description: "passwrd de acr"
-#    required: true
-#    default: ''
+  ACR_USERNAME:
+    description: "user de acr"
+    required: true
+    default: ''
+  ACR_PASSWORD:
+    description: "passwrd de acr"
+    required: true
+    default: ''
 #  ACR_NAME:
 #    description: "nommbre del acr"
 #    required: true
 #    default: ''
-#  ACR_FULL_NAME:
-#    description: "nombre del acr con azurecr.io"
-#    required: true
-#    default: ''
+  ACR_FULL_NAME:
+    description: "nombre del acr con azurecr.io"
+    required: true
+    default: ''
   variable:
     description: "variables que recibo de la llamada al pipeline"
     required: true
@@ -37,8 +37,12 @@ inputs:
   GITHUB_HELMREPO_TOKEN:
     description: "Token para descargar el codigo de templates HELM"
     required: true
-
-
+  helmChartVersionLatestQa:
+     description: "VersionHelm"
+     required: true
+  appVersionGit:
+     description: "VersionGit"
+     required: true
       
 #env:
   #Es un valor que viene del secreto, pero el install de helm lo espera cmo variable 'plana'
@@ -95,4 +99,12 @@ runs:
              echo "HELM Lint FAIL - There is a problem with the folder 'templates' or the values file format";
              exit 1
           fi
+      - name: Enpaquetar y subir helm a acr
+        run: |-
+          export HELM_EXPERIMENTAL_OCI=1 #Es necesario para el chart save}}
+          helm package --version ${{ inputs.helmChartVersionLatestQa}} --app-version ${{ inputs.appVersionGit}} --namespace ${{ inputs.TeamProject}}-qa .
+          echo '${{ inputs.ACR_PASSWORD }}' | helm registry login ${{ insputs.ACR_FULL_NAME}} --username ${{ inputs.ACR_USERNAME}} --password-stdin
+          echo ${{insputs.ACR_FULL_NAME }}/helm/${{ inputs.TeamProject}}-${{ inputs.appName}}
+       #   helm push ${{inputs.TeamProject}}-${{inputs.appName }}-${{inputs.helmChartVersionLatestQa}}.tgz  oci://${{insputs.ACR_FULL_NAME }}/helm/${{ inputs.TeamProject}}-${{ inputs.appName}}  # :${{ env.helmChartVersionLatestQa}}
+
            
