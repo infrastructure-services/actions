@@ -58,6 +58,8 @@ runs:
 #Si tenemos un runner con Helm instalado no haria falta
       - name: Install Helm
         uses: azure/setup-helm@v3
+        with:
+          version: v3.12.3 #Helm 13 tiene un bug
 #        with:
 #           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 #Obtengo el codigo base remoto para los manifiestos
