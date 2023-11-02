@@ -115,7 +115,7 @@ runs:
           
           echo 'creacion proyecto argocd'
           variableOk=0
-          argoCommand="argocd proj create ${{inputs.teamProject}}-qa --upsert --dest https://kubernetes.default.svc,${{inputs.teamProject}-qa --src  ${{ inputs.ACR_FULL_NAME }}/helm --grpc-web"
+          argoCommand="argocd proj create ${{inputs.teamProject}}-qa --upsert --dest https://kubernetes.default.svc,${{inputs.teamProject}}-qa --src  ${{ inputs.ACR_FULL_NAME }}/helm --grpc-web"
           
           for i in {1..10}
           do
@@ -136,7 +136,7 @@ runs:
 
           echo 'creacion app argocd'
           variableOk=0
-          argoCommand="argocd app create ${{inputs.teamProject}-${{inputs.appName}}-qa --repo ${{ inputs.ACR_FULL_NAME }} --helm-chart helm/${{inputs.teamProject}}-${{inputs.appName}} --upsert --helm-set Chart.yaml=Chart.yaml --helm-set-file values.yaml=values.yaml --helm-set-file Chart.yaml=Chart.yaml --revision ${{ inputs.helmChartVersionLatestQa}} --dest-namespace ${{inputs.teamProject}}-qa --dest-server https://kubernetes.default.svc --sync-policy auto --auto-prune --self-heal --project ${{inputs.teamProject}}-qa --grpc-web"
+          argoCommand="argocd app create ${{inputs.teamProject}}-${{inputs.appName}}-qa --repo ${{ inputs.ACR_FULL_NAME }} --helm-chart helm/${{inputs.teamProject}}-${{inputs.appName}} --upsert --helm-set Chart.yaml=Chart.yaml --helm-set-file values.yaml=values.yaml --helm-set-file Chart.yaml=Chart.yaml --revision ${{ inputs.helmChartVersionLatestQa}} --dest-namespace ${{inputs.teamProject}}-qa --dest-server https://kubernetes.default.svc --sync-policy auto --auto-prune --self-heal --project ${{inputs.teamProject}}-qa --grpc-web"
           
           for i in {1..10}
           do
@@ -156,7 +156,7 @@ runs:
           fi
           
           #Wait. Espera la synchronizacion, esperan 30s, esperan 5 veces
-          argoWait="argocd app wait ${{inputs.teamProject}-${{inputs.appName}}-qa --health --operation --timeout 30"
+          argoWait="argocd app wait ${{inputs.teamProject}}-${{inputs.appName}}-qa --health --operation --timeout 30"
           for i in {1..5}
           do
           if eval "$argoWait"; then
