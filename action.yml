@@ -29,9 +29,6 @@ inputs:
     description: "nombre del acr con azurecr.io"
     required: true
     default: ''
-  variable:
-    description: "variables que recibo de la llamada al pipeline"
-    required: true
   appName:
     description: "Nombre de la aplicacion (dentro del proyecto)"
     required: true
