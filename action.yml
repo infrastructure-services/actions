@@ -60,10 +60,11 @@ runs:
         uses: actions/checkout@v3.5.0 #actions/checkout@v2
         with:
           fetch-depth: 0
-      - name: setear docker
-        uses: docker/setup-buildx-action@v3
-        with:
-           install: true
+#Lo saco ya que rhel no acepta docker, tiene podman instalado el runner
+#      - name: setear docker
+#        uses: docker/setup-buildx-action@v3
+#        with:
+#           install: true
       - name: Run a multi-line script
         shell: bash
         run: |-
