@@ -97,6 +97,7 @@ runs:
 #          tags: ${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}
 
       - name: Buildah Action
+        id: build-image
         uses: redhat-actions/buildah-build@v2
         with:
           image: my-new-image
