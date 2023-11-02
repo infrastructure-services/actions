@@ -1,17 +1,5 @@
 name: 'Orleans build y push'
-#on:
-#  push:
-#    branches:
-#      - main
-#      - testBuild
-#    tags:
-#      - 'test*'
-#on:
-# push:
-#    branches:
-#      - main
-#    paths:
-#      - "grains/**"
+
 inputs:
   ACR_USERNAME:
     description: "user de acr"
@@ -53,6 +41,9 @@ inputs:
   helmChartVersionLatestQa:
     description: "VersionHelm"
     required: true
+  clusterFqdn:
+     description: "FQDN para pasarle a helm"
+     required: true
 
       
 #env:
@@ -63,12 +54,45 @@ runs:
   steps:
       - run: echo hi!, we working.
         shell: bash
+      - run: ls
+        shell: bash
+###REVISAR SI ESTO YA ESTA DE LA EJECUCION ANTERIOR
+      - name: Checkout code helm templates
+        uses: actions/checkout@v3.5.0
+        with:
+          repository: infrastructure-services/poc-orleans
+          ref: main
+#          token: ${{ inputs.GITHUB_HELMREPO_TOKEN }}
+          ssh-key: ${{ inputs.GITHUB_HELMREPO_TOKEN }}
+      - name: copio Chart
+        shell: bash
+        run: |-
+           ls
+           cp Chart.yaml ../Chart.yaml
+           ls ../
+      - name: checkout codigo desarrollador
+        uses: actions/checkout@v3.5.0 #actions/checkout@v2
+        with:
+          fetch-depth: 0
+      - name: Traigo los archivos al repo actual
+        shell: bash
+        run: |-
+           ls ../
+           cp .devops/value-qa.yaml values.yaml
+           cp ../Chart.yaml Chart.yaml 
+      - name: Helm customizer le agregan valores al values y al chart
+        shell: bash
+        run: |-
+          echo -e 'cluster:\n  fqdn: ${{ inputs.clusterFqdn}}' >> values.yaml
+          echo 'namespace: ${{inputs.TeamProject}}-qa' >> values.yaml
+          echo 'appname: ${{inputs.appName}}' >> values.yaml
+          echo 'name: ${{inputs.TeamProject}}-${{inputs.appName}}' >> Chart.yaml
       - name: Instalar con argocd en 'qa'
         run: |-
           #Ellos intentan 10 veces todos los pasos, con un sleep 20
           echo '${{ inputs.ACR_PASSWORD }}' | helm registry login ${{ inputs.ACR_FULL_NAME }} --username ${{ inputs.ACR_USERNAME }} --password-stdin
-          cp poc-manifiestos-main/values.yaml .
-          cp poc-manifiestos-main/Chart.yaml .
+          #cp poc-manifiestos-main/values.yaml .
+          #cp poc-manifiestos-main/Chart.yaml .
           echo 'login a argocd'
           variableOk=0
           argoCommand="argocd login --username ${{ inputs.ARGO_USERNAME }} --password ${{ inputs.ARGO_PASSWORD }} --insecure ${{ inputs.ARGO_URL }} --grpc-web"
@@ -92,6 +116,9 @@ runs:
           echo 'creacion proyecto argocd'
           variableOk=0
           argoCommand="argocd proj create ${{inputs.teamProject}}-qa --upsert --dest https://kubernetes.default.svc,${{inputs.teamProject}-qa --src  ${{ inputs.ACR_FULL_NAME }}/helm --grpc-web"
+          
+          for i in {1..10}
+          do
           if eval "$argoCommand"; then
               echo "ArgoCD login OK"
               variableOk=1
@@ -110,6 +137,9 @@ runs:
           echo 'creacion app argocd'
           variableOk=0
           argoCommand="argocd app create ${{inputs.teamProject}-${{inputs.appName}}-qa --repo ${{ inputs.ACR_FULL_NAME }} --helm-chart helm/${{inputs.teamProject}}-${{inputs.appName}} --upsert --helm-set Chart.yaml=Chart.yaml --helm-set-file values.yaml=values.yaml --helm-set-file Chart.yaml=Chart.yaml --revision ${{ inputs.helmChartVersionLatestQa}} --dest-namespace ${{inputs.teamProject}}-qa --dest-server https://kubernetes.default.svc --sync-policy auto --auto-prune --self-heal --project ${{inputs.teamProject}}-qa --grpc-web"
+          
+          for i in {1..10}
+          do
           if eval "$argoCommand"; then
               echo "ArgoCD login OK"
               variableOk=1
@@ -137,10 +167,29 @@ runs:
                 sleep 20
             fi
           done
-          #Limpia cache de argocd
+          #Limpia cache de argocd - hard refresh
           argocd app get ${{inputs.TeamProject}}-${{inputs.appName}}-qa refresh --hard-refresh --grpc-web 2>&1
-          #Synch del repo
-          argocd app sync ${{inputs.TeamProject}}-${{inputs.appName}}-qa --prune --force --retry-limit 5 --grpc-web --async
+          #Synch del repo (Fuerza el cambio de la aplicación a lo que se encuentra en los repos)
+          
+          argoCommand="argocd app sync ${{inputs.TeamProject}}-${{inputs.appName}}-qa --prune --force --retry-limit 5 --grpc-web --async"
+          variableOk=0
+          for i in {1..10}
+          do
+          if eval "$argoCommand"; then
+              echo "ArgoCD login OK"
+              variableOk=1
+              break
+             else
+               echo "ArgoCD login $i/10"
+               sleep 20
+             fi
+          done
+          if [[ $variableOk != "1" ]]
+          then
+              echo "Error en ArgoCD Login" >&2;
+              exit 1
+          fi
+
           
           #Wait. Espera la synchronizacion, esperan 30s, esperan 5 veces
           argoWait="argocd app wait ${{inputs.TeamProject}}-${{inputs.appName}}-qa --health --operation --timeout 30"
