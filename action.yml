@@ -71,12 +71,19 @@ runs:
           echo  ${{ inputs.ACR_USERNAME }}
           echo ${{ inputs.ACR_PASSWORD }}
           echo ${{inputs.teamProject}}-${{inputs.appName}}
-      - name: Login to Azure Container Registry
-        uses: azure/docker-login@v1
+#      - name: Login to Azure Container Registry
+#        uses: azure/docker-login@v1
+#        with:
+#          login-server: ${{ inputs.ACR_NAME }}.azurecr.io #ACR_FULL_NAME incluye el azurecr.io
+#          username: ${{ inputs.ACR_USERNAME }}
+#          password: ${{ inputs.ACR_PASSWORD }}
+      - name: Podman Login
+        uses: redhat-actions/podman-login@v1.6
         with:
-          login-server: ${{ inputs.ACR_NAME }}.azurecr.io #ACR_FULL_NAME incluye el azurecr.io
+          registry: ${{ inputs.ACR_NAME }}.azurecr.io #ACR_FULL_NAME incluye el azurecr.io
           username: ${{ inputs.ACR_USERNAME }}
           password: ${{ inputs.ACR_PASSWORD }}
+
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
