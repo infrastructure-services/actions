@@ -83,7 +83,7 @@ runs:
           registry: ${{ inputs.ACR_NAME }}.azurecr.io #ACR_FULL_NAME incluye el azurecr.io
           username: ${{ inputs.ACR_USERNAME }}
           password: ${{ inputs.ACR_PASSWORD }}
-          auth_file_path: /tmp/podman 
+          auth_file_path: /tmp/podman/auth.json
 
 
 
