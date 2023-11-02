@@ -44,7 +44,18 @@ inputs:
     description: "tag para subir imagen"
     required: true
     default: latest
-
+  ARGO_USERNAME:
+    description: "usuario de ARgocd"
+    required: true
+  ARGO_PASSWORD:
+    description: "pass de ARgocd"
+    required: true
+  ARGO_URL:
+    description: "url de ARgocd"
+    required: true
+  helmChartVersionLatestQa:
+    description: "VersionHelm"
+    required: true
 
       
 #env:
@@ -55,65 +66,95 @@ runs:
   steps:
       - run: echo hi!, we working.
         shell: bash
-        # Setup .NET Core SDK
-      - name: checkout
-        uses: actions/checkout@v3.5.0 #actions/checkout@v2
-        with:
-          fetch-depth: 0
-#Lo saco ya que rhel no acepta docker, tiene podman instalado el runner
-#      - name: setear docker
-#        uses: docker/setup-buildx-action@v3
-#        with:
-#           install: true
-      - name: Run a multi-line script
-        shell: bash
+      - name: Instalar con argocd en 'qa'
         run: |-
-          echo  ${{ inputs.ACR_USERNAME }}
-          echo ${{ inputs.ACR_PASSWORD }}
-          echo ${{inputs.teamProject}}-${{inputs.appName}}
-#      - name: Login to Azure Container Registry
-#        uses: azure/docker-login@v1
-#        with:
-#          login-server: ${{ inputs.ACR_NAME }}.azurecr.io #ACR_FULL_NAME incluye el azurecr.io
-#          username: ${{ inputs.ACR_USERNAME }}
-#          password: ${{ inputs.ACR_PASSWORD }}
-#      - name: Podman Login
-#        uses: redhat-actions/podman-login@v1.6
-#        with:
-#          registry: ${{ inputs.ACR_NAME }}.azurecr.io #ACR_FULL_NAME incluye el azurecr.io
-#          username: ${{ inputs.ACR_USERNAME }}
-#          password: ${{ inputs.ACR_PASSWORD }}
-#          auth_file_path: /tmp/podman/auth.json
+          #Ellos intentan 10 veces todos los pasos, con un sleep 20
+          echo '${{ inputs.ACR_PASSWORD }}' | helm registry login ${{ inputs.ACR_FULL_NAME }} --username ${{ inputs.ACR_USERNAME }} --password-stdin
+          cp poc-manifiestos-main/values.yaml .
+          cp poc-manifiestos-main/Chart.yaml .
+          echo 'login a argocd'
+          variableOk=0
+          argoCommand="argocd login --username ${{ inputs.ARGO_USERNAME }} --password ${{ inputs.ARGO_PASSWORD }} --insecure ${{ inputs.ARGO_URL }} --grpc-web"
+          for i in {1..10}
+          do
+          if eval "$argoCommand"; then
+              echo "ArgoCD login OK"
+              variableOk=1
+              break
+             else
+               echo "ArgoCD login $i/10"
+               sleep 20
+             fi
+          done
+          if [[ $variableOk != "1" ]]
+          then
+              echo "Error en ArgoCD Login" >&2;
+              exit 1
+          fi
+          
+          echo 'creacion proyecto argocd'
+          variableOk=0
+          argoCommand="argocd proj create ${{inputs.teamProject}}-qa --upsert --dest https://kubernetes.default.svc,${{inputs.teamProject}-qa --src  ${{ inputs.ACR_FULL_NAME }}/helm --grpc-web"
+          if eval "$argoCommand"; then
+              echo "ArgoCD login OK"
+              variableOk=1
+              break
+             else
+               echo "ArgoCD login $i/10"
+               sleep 20
+             fi
+          done
+          if [[ $variableOk != "1" ]]
+          then
+              echo "Error en ArgoCD Login" >&2;
+              exit 1
+          fi
 
-
-
-#      - name: Build and push
-#        uses: docker/build-push-action@v5
-#        with:
-#          context: . #Orleanspoc-main
-#          file: Dockerfile #Orleanspoc-main/Dockerfile
-#          push: true
-##          tags: ${{ inputs.DOCKERHUB_USERNAME }}/test:latest
-#          tags: ${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}
-
-      - name: Buildah Action
-        id: build-image
-        uses: redhat-actions/buildah-build@v2
-        with:
-          image: my-new-image
-          tags: ${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}
-          containerfiles: |
-            Dockerfile
-          build-args: |
-            some_arg=some_value
-
-      - name: Push To ACR
-        id: push-to-acr
-        uses: redhat-actions/push-to-registry@v2
-        with:
-          image: ${{ steps.build-image.outputs.image }}
-          tags: ${{ steps.build-image.outputs.tags }}
-          registry: ${{ inputs.ACR_NAME }}.azurecr.io
-          username: ${{ inputs.ACR_USERNAME }}
-          password: ${{ inputs.ACR_PASSWORD }}
+          echo 'creacion app argocd'
+          variableOk=0
+          argoCommand="argocd app create ${{inputs.teamProject}-${{inputs.appName}}-qa --repo ${{ inputs.ACR_FULL_NAME }} --helm-chart helm/${{inputs.teamProject}}-${{inputs.appName}} --upsert --helm-set Chart.yaml=Chart.yaml --helm-set-file values.yaml=values.yaml --helm-set-file Chart.yaml=Chart.yaml --revision ${{ inputs.helmChartVersionLatestQa}} --dest-namespace ${{inputs.teamProject}}-qa --dest-server https://kubernetes.default.svc --sync-policy auto --auto-prune --self-heal --project ${{inputs.teamProject}}-qa --grpc-web"
+          if eval "$argoCommand"; then
+              echo "ArgoCD login OK"
+              variableOk=1
+              break
+             else
+               echo "ArgoCD login $i/10"
+               sleep 20
+             fi
+          done
+          if [[ $variableOk != "1" ]]
+          then
+              echo "Error en ArgoCD Login" >&2;
+              exit 1
+          fi
+          
+          #Wait. Espera la synchronizacion, esperan 30s, esperan 5 veces
+          argoWait="argocd app wait ${{inputs.teamProject}-${{inputs.appName}}-qa --health --operation --timeout 30"
+          for i in {1..5}
+          do
+          if eval "$argoWait"; then
+                echo "ArgoCD app wait OK"
+                break
+            else
+                echo "ArgoCD app wait $i/5"
+                sleep 20
+            fi
+          done
+          #Limpia cache de argocd
+          argocd app get ${{inputs.TeamProject}}-${{inputs.appName}}-qa refresh --hard-refresh --grpc-web 2>&1
+          #Synch del repo
+          argocd app sync ${{inputs.TeamProject}}-${{inputs.appName}}-qa --prune --force --retry-limit 5 --grpc-web --async
+          
+          #Wait. Espera la synchronizacion, esperan 30s, esperan 5 veces
+          argoWait="argocd app wait ${{inputs.TeamProject}}-${{inputs.appName}}-qa --health --operation --timeout 30"
+          for i in {1..5}
+          do
+          if eval "$argoWait"; then
+                echo "ArgoCD app wait OK"
+                break
+            else
+                echo "ArgoCD app wait $i/5"
+                sleep 20
+            fi
+          done
 
