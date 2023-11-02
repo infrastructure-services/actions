@@ -83,13 +83,36 @@ runs:
           registry: ${{ inputs.ACR_NAME }}.azurecr.io #ACR_FULL_NAME incluye el azurecr.io
           username: ${{ inputs.ACR_USERNAME }}
           password: ${{ inputs.ACR_PASSWORD }}
+          auth_file_path: /tmp/podman 
 
-      - name: Build and push
-        uses: docker/build-push-action@v5
+
+
+#      - name: Build and push
+#        uses: docker/build-push-action@v5
+#        with:
+#          context: . #Orleanspoc-main
+#          file: Dockerfile #Orleanspoc-main/Dockerfile
+#          push: true
+##          tags: ${{ inputs.DOCKERHUB_USERNAME }}/test:latest
+#          tags: ${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}
+
+      - name: Buildah Action
+        uses: redhat-actions/buildah-build@v2
         with:
-          context: . #Orleanspoc-main
-          file: Dockerfile #Orleanspoc-main/Dockerfile
-          push: true
-#          tags: ${{ inputs.DOCKERHUB_USERNAME }}/test:latest
+          image: my-new-image
           tags: ${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}
+          containerfiles: |
+            Dockerfile
+          build-args: |
+            some_arg=some_value
+
+      - name: Push To ACR
+        id: push-to-acr
+        uses: redhat-actions/push-to-registry@v2
+        with:
+          image: ${{ steps.build-image.outputs.image }}
+          tags: ${{ steps.build-image.outputs.tags }}
+          registry: ${{ inputs.ACR_NAME }}.azurecr.io
+          username: ${{ inputs.ACR_USERNAME }}
+          password: ${{ inputs.ACR_PASSWORD }}
 
