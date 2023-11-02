@@ -88,6 +88,7 @@ runs:
           echo 'appname: ${{inputs.appName}}' >> values.yaml
           echo 'name: ${{inputs.TeamProject}}-${{inputs.appName}}' >> Chart.yaml
       - name: Instalar con argocd en 'qa'
+        shell: bash
         run: |-
           #Ellos intentan 10 veces todos los pasos, con un sleep 20
           echo '${{ inputs.ACR_PASSWORD }}' | helm registry login ${{ inputs.ACR_FULL_NAME }} --username ${{ inputs.ACR_USERNAME }} --password-stdin
