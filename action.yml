@@ -31,7 +31,7 @@ inputs:
     default: ''
   variable:
     description: "variables que recibo de la llamada al pipeline"
-    required: true
+    required: false
   appName:
     description: "Nombre de la aplicacion (dentro del proyecto)"
     required: true
