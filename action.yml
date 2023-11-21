@@ -102,11 +102,11 @@ runs:
           echo 'namespace: ${{inputs.TeamProject}}-qa' >> values.yaml
           echo 'appname: ${{inputs.appName}}' >> values.yaml
           echo 'caCertificate: |' >> values.yaml
-          echo ${{inputs.APPS_ARO_CA_CERTIFICATE}} | sed 's/^/    /' >> values.yaml
+          echo -e "${{inputs.APPS_ARO_CA_CERTIFICATE}}" | sed 's/^/    /' >> values.yaml
           echo 'certificate: |' >> values.yaml
-          echo ${{inputs.APPS_ARO_CERTIFICATE}} | sed 's/^/    /' >> values.yaml
+          echo -e "${{inputs.APPS_ARO_CERTIFICATE}}" | sed 's/^/    /' >> values.yaml
           echo 'key: |' >> values.yaml
-          echo ${{inputs.APPS_ARO_KEY_CERTIFICATE}} |  sed 's/^/    /' >> values.yaml
+          echo -e "${{inputs.APPS_ARO_KEY_CERTIFICATE}}" |  sed 's/^/    /' >> values.yaml
           echo 'name: ${{inputs.TeamProject}}-${{inputs.appName}}' >> Chart.yaml
       - name: Instalar con argocd en 'qa'
         shell: bash
