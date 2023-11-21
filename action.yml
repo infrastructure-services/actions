@@ -115,7 +115,7 @@ runs:
           echo 'certificate: |' >> values.yaml
           sed 's/^/    /' <<< ${{inputs.APPS_ARO_CERTIFICATE}} >> values.yaml
           echo 'key: |' >> values.yaml
-          sed 's/^/    /' <<< {{inputs.APPS_ARO_KEY_CERTIFICATE}} >> values.yaml
+          sed 's/^/    /' <<< ${{inputs.APPS_ARO_KEY_CERTIFICATE}} >> values.yaml
           echo 'name: ${{inputs.TeamProject}}-${{inputs.appName}}' >> Chart.yaml
       - name: Helm Lint, verifica helm por errores (deberia ser bloqueante)
         shell: bash
