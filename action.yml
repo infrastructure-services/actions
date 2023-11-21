@@ -111,11 +111,14 @@ runs:
           echo 'namespace: ${{inputs.TeamProject}}-qa' >> values.yaml
           echo 'appname: ${{inputs.appName}}' >> values.yaml
           echo 'caCertificate: |' >> values.yaml
-          sed 's/^/    /' <<< ${{inputs.APPS_ARO_CA_CERTIFICATE}} >> values.yaml
+          echo ${{inputs.APPS_ARO_CA_CERTIFICATE}} | sed 's/^/    /' >> values.yaml
+          cat values.yaml
           echo 'certificate: |' >> values.yaml
-          sed 's/^/    /' <<< ${{inputs.APPS_ARO_CERTIFICATE}} >> values.yaml
+          echo ${{inputs.APPS_ARO_CERTIFICATE}} | sed 's/^/    /' >> values.yaml
+          cat values.yaml
           echo 'key: |' >> values.yaml
-          sed 's/^/    /' <<< ${{inputs.APPS_ARO_KEY_CERTIFICATE}} >> values.yaml
+          echo ${{inputs.APPS_ARO_KEY_CERTIFICATE}} |  sed 's/^/    /' >> values.yaml
+          cat values.yaml
           echo 'name: ${{inputs.TeamProject}}-${{inputs.appName}}' >> Chart.yaml
       - name: Helm Lint, verifica helm por errores (deberia ser bloqueante)
         shell: bash
