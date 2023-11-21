@@ -108,17 +108,15 @@ runs:
         shell: bash
         run: |-
           echo -e 'cluster:\n  fqdn: ${{ inputs.clusterFqdn}}' >> values.yaml
+          ls
           echo 'namespace: ${{inputs.TeamProject}}-qa' >> values.yaml
           echo 'appname: ${{inputs.appName}}' >> values.yaml
           echo 'caCertificate: |' >> values.yaml
           echo ${{inputs.APPS_ARO_CA_CERTIFICATE}} | sed 's/^/    /' >> values.yaml
-          echo values.yaml
           echo 'certificate: |' >> values.yaml
           echo ${{inputs.APPS_ARO_CERTIFICATE}} | sed 's/^/    /' >> values.yaml
-          echo values.yaml
           echo 'key: |' >> values.yaml
           echo ${{inputs.APPS_ARO_KEY_CERTIFICATE}} |  sed 's/^/    /' >> values.yaml
-          echo values.yaml
           echo 'name: ${{inputs.TeamProject}}-${{inputs.appName}}' >> Chart.yaml
       - name: Helm Lint, verifica helm por errores (deberia ser bloqueante)
         shell: bash
