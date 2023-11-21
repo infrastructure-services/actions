@@ -1,6 +1,15 @@
 name: 'Orleans build y push'
 
 inputs:
+  APPS_ARO_CERTIFICATE:
+    description: "Certificado para el dominio de apps en ARO"
+    required: true
+  APPS_ARO_CA_CERTIFICATE:
+    description: "Certificado de la CA"
+    required: true
+  APPS_ARO_KEY_CERTIFICATE:
+    description: "Certificado ARO Key"
+    required: true
   ACR_USERNAME:
     description: "user de acr"
     required: true
@@ -91,6 +100,12 @@ runs:
           echo -e 'cluster:\n  fqdn: ${{ inputs.clusterFqdn}}' >> values.yaml
           echo 'namespace: ${{inputs.TeamProject}}-qa' >> values.yaml
           echo 'appname: ${{inputs.appName}}' >> values.yaml
+          echo 'caCertificate: |' >> values.yaml
+          sed 's/^/    /' ${{inputs.APPS_ARO_CA_CERTIFICATE}} >> values.yaml
+          echo 'certificate: |' >> values.yaml
+          sed 's/^/    /' ${{inputs.APPS_ARO_CERTIFICATE}} >> values.yaml
+          echo 'key: |' >> values.yaml
+          sed 's/^/    /' ${{inputs.APPS_ARO_KEY_CERTIFICATE}} >> values.yaml
           echo 'name: ${{inputs.TeamProject}}-${{inputs.appName}}' >> Chart.yaml
       - name: Instalar con argocd en 'qa'
         shell: bash
