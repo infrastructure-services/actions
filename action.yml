@@ -1,14 +1,5 @@
 name: 'Orleans helm package'
 inputs:
-  APPS_ARO_CERTIFICATE:
-    description: "Certificado para el dominio de apps en ARO"
-    required: true
-  APPS_ARO_CA_CERTIFICATE:
-    description: "Certificado de la CA"
-    required: true
-  APPS_ARO_KEY_CERTIFICATE:
-    description: "Certificado ARO Key"
-    required: true
   ACR_USERNAME:
     description: "user de acr"
     required: true
@@ -17,17 +8,10 @@ inputs:
     description: "passwrd de acr"
     required: true
     default: ''
-#  ACR_NAME:
-#    description: "nommbre del acr"
-#    required: true
-#    default: ''
   ACR_FULL_NAME:
     description: "nombre del acr con azurecr.io"
     required: true
     default: ''
-  variable:
-    description: "variables que recibo de la llamada al pipeline"
-    required: false
   appName:
     description: "Nombre de la aplicacion (dentro del proyecto)"
     required: true
@@ -56,28 +40,21 @@ inputs:
   clusterFqdn:
      description: "FQDN para pasarle a helm"
      required: true
-  fileValuesPath:
-    description: "path archivo de values.yaml"
-    required: true
   
-      
-#env:
-  #Es un valor que viene del secreto, pero el install de helm lo espera cmo variable 'plana'
-#  GITHUB_TOKEN: ${{ inputs.GITHUB_TOKENB }}
 runs:
   using: "composite"
   steps:
       - run: echo 'Inicia el proceso'
         shell: bash
-#Si tenemos un runner con Helm instalado no haria falta
+      
       - name: Install Helm
         uses: azure/setup-helm@v3
         with:
           version: v3.12.3 #Helm 13 tiene un bug
-#        with:
-#           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-#Obtengo el codigo base remoto para los manifiestos
-
+      
+      - uses: actions/download-artifact@v3
+        with:
+          name: ${{inputs.namespace}}
 
       - name: Checkout code helm templates
         uses: actions/checkout@v3.5.0
@@ -86,6 +63,7 @@ runs:
           ref: main
 #          token: ${{ inputs.GITHUB_HELMREPO_TOKEN }}
           ssh-key: ${{ inputs.GITHUB_HELMREPO_TOKEN }}
+      
       - name: copio Chart y values (y templates)
         shell: bash
         run: |-
@@ -93,36 +71,25 @@ runs:
            cp Chart.yaml ../Chart.yaml
            cp -R templates ../templates
            ls ../
-      - name: checkout codigo desarrollador
-        uses: actions/checkout@v3.5.0 #actions/checkout@v2
-        with:
-          fetch-depth: 0
+           
       - name: Traigo los archivos al repo actual
         shell: bash
         run: |-
            ls ../
-           cp ${{ inputs.fileValuesPath }} values.yaml
            cp ../Chart.yaml Chart.yaml 
            cp -R ../templates templates
+      
       - name: Reviso archivos y version helm
         shell: bash
         run: |-
            ls
            helm version --short
+      
       - name: Helm customizer le agregan valores al values y al chart
         shell: bash
         run: |-
-          echo -e 'cluster:\n  fqdn: ${{ inputs.clusterFqdn}}' >> values.yaml
-          ls
-          echo 'namespace: ${{inputs.namespace}}' >> values.yaml
-          echo 'appname: ${{inputs.appName}}' >> values.yaml
-          echo 'caCertificate: |' >> values.yaml
-          echo -e "${{inputs.APPS_ARO_CA_CERTIFICATE}}" | sed 's/^/    /' >> values.yaml
-          echo 'certificate: |' >> values.yaml
-          echo -e "${{inputs.APPS_ARO_CERTIFICATE}}" | sed 's/^/    /' >> values.yaml
-          echo 'key: |' >> values.yaml
-          echo -e "${{inputs.APPS_ARO_KEY_CERTIFICATE}}" |  sed 's/^/    /' >> values.yaml
           echo 'name: ${{inputs.TeamProject}}-${{inputs.appName}}' >> Chart.yaml
+
       - name: Helm Lint, verifica helm por errores (deberia ser bloqueante)
         shell: bash
         run: |-
@@ -133,6 +100,7 @@ runs:
              echo "HELM Lint FAIL - There is a problem with the folder 'templates' or the values file format";
              exit 1
           fi
+
       - name: Login to Azure Container Registry
         uses: azure/docker-login@v1
         with:
