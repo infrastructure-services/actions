@@ -32,6 +32,10 @@ inputs:
     description: "Nombre de la aplicacion (dentro del proyecto)"
     required: true
     default: orleans-grain
+  namespace:
+    description: "nombre de namespaces"
+    required: false
+    default: ""
   teamProject:
     description: "Nombre del proyecto/equipo"
     required: true
@@ -46,15 +50,16 @@ inputs:
   GITHUB_HELMREPO_TOKEN:
     description: "Token para descargar el codigo de templates HELM"
     required: true
-  helmChartVersionLatestQa:
+  helmChartVersionLatest:
      description: "VersionHelm"
-     required: true
-  appVersionGit:
-     description: "VersionGit"
      required: true
   clusterFqdn:
      description: "FQDN para pasarle a helm"
      required: true
+  fileValuesPath:
+    description: "path archivo de values.yaml"
+    required: true
+  
       
 #env:
   #Es un valor que viene del secreto, pero el install de helm lo espera cmo variable 'plana'
@@ -96,7 +101,7 @@ runs:
         shell: bash
         run: |-
            ls ../
-           cp .devops/value-qa.yaml values.yaml
+           cp ${{ inputs.fileValuesPath }} values.yaml
            cp ../Chart.yaml Chart.yaml 
            cp -R ../templates templates
       - name: Reviso archivos y version helm
@@ -109,7 +114,7 @@ runs:
         run: |-
           echo -e 'cluster:\n  fqdn: ${{ inputs.clusterFqdn}}' >> values.yaml
           ls
-          echo 'namespace: ${{inputs.TeamProject}}-qa' >> values.yaml
+          echo 'namespace: ${{inputs.namespace}}' >> values.yaml
           echo 'appname: ${{inputs.appName}}' >> values.yaml
           echo 'caCertificate: |' >> values.yaml
           echo -e "${{inputs.APPS_ARO_CA_CERTIFICATE}}" | sed 's/^/    /' >> values.yaml
@@ -138,8 +143,8 @@ runs:
         shell: bash
         run: |-
           export HELM_EXPERIMENTAL_OCI=1 #Es necesario para el chart save}}
-          helm package --version ${{ inputs.helmChartVersionLatestQa}} --app-version ${{ inputs.appVersionGit}} --namespace ${{ inputs.TeamProject}}-qa .
+          helm package --version ${{ inputs.helmChartVersionLatest}} --app-version ${{ inputs.appVersion}} --namespace ${{ inputs.namespace}} .
           echo '${{ inputs.ACR_PASSWORD }}' | helm registry login ${{ inputs.ACR_FULL_NAME}} --username ${{ inputs.ACR_USERNAME}} --password-stdin
-          helm push ${{inputs.TeamProject}}-${{inputs.appName }}-${{inputs.helmChartVersionLatestQa}}.tgz  oci://${{inputs.ACR_FULL_NAME }}/helm/ # ${{ inputs.TeamProject}}-${{ inputs.appName}}  # :${{ env.helmChartVersionLatestQa}}
+          helm push ${{inputs.TeamProject}}-${{inputs.appName }}-${{inputs.helmChartVersionLatest}}.tgz  oci://${{inputs.ACR_FULL_NAME }}/helm/ # ${{ inputs.TeamProject}}-${{ inputs.appName}}  # :${{ env.helmChartVersionLatest}}
 
            
