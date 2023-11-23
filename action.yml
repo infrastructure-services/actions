@@ -71,8 +71,7 @@ runs:
         shell: bash
         run: |
           ls
-         cat values.yaml
-         
+          cat values.yaml
 
       - name: Generate name
         shell: bash
