@@ -178,7 +178,7 @@ runs:
             fi
           done
       - name: Clear cache
-        bash: shell
+        shell: bash
         run: |
           #Limpia cache de argocd - hard refresh
           argocd app get ${{inputs.TeamProject}}-${{inputs.appName}} refresh --hard-refresh --grpc-web 2>&1
