@@ -47,7 +47,11 @@ inputs:
   namespace:
     description: "nombre de namespaces"
     required: false
-    default: ""      
+    default: ""
+  environment:
+    description: "nombre de namespaces"
+    required: false
+    default: ""
 #env:
   #Es un valor que viene del secreto, pero el install de helm lo espera cmo variable 'plana'
 #  GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
@@ -62,6 +66,11 @@ runs:
       - uses: actions/download-artifact@v3
         with:
           name: ${{inputs.namespace}}
+
+      - name: Generate name
+        shell: bash
+        id: name
+        run: echo "applicationName=${{inputs.teamProject}}-${{inputs.appName}}-${{inputs.environment}}" >> $GITHUB_OUTPUT
 
       - name: Checkout code helm templates
         uses: actions/checkout@v3.5.0
@@ -143,7 +152,7 @@ runs:
         run: |
           echo 'creacion app argocd'
           variableOk=0
-          argoCommand="argocd app create ${{inputs.teamProject}}-${{inputs.appName}} --repo ${{ inputs.ACR_FULL_NAME }}/helm --helm-chart ${{inputs.teamProject}}-${{inputs.appName}} --upsert --helm-set Chart.yaml=Chart.yaml --helm-set-file values.yaml=values.yaml --helm-set-file Chart.yaml=Chart.yaml --revision ${{ inputs.helmChartVersionLatest}} --dest-namespace ${{inputs.namespace}} --dest-server https://kubernetes.default.svc --sync-policy auto --auto-prune --self-heal --project ${{inputs.namespace}} --grpc-web"
+          argoCommand="argocd app create ${{ steps.name.outputs.applicationName }} --repo ${{ inputs.ACR_FULL_NAME }}/helm --helm-chart ${{inputs.teamProject}}-${{inputs.appName}} --upsert --helm-set Chart.yaml=Chart.yaml --helm-set-file values.yaml=values.yaml --helm-set-file Chart.yaml=Chart.yaml --revision ${{ inputs.helmChartVersionLatest}} --dest-namespace ${{inputs.namespace}} --dest-server https://kubernetes.default.svc --sync-policy auto --auto-prune --self-heal --project ${{inputs.namespace}} --grpc-web"
           
           for i in {1..10}
           do
@@ -166,7 +175,7 @@ runs:
         run: |
           #Wait. Espera la synchronizacion, esperan 30s, esperan 5 veces
           # validar el nombre, antes tenia el -qa al final
-          argoWait="argocd app wait ${{inputs.teamProject}}-${{inputs.appName}} --health --operation --timeout 30"
+          argoWait="argocd app wait ${{ steps.name.outputs.applicationName }} --health --operation --timeout 30"
           for i in {1..5}
           do
           if eval "$argoWait"; then
@@ -181,13 +190,13 @@ runs:
         shell: bash
         run: |
           #Limpia cache de argocd - hard refresh
-          argocd app get ${{inputs.TeamProject}}-${{inputs.appName}} refresh --hard-refresh --grpc-web 2>&1
+          argocd app get ${{ steps.name.outputs.applicationName }} refresh --hard-refresh --grpc-web 2>&1
           
       - name: Sync
         shell: bash
         run: |
           #Synch del repo (Fuerza el cambio de la aplicación a lo que se encuentra en los repos)
-          argoCommand="argocd app sync ${{inputs.TeamProject}}-${{inputs.appName}} --prune --force --retry-limit 5 --grpc-web --async"
+          argoCommand="argocd app sync ${{ steps.name.outputs.applicationName }} --prune --force --retry-limit 5 --grpc-web --async"
           variableOk=0
           for i in {1..10}
           do
@@ -210,7 +219,7 @@ runs:
         shell: bash
         run: |
           #Wait. Espera la synchronizacion, esperan 30s, esperan 5 veces
-          argoWait="argocd app wait ${{inputs.TeamProject}}-${{inputs.appName}} --health --operation --timeout 30"
+          argoWait="argocd app wait ${{ steps.name.outputs.applicationName }} --health --operation --timeout 30"
           for i in {1..5}
           do
           if eval "$argoWait"; then
