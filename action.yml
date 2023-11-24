@@ -28,12 +28,6 @@ inputs:
     description: "tag para subir imagen"
     required: true
     default: latest
-#  GITHUB_TOKEN:
-#    description: "Secret que helm necesita"
-#    required: true
-  GITHUB_HELMREPO_TOKEN:
-    description: "Token para descargar el codigo de templates HELM"
-    required: true
   helmChartVersionLatest:
      description: "VersionHelm"
      required: true
@@ -51,48 +45,16 @@ runs:
         uses: azure/setup-helm@v3
         with:
           version: v3.12.3 #Helm 13 tiene un bug
-
-      - name: Checkout code helm templates
-        uses: actions/checkout@v3.5.0
-        with:
-          repository: infrastructure-services/poc-orleans
-          ref: main
-          token: ${{ inputs.GITHUB_HELMREPO_TOKEN }}
-#          ssh-key: ${{ inputs.GITHUB_HELMREPO_TOKEN }}
-      
-      - name: copio Chart y values (y templates)
-        shell: bash
-        run: |-
-           ls
-           cp Chart.yaml ../Chart.yaml
-           cp -R templates ../templates
-           ls ../
-           
-      - name: Traigo los archivos al repo actual
-        shell: bash
-        run: |-
-           ls ../
-           cp ../Chart.yaml Chart.yaml 
-           cp -R ../templates templates
       
       - name: Reviso archivos y version helm
         shell: bash
         run: |-
            ls
            helm version --short
-      
-      - name: Helm customizer le agregan valores al values y al chart
-        shell: bash
-        run: |-
-          echo 'name: ${{inputs.TeamProject}}-${{inputs.appName}}' >> Chart.yaml
 
       - uses: actions/download-artifact@v3
         with:
           name: ${{inputs.namespace}}
-
-      - name: show values.yml
-        shell: bash
-        run: cat values.yaml
     
       - name: Helm Lint, verifica helm por errores (deberia ser bloqueante)
         shell: bash
