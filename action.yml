@@ -9,6 +9,9 @@ inputs:
   APPS_ARO_KEY_CERTIFICATE:
     description: "Certificado ARO Key"
     required: true
+  GITHUB_HELMREPO_TOKEN:
+    description: "Token para descargar el codigo de templates HELM"
+    required: true
   appName:
     description: "Nombre de la aplicacion (dentro del proyecto)"
     required: true
@@ -26,9 +29,16 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - run: echo 'Inicia el proceso'
+    - run: echo '🎁Generate values.yaml'
       shell: bash
 
+    - name: Checkout code helm templates
+      uses: actions/checkout@v3.5.0
+      with:
+        repository: infrastructure-services/poc-orleans
+        ref: main
+        token: ${{ inputs.GITHUB_HELMREPO_TOKEN }}
+           
     - name: checkout codigo desarrollador
       uses: actions/checkout@v3.5.0 #actions/checkout@v2
       with:
@@ -53,11 +63,15 @@ runs:
         echo -e "${{inputs.APPS_ARO_CERTIFICATE}}" | sed 's/^/    /' >> values.yaml
         echo 'key: |' >> values.yaml
         echo -e "${{inputs.APPS_ARO_KEY_CERTIFICATE}}" |  sed 's/^/    /' >> values.yaml
+        echo 'name: ${{inputs.TeamProject}}-${{inputs.appName}}' >> Chart.yaml
     
     - name: Archive values yaml
       uses: actions/upload-artifact@v3
       with:
         name: ${{inputs.namespace}}
-        path: values.yaml
+        path: |
+          values.yaml
+          Chart.yaml
+          templetes/
 
 
