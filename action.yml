@@ -51,10 +51,6 @@ runs:
         uses: azure/setup-helm@v3
         with:
           version: v3.12.3 #Helm 13 tiene un bug
-      
-      - uses: actions/download-artifact@v3
-        with:
-          name: ${{inputs.namespace}}
 
       - name: Checkout code helm templates
         uses: actions/checkout@v3.5.0
@@ -90,6 +86,14 @@ runs:
         run: |-
           echo 'name: ${{inputs.TeamProject}}-${{inputs.appName}}' >> Chart.yaml
 
+      - uses: actions/download-artifact@v3
+        with:
+          name: ${{inputs.namespace}}
+
+      - name: show values.yml
+        shell: bash
+        run: cat values.yaml
+    
       - name: Helm Lint, verifica helm por errores (deberia ser bloqueante)
         shell: bash
         run: |-
