@@ -72,6 +72,6 @@ runs:
         path: |
           values.yaml
           Chart.yaml
-          templates/
+          templates/*
 
 
