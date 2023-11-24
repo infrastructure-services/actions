@@ -72,6 +72,6 @@ runs:
         path: |
           values.yaml
           Chart.yaml
-          templetes/
+          templates/
 
 
