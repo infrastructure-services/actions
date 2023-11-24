@@ -41,9 +41,6 @@ inputs:
   helmChartVersionLatest:
     description: "VersionHelm"
     required: true
-  GITHUB_HELMREPO_TOKEN:
-    description: "Token para descargar el codigo de templates HELM"
-    required: true
   namespace:
     description: "nombre de namespaces"
     required: false
@@ -69,35 +66,11 @@ runs:
         id: name
         run: echo "applicationName=${{inputs.teamProject}}-${{inputs.appName}}-${{inputs.environment}}" >> $GITHUB_OUTPUT
 
-      - name: Checkout code helm templates
-        uses: actions/checkout@v3.5.0
-        with:
-          repository: infrastructure-services/poc-orleans
-          ref: main
-          token: ${{ inputs.GITHUB_HELMREPO_TOKEN }}
-#          ssh-key: ${{ inputs.GITHUB_HELMREPO_TOKEN }}
-      - name: copio Chart
-        shell: bash
-        run: |-
-           ls
-           cp Chart.yaml ../Chart.yaml
-           ls ../
-
-      - name: Traigo los archivos al repo actual
-        shell: bash
-        run: |-
-           ls ../
-           cp ../Chart.yaml Chart.yaml 
-
       - uses: actions/download-artifact@v3
         with:
           name: ${{inputs.namespace}}
           
-      - name: Helm customizer le agregan valores al values y al chart
-        shell: bash
-        run: |-
-          echo 'name: ${{inputs.TeamProject}}-${{inputs.appName}}' >> Chart.yaml
-      
+
       - name: Login ArgoCD
         shell: bash
         run: |-
