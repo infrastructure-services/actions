@@ -63,15 +63,6 @@ runs:
       - run: ls
         shell: bash
 ###REVISAR SI ESTO YA ESTA DE LA EJECUCION ANTERIOR
-      - uses: actions/download-artifact@v3
-        with:
-          name: ${{inputs.namespace}}
-
-      - name: show values.yaml
-        shell: bash
-        run: |
-          ls
-          cat values.yaml
 
       - name: Generate name
         shell: bash
@@ -97,6 +88,11 @@ runs:
         run: |-
            ls ../
            cp ../Chart.yaml Chart.yaml 
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: ${{inputs.namespace}}
+          
       - name: Helm customizer le agregan valores al values y al chart
         shell: bash
         run: |-
