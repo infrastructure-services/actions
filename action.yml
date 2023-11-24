@@ -32,23 +32,27 @@ runs:
     - run: echo '🎁Generate values.yaml'
       shell: bash
 
+    - name: checkout codigo
+      uses: actions/checkout@v3.5.0 #actions/checkout@v2
+      with:
+        fetch-depth: 0
+
+    - name: Copy values.yaml
+      shell: bash
+      run: |-
+          ls ../
+          cp ${{ inputs.fileValuesPath }} ../values.yaml
+
     - name: Checkout code helm templates
       uses: actions/checkout@v3.5.0
       with:
         repository: infrastructure-services/poc-orleans
         ref: main
         token: ${{ inputs.GITHUB_HELMREPO_TOKEN }}
-           
-    - name: checkout codigo desarrollador
-      uses: actions/checkout@v3.5.0 #actions/checkout@v2
-      with:
-        fetch-depth: 0
     
-    - name: Traigo los archivos al repo actual
+    - name: Restore values.yaml
       shell: bash
-      run: |-
-          ls ../
-          cp ${{ inputs.fileValuesPath }} values.yaml
+      run: cp ../values.yaml values.yaml
     
     - name: Helm customizer le agregan valores al values
       shell: bash
@@ -72,6 +76,6 @@ runs:
         path: |
           values.yaml
           Chart.yaml
-          templates/*
+          templates/
 
 
