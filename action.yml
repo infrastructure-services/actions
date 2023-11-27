@@ -12,6 +12,14 @@ inputs:
   GITHUB_HELMREPO_TOKEN:
     description: "Token para descargar el codigo de templates HELM"
     required: true
+  helmRepo:
+    description: "Repositorio de helm"
+    required: false
+    default: "infrastructure-services/poc-orleans"
+  helmRepoRef:
+    description: "Ref del repositorio de Helm"
+    required: false
+    default: "main"
   appName:
     description: "Nombre de la aplicacion (dentro del proyecto)"
     required: true
@@ -46,8 +54,8 @@ runs:
     - name: Checkout code helm templates
       uses: actions/checkout@v3.5.0
       with:
-        repository: infrastructure-services/poc-orleans
-        ref: main
+        repository: ${{ inputs.helmRepo }}
+        ref: ${{ inputs.helmRepoRef }}
         token: ${{ inputs.GITHUB_HELMREPO_TOKEN }}
     
     - name: Restore values.yaml
