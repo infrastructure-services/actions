@@ -1,12 +1,12 @@
 name: 'Generate values.yaml'
 inputs:
-  APPS_ARO_CERTIFICATE:
+  APPS_CERTIFICATE:
     description: "Certificado para el dominio de apps en ARO"
     required: true
-  APPS_ARO_CA_CERTIFICATE:
+  APPS_CA_CERTIFICATE:
     description: "Certificado de la CA"
     required: true
-  APPS_ARO_KEY_CERTIFICATE:
+  APPS_KEY_CERTIFICATE:
     description: "Certificado ARO Key"
     required: true
   GITHUB_HELMREPO_TOKEN:
@@ -70,11 +70,11 @@ runs:
         echo 'namespace: ${{inputs.namespace}}' >> values.yaml
         echo 'appname: ${{inputs.appName}}' >> values.yaml
         echo 'caCertificate: |' >> values.yaml
-        echo -e "${{inputs.APPS_ARO_CA_CERTIFICATE}}" | sed 's/^/    /' >> values.yaml
+        echo -e "${{inputs.APPS_CA_CERTIFICATE}}" | sed 's/^/    /' >> values.yaml
         echo 'certificate: |' >> values.yaml
-        echo -e "${{inputs.APPS_ARO_CERTIFICATE}}" | sed 's/^/    /' >> values.yaml
+        echo -e "${{inputs.APPS_CERTIFICATE}}" | sed 's/^/    /' >> values.yaml
         echo 'key: |' >> values.yaml
-        echo -e "${{inputs.APPS_ARO_KEY_CERTIFICATE}}" |  sed 's/^/    /' >> values.yaml
+        echo -e "${{inputs.APPS_KEY_CERTIFICATE}}" |  sed 's/^/    /' >> values.yaml
         echo 'name: ${{inputs.TeamProject}}-${{inputs.appName}}' >> Chart.yaml
     
     - name: Archive values yaml
