@@ -43,10 +43,10 @@ runs:
         with:
           fetch-depth: 0
 # Se debe sacar si se utiliza la estrategia de RH
-     - name: setear docker
-       uses: docker/setup-buildx-action@v3
-       with:
-          install: true
+      - name: setear docker
+        uses: docker/setup-buildx-action@v3
+        with:
+            install: true
       - name: Run a multi-line script
         shell: bash
         run: |-
@@ -54,12 +54,12 @@ runs:
           echo ${{ inputs.ACR_PASSWORD }}
           echo ${{inputs.teamProject}}-${{inputs.appName}}
 
-     - name: Login to Azure Container Registry
-       uses: azure/docker-login@v1
-       with:
-         login-server: ${{ inputs.ACR_NAME }}.azurecr.io 
-         username: ${{ inputs.ACR_USERNAME }}
-         password: ${{ inputs.ACR_PASSWORD }}
+      - name: Login to Azure Container Registry
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{ inputs.ACR_NAME }}.azurecr.io 
+          username: ${{ inputs.ACR_USERNAME }}
+          password: ${{ inputs.ACR_PASSWORD }}
 
     #  - name: Podman Login
     #    uses: redhat-actions/podman-login@v1.6
@@ -69,13 +69,13 @@ runs:
     #      password: ${{ inputs.ACR_PASSWORD }}
     #      auth_file_path: /tmp/podman/auth.json
 
-     - name: Build and push
-       uses: docker/build-push-action@v5
-       with:
-         context: . 
-         file: Dockerfile 
-         push: true
-         tags: ${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: . 
+          file: Dockerfile 
+          push: true
+          tags: ${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}
 
       # Se comenta por los multiples errores al instalar las dependencias de .NET
       # - name: Buildah Action
