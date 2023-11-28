@@ -40,12 +40,7 @@ runs:
   steps:
       - run: echo 'Inicia el proceso'
         shell: bash
-      
-      - name: Install Helm
-        uses: azure/setup-helm@v3
-        with:
-          version: v3.12.3 #Helm 13 tiene un bug
-      
+           
       - name: Reviso archivos y version helm
         shell: bash
         run: |-
