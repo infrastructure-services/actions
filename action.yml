@@ -40,6 +40,11 @@ runs:
     - run: echo '🎁Generate values.yaml'
       shell: bash
 
+    - name: Install Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: v3.12.3 #Helm 13 tiene un bug
+        
     - name: checkout codigo
       uses: actions/checkout@v3.5.0 #actions/checkout@v2
       with:
