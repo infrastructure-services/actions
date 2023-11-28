@@ -76,7 +76,11 @@ runs:
         echo 'key: |' >> values.yaml
         echo -e "${{inputs.APPS_KEY_CERTIFICATE}}" |  sed 's/^/    /' >> values.yaml
         echo 'name: ${{inputs.TeamProject}}-${{inputs.appName}}' >> Chart.yaml
-    
+        
+    - name: show values
+      shell: bash
+      run: cat values.yaml
+
     - name: Archive values yaml
       uses: actions/upload-artifact@v3
       with:
