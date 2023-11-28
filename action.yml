@@ -34,6 +34,9 @@ inputs:
   fileValuesPath:
     description: "path archivo de values.yaml"
     required: true
+  teamProject:
+    description: "Nombre del proyecto/equipo"
+    required: true
 runs:
   using: "composite"
   steps:
@@ -80,7 +83,7 @@ runs:
         echo -e "${{inputs.APPS_CERTIFICATE}}" | sed 's/^/    /' >> values.yaml
         echo 'key: |' >> values.yaml
         echo -e "${{inputs.APPS_KEY_CERTIFICATE}}" |  sed 's/^/    /' >> values.yaml
-        echo 'name: ${{inputs.TeamProject}}-${{inputs.appName}}' >> Chart.yaml
+        echo 'name: ${{inputs.teamProject}}-${{inputs.appName}}' >> Chart.yaml
         
     - name: show values
       shell: bash
