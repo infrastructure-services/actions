@@ -86,6 +86,10 @@ runs:
       shell: bash
       run: cat values.yaml
 
+    - name: show Chart
+      shell: bash
+      run: cat Chart.yaml
+
     - name: Archive values yaml
       uses: actions/upload-artifact@v3
       with:
