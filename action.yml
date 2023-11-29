@@ -71,10 +71,10 @@ runs:
           name: ${{inputs.namespace}}
           
 
+        # Se intenta 10 veces todos los pasos, con un sleep 20
       - name: Login ArgoCD
         shell: bash
         run: |-
-          #Ellos intentan 10 veces todos los pasos, con un sleep 20
           echo '${{ inputs.ACR_PASSWORD }}' | helm registry login ${{ inputs.ACR_FULL_NAME }} --username ${{ inputs.ACR_USERNAME }} --password-stdin
           #cp poc-manifiestos-main/values.yaml .
           #cp poc-manifiestos-main/Chart.yaml .
