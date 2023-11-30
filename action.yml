@@ -31,9 +31,6 @@ inputs:
   helmChartVersionLatest:
      description: "VersionHelm"
      required: true
-  clusterFqdn:
-     description: "FQDN para pasarle a helm"
-     required: true
   
 runs:
   using: "composite"
