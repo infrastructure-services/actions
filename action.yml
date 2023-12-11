@@ -51,13 +51,16 @@ inputs:
     required: true
   APPS_CERTIFICATE:
     description: "Certificado para el dominio de apps en ARO"
-    required: true
+    required: false
+    default: ""
   APPS_CA_CERTIFICATE:
     description: "Certificado de la CA"
-    required: true
+    required: false
+    default: ""
   APPS_KEY_CERTIFICATE:
     description: "Certificado ARO Key"
-    required: true
+    required: false
+    default: ""
 
   # HELM
   helmChartVersionLatest:
