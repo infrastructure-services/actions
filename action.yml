@@ -49,9 +49,7 @@ runs:
         version: v3.12.3 #Helm 13 tiene un bug
         
     - name: checkout codigo
-      uses: actions/checkout@v3.5.0 #actions/checkout@v2
-      with:
-        fetch-depth: 0
+      uses: actions/checkout@v4 #actions/checkout@v2
 
     - name: Copy values.yaml
       shell: bash
@@ -60,7 +58,7 @@ runs:
           cp ${{ inputs.fileValuesPath }} ../values.yaml
 
     - name: Checkout code helm templates
-      uses: actions/checkout@v3.5.0
+      uses: actions/checkout@v4
       with:
         repository: ${{ inputs.helmRepo }}
         ref: ${{ inputs.helmRepoRef }}
