@@ -1,15 +1,12 @@
 name: 'Orleans helm package'
+description: Action helm
 inputs:
-  ACR_USERNAME:
+  GHCR_USERNAME:
     description: "user de acr"
     required: true
     default: ''
-  ACR_PASSWORD:
+  GHCR_PASSWORD:
     description: "passwrd de acr"
-    required: true
-    default: ''
-  ACR_FULL_NAME:
-    description: "nombre del acr con azurecr.io"
     required: true
     default: ''
   appName:
@@ -31,6 +28,12 @@ inputs:
   helmChartVersionLatest:
      description: "VersionHelm"
      required: true
+  chartFolder:
+    description: 'Nombre de folder del chart de Helm'
+    default: 'pythonChart'
+  chartName:
+    description: 'Nombre de chart de Helm'
+    default: 'python-chart'
   
 runs:
   using: "composite"
@@ -64,18 +67,16 @@ runs:
              exit 1
           fi
 
-      - name: Login to Azure Container Registry
-        uses: azure/docker-login@v1
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
         with:
-          login-server: ${{ inputs.ACR_NAME }}.azurecr.io #ACR_FULL_NAME incluye el azurecr.io
-          username: ${{ inputs.ACR_USERNAME }}
-          password: ${{ inputs.ACR_PASSWORD }}
-      - name: Enpaquetar y subir helm a acr
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+    
+      - name: Empaquetar y subir helm a ghcr
         shell: bash
         run: |-
-          export HELM_EXPERIMENTAL_OCI=1 #Es necesario para el chart save}}
-          helm package --version ${{ inputs.helmChartVersionLatest}} --app-version ${{ inputs.appVersion}} --namespace ${{ inputs.namespace}} .
-          echo '${{ inputs.ACR_PASSWORD }}' | helm registry login ${{ inputs.ACR_FULL_NAME}} --username ${{ inputs.ACR_USERNAME}} --password-stdin
-          helm push ${{inputs.TeamProject}}-${{inputs.appName }}-${{inputs.helmChartVersionLatest}}.tgz  oci://${{inputs.ACR_FULL_NAME }}/helm/ # ${{ inputs.TeamProject}}-${{ inputs.appName}}  # :${{ env.helmChartVersionLatest}}
-
-           
+          export HELM_EXPERIMENTAL_OCI=1 #Es necesario para el chart save
+          helm package ${{ inputs.chartFolder }} --version ${{ inputs.helmChartVersionLatest }}-${{ inputs.environment }}
+          helm push ${{ inputs.chartName }}-${{ inputs.helmChartVersionLatest }}-${{ inputs.environment }}.tgz oci://ghcr.io/cortiz2024/demo_app
