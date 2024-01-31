@@ -76,7 +76,9 @@ runs:
         with:
           registry: ghcr.io
           username: ${{ inputs.GHCR_USERNAME }}
-          password: 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
+          password: ${{ inputs.GHCR_PASSWORD }}
+        env:
+          GITHUB_TOKEN: ${{ inputs.GHCR_PASSWORD }}
     
       - name: Empaquetar y subir helm a ghcr
         shell: bash
