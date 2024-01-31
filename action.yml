@@ -80,7 +80,7 @@ runs:
         with:
           registry: ghcr.io
           username: ${{ inputs.GHCR_USERNAME }}
-          password: ${{ inputs.GHCR_PASSWORD }}
+          password: ${{ inputs.GHCR_PAT }}
         env:
           GITHUB_TOKEN: ${{ inputs.GHCR_PAT }}
     
