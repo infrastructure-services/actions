@@ -71,8 +71,8 @@ runs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ inputs.GHCR_USERNAME }}
+          password: ${{ inputs.GHCR_PASSWORD }}
     
       - name: Empaquetar y subir helm a ghcr
         shell: bash
