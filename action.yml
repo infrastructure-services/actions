@@ -76,12 +76,11 @@ runs:
         with:
           registry: ghcr.io
           username: ${{ inputs.GHCR_USERNAME }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: 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
     
       - name: Empaquetar y subir helm a ghcr
         shell: bash
         run: |-
-          export GITHUB_TOKEN=${{ inputs.GHCR_PASSWORD }}
           export HELM_EXPERIMENTAL_OCI=1 #Es necesario para el chart save
           helm package ${{ inputs.chartFolder }} --version ${{ inputs.helmChartVersionLatest }}
           helm push ${{ inputs.chartName }}-${{ inputs.helmChartVersionLatest }}.tgz oci://ghcr.io/cortiz2024/demo_app
