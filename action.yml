@@ -82,5 +82,5 @@ runs:
         shell: bash
         run: |-
           export HELM_EXPERIMENTAL_OCI=1 #Es necesario para el chart save
-          helm package ${{ inputs.chartFolder }} --version ${{ inputs.helmChartVersionLatest }}-${{ inputs.environment }}
-          helm push ${{ inputs.chartName }}-${{ inputs.helmChartVersionLatest }}-${{ inputs.environment }}.tgz oci://ghcr.io/cortiz2024/demo_app
+          helm package ${{ inputs.chartFolder }} --version ${{ inputs.helmChartVersionLatest }}
+          helm push ${{ inputs.chartName }}-${{ inputs.helmChartVersionLatest }}.tgz oci://ghcr.io/cortiz2024/demo_app
