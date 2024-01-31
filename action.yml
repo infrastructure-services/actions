@@ -34,6 +34,10 @@ inputs:
   chartName:
     description: 'Nombre de chart de Helm'
     default: 'python-chart'
+  environment:
+    description: "nombre de environment"
+    required: false
+    default: ""
   
 runs:
   using: "composite"
