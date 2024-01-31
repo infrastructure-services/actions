@@ -1,14 +1,6 @@
 name: 'Generate values.yaml'
+description: action to generate values
 inputs:
-  APPS_CERTIFICATE:
-    description: "Certificado para el dominio de apps en ARO"
-    required: true
-  APPS_CA_CERTIFICATE:
-    description: "Certificado de la CA"
-    required: true
-  APPS_KEY_CERTIFICATE:
-    description: "Certificado ARO Key"
-    required: true
   GITHUB_HELMREPO_TOKEN:
     description: "Token para descargar el codigo de templates HELM"
     required: true
@@ -28,9 +20,6 @@ inputs:
     description: "nombre de namespaces"
     required: false
     default: ""
-  clusterFqdn:
-     description: "FQDN para pasarle a helm"
-     required: true
   fileValuesPath:
     description: "path archivo de values.yaml"
     required: true
@@ -77,12 +66,6 @@ runs:
         ls
         echo 'namespace: ${{inputs.namespace}}' >> values.yaml
         echo 'appname: ${{inputs.appName}}' >> values.yaml
-        echo 'caCertificate: |' >> values.yaml
-        echo -e "${{inputs.APPS_CA_CERTIFICATE}}" | sed 's/^/    /' >> values.yaml
-        echo 'certificate: |' >> values.yaml
-        echo -e "${{inputs.APPS_CERTIFICATE}}" | sed 's/^/    /' >> values.yaml
-        echo 'key: |' >> values.yaml
-        echo -e "${{inputs.APPS_KEY_CERTIFICATE}}" |  sed 's/^/    /' >> values.yaml
         echo 'name: ${{inputs.teamProject}}-${{inputs.appName}}' >> Chart.yaml
         
     - name: show values
@@ -101,5 +84,3 @@ runs:
           values.yaml
           Chart.yaml
           templates/
-
-
