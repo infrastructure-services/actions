@@ -16,6 +16,10 @@ inputs:
     description: "Nombre de la aplicacion (dentro del proyecto)"
     required: true
     default: orleans-grain
+  appVersion:
+    description: "Version app"
+    required: true
+    default: orleans-grain
   namespace:
     description: "nombre de namespaces"
     required: false
@@ -46,41 +50,42 @@ runs:
       shell: bash
       run: |-
           ls ../
-          cp ${{ inputs.fileValuesPath }} ../values.yaml
+          cp ${{ inputs.fileValuesPath }} pythonChart/values.yaml
+          sed -i "s/tag: \".*\"/tag: \"${{ inputs.appVersion }}\"/" pythonChart/values.yaml
 
-    - name: Checkout code helm templates
-      uses: actions/checkout@v3.5.0
-      with:
-        repository: ${{ inputs.helmRepo }}
-        ref: ${{ inputs.helmRepoRef }}
-        token: ${{ inputs.GITHUB_HELMREPO_TOKEN }}
+    # - name: Checkout code helm templates
+    #   uses: actions/checkout@v3.5.0
+    #   with:
+    #     repository: ${{ inputs.helmRepo }}
+    #     ref: ${{ inputs.helmRepoRef }}
+    #     token: ${{ inputs.GITHUB_HELMREPO_TOKEN }}
     
-    - name: Restore values.yaml
-      shell: bash
-      run: cp ../values.yaml values.yaml
+    # - name: Restore values.yaml
+    #   shell: bash
+    #   run: cp ../values.yaml values.yaml
     
-    - name: Helm customizer le agregan valores al values
-      shell: bash
-      run: |-
-        echo -e 'cluster:\n  fqdn: ${{ inputs.clusterFqdn}}' >> values.yaml
-        ls
-        echo 'namespace: ${{inputs.namespace}}' >> values.yaml
-        echo 'appname: ${{inputs.appName}}' >> values.yaml
-        echo 'name: ${{inputs.teamProject}}-${{inputs.appName}}' >> Chart.yaml
+    # - name: Helm customizer le agregan valores al values
+    #   shell: bash
+    #   run: |-
+    #     echo -e 'cluster:\n  fqdn: ${{ inputs.clusterFqdn}}' >> values.yaml
+    #     ls
+    #     echo 'namespace: ${{inputs.namespace}}' >> values.yaml
+    #     echo 'appname: ${{inputs.appName}}' >> values.yaml
+    #     echo 'name: ${{inputs.teamProject}}-${{inputs.appName}}' >> Chart.yaml
         
-    - name: show values
-      shell: bash
-      run: cat values.yaml
+    # - name: show values
+    #   shell: bash
+    #   run: cat values.yaml
 
-    - name: show Chart
-      shell: bash
-      run: cat Chart.yaml
+    # - name: show Chart
+    #   shell: bash
+    #   run: cat Chart.yaml
 
     - name: Archive values yaml
       uses: actions/upload-artifact@v3
       with:
         name: ${{inputs.namespace}}
         path: |
-          values.yaml
-          Chart.yaml
-          templates/
+          pythonChart/values.yaml
+          pythonChart/Chart.yaml
+          pythonChart/templates/
