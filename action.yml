@@ -49,7 +49,8 @@ runs:
     - name: Copy values.yaml
       shell: bash
       run: |-
-          ls ../
+          ls -l
+          shopt -s dotglob
           cp ${{ inputs.fileValuesPath }} pythonChart/values.yaml
           sed -i "s/tag: \".*\"/tag: \"${{ inputs.appVersion }}\"/" pythonChart/values.yaml
 
