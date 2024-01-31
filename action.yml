@@ -76,14 +76,14 @@ runs:
         with:
           registry: ghcr.io
           username: ${{ inputs.GHCR_USERNAME }}
-          password: "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"
+          password: "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"
         env:
-          GITHUB_TOKEN: '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'
+          GITHUB_TOKEN: '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'
     
       - name: Empaquetar y subir helm a ghcr
         shell: bash
         env:
-          GITHUB_TOKEN: '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'
+          GITHUB_TOKEN: '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'
         run: |-
           export HELM_EXPERIMENTAL_OCI=1 #Es necesario para el chart save
           helm package ${{ inputs.chartFolder }} --version ${{ inputs.helmChartVersionLatest }}
