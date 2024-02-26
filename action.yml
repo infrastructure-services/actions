@@ -1,4 +1,5 @@
 name: 'Orleans build y push'
+description: 'Build y push de imagen de docker'
 inputs:
   ACR_USERNAME:
     description: "user de acr"
@@ -28,12 +29,33 @@ inputs:
     description: "tag para subir imagen"
     required: true
     default: latest
+  matrix_deploy:
+    description: "deploy en multiples ambientes"
+    required: false
+    default: "[]"
+
 
 runs:
   using: "composite"
   steps:
-      - run: echo hi!, we working.
-        shell: bash
+      - name: Generate Docker Tags
+        id: tags
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let tags = [];
+            let matrix_deploy = ${{ inputs.matrix_deploy }};
+            if (matrix_deploy.length > 0) {
+              matrix_deploy.forEach(deploy => {
+                let tag = `${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}-${deploy}:${{ inputs.appVersion}}`
+                tags.push(tag);
+              });
+            } else {
+              tags.push(`${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}`);
+            }
+
+            return tags.join('\n');
+          result-encoding: string
         # Setup .NET Core SDK
       - name: checkout
         uses: actions/checkout@v3.5.0 #actions/checkout@v2
@@ -58,41 +80,13 @@ runs:
           username: ${{ inputs.ACR_USERNAME }}
           password: ${{ inputs.ACR_PASSWORD }}
 
-    #  - name: Podman Login
-    #    uses: redhat-actions/podman-login@v1.6
-    #    with:
-    #      registry: ${{ inputs.ACR_NAME }}.azurecr.io #ACR_FULL_NAME incluye el azurecr.io
-    #      username: ${{ inputs.ACR_USERNAME }}
-    #      password: ${{ inputs.ACR_PASSWORD }}
-    #      auth_file_path: /tmp/podman/auth.json
-
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: . 
           file: Dockerfile 
           push: true
-          tags: ${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}
+          tags: |
+            ${{ steps.tags.outputs.result }}
 
-      # Se comenta por los multiples errores al instalar las dependencias de .NET
-      # - name: Buildah Action
-      #   id: build-image
-      #   uses: redhat-actions/buildah-build@v2
-      #   with:
-      #     image: my-new-image
-      #     tags: ${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}
-      #     containerfiles: |
-      #       Dockerfile
-      #     build-args: |
-      #       some_arg=some_value
-
-      # - name: Push To ACR
-      #   id: push-to-acr
-      #   uses: redhat-actions/push-to-registry@v2
-      #   with:
-      #     image: ${{ steps.build-image.outputs.image }}
-      #     tags: ${{ steps.build-image.outputs.tags }}
-      #     registry: ${{ inputs.ACR_NAME }}.azurecr.io
-      #     username: ${{ inputs.ACR_USERNAME }}
-      #     password: ${{ inputs.ACR_PASSWORD }}
 
