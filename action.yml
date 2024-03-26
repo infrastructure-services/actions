@@ -51,7 +51,7 @@ runs:
 
       - uses: actions/download-artifact@v3
         with:
-          name: ${{inputs.namespace}}
+          name: ${{inputs.appName}}-${{inputs.namespace}}
     
       - name: Helm Lint, verifica helm por errores (deberia ser bloqueante)
         shell: bash
