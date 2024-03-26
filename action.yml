@@ -68,7 +68,7 @@ runs:
 
       - uses: actions/download-artifact@v3
         with:
-          name: ${{inputs.namespace}}
+          name: ${{inputs.appName}}-${{inputs.namespace}}
           
 
         # Se intenta 10 veces todos los pasos, con un sleep 20
