@@ -94,7 +94,7 @@ runs:
     - name: Archive values yaml
       uses: actions/upload-artifact@v3
       with:
-        name: ${{inputs.namespace}}
+        name: ${{inputs.appName}}-${{inputs.namespace}}
         path: |
           values.yaml
           Chart.yaml
