@@ -37,6 +37,12 @@ inputs:
   teamProject:
     description: "Nombre del proyecto/equipo"
     required: true
+  cpuLimit:
+    description: "Limite de cpu del Pod"
+    required: true
+  memLimit:
+    description: "Limite de memoria del Pod"
+    required: true
 runs:
   using: "composite"
   steps:
@@ -75,6 +81,8 @@ runs:
         ls
         echo 'namespace: ${{inputs.namespace}}' >> values.yaml
         echo 'appname: ${{inputs.appName}}' >> values.yaml
+        echo 'cpulimit: ${{inputs.cpuLimit}}' >> values.yaml
+        echo 'memlimit: ${{inputs.memLimit}}' >> values.yaml
         echo 'caCertificate: |' >> values.yaml
         echo -e "${{inputs.APPS_CA_CERTIFICATE}}" | sed 's/^/    /' >> values.yaml
         echo 'certificate: |' >> values.yaml
