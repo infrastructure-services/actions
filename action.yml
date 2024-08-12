@@ -1,34 +1,12 @@
-name: 'Orleans build y push'
+name: 'Restart Service'
 
 inputs:
-  ACR_USERNAME:
-    description: "user de acr"
-    required: true
-    default: ''
-  ACR_PASSWORD:
-    description: "passwrd de acr"
-    required: true
-    default: ''
-  ACR_NAME:
-    description: "nommbre del acr"
-    required: true
-    default: ''
-  ACR_FULL_NAME:
-    description: "nombre del acr con azurecr.io"
-    required: true
-    default: ''
   appName:
     description: "Nombre de la aplicacion (dentro del proyecto)"
     required: true
-    default: orleans-grain
-  teamProject:
-    description: "Nombre del proyecto/equipo"
+  restartMotive:
+    description: "Motivo del Restart"
     required: true
-    default: qa
-  appVersion:
-    description: "tag para subir imagen"
-    required: true
-    default: latest
   ARGO_USERNAME:
     description: "usuario de ARgocd"
     required: true
@@ -38,171 +16,42 @@ inputs:
   ARGO_URL:
     description: "url de ARgocd"
     required: true
-  helmChartVersionLatest:
-    description: "VersionHelm"
+  projectName:
+    description: "nombre de namespaces"
     required: true
-  namespace:
-    description: "nombre de namespaces"
-    required: false
     default: ""
-  environment:
-    description: "nombre de namespaces"
-    required: false
+  environmentName:
+    description: "Ambiente"
+    required: true
     default: ""
-#env:
-  #Es un valor que viene del secreto, pero el install de helm lo espera cmo variable 'plana'
-#  GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
 runs:
   using: "composite"
   steps:
-      - run: echo hi!, we working.
-        shell: bash
-      - run: ls
-        shell: bash
-###REVISAR SI ESTO YA ESTA DE LA EJECUCION ANTERIOR
-
-      - name: Generate name
-        shell: bash
-        id: name
-        run: echo "applicationName=${{inputs.teamProject}}-${{inputs.appName}}-${{inputs.environment}}" >> $GITHUB_OUTPUT
-
-      - uses: actions/download-artifact@v3
-        with:
-          name: ${{inputs.appName}}-${{inputs.namespace}}
-          
-
-        # Se intenta 10 veces todos los pasos, con un sleep 20
-      - name: Login ArgoCD
-        shell: bash
-        run: |-
-          echo '${{ inputs.ACR_PASSWORD }}' | helm registry login ${{ inputs.ACR_FULL_NAME }} --username ${{ inputs.ACR_USERNAME }} --password-stdin
-          #cp poc-manifiestos-main/values.yaml .
-          #cp poc-manifiestos-main/Chart.yaml .
-          
-          echo 'login a argocd'
-          variableOk=0
-          argoCommand="argocd login --username ${{ inputs.ARGO_USERNAME }} --password ${{ inputs.ARGO_PASSWORD }} --insecure ${{ inputs.ARGO_URL }} --grpc-web"
-          for i in {1..10}
-          do
-          if eval "$argoCommand"; then
-              echo "ArgoCD login OK"
-              variableOk=1
-              break
-             else
-               echo "ArgoCD login $i/10"
-               sleep 20
-             fi
-          done
-          if [[ $variableOk != "1" ]]
-          then
-              echo "Error en ArgoCD Login" >&2;
-              exit 1
-          fi
-
-      - name: Create Project
-        shell: bash
-        run: |
-          echo 'creacion proyecto argocd'
-          variableOk=0
-          argoCommand="argocd proj create ${{inputs.namespace}} --upsert --dest https://kubernetes.default.svc,${{inputs.namespace}} --src  ${{ inputs.ACR_FULL_NAME }}/helm --grpc-web"
-          
-          for i in {1..10}
-          do
-          if eval "$argoCommand"; then
-              echo "ArgoCD Project create OK"
-              variableOk=1
-              break
-             else
-               echo "ArgoCD Project create $i/10"
-               sleep 20
-             fi
-          done
-          if [[ $variableOk != "1" ]]
-          then
-              echo "Error en ArgoCD Project create" >&2;
-              exit 1
-          fi
-      - name: creación app ArgoCD
-        shell: bash
-        run: |
-          echo 'creacion app argocd'
-          variableOk=0
-          argoCommand="argocd app create ${{ steps.name.outputs.applicationName }} --repo ${{ inputs.ACR_FULL_NAME }}/helm --helm-chart ${{inputs.teamProject}}-${{inputs.appName}} --upsert --helm-set Chart.yaml=Chart.yaml --helm-set-file values.yaml=values.yaml --helm-set-file Chart.yaml=Chart.yaml --revision ${{ inputs.helmChartVersionLatest}} --dest-namespace ${{inputs.namespace}} --dest-server https://kubernetes.default.svc --sync-policy auto --auto-prune --self-heal --project ${{inputs.namespace}} --grpc-web"
-          
-          for i in {1..10}
-          do
-          if eval "$argoCommand"; then
-              echo "ArgoCD app create OK"
-              variableOk=1
-              break
-             else
-               echo "ArgoCD app create $i/10"
-               sleep 20
-             fi
-          done
-          if [[ $variableOk != "1" ]]
-          then
-              echo "Error en ArgoCD app create" >&2;
-              exit 1
-          fi
-      - name: Wait Sync
-        shell: bash
-        run: |
-          #Wait. Espera la synchronizacion, esperan 30s, esperan 5 veces
-          # validar el nombre, antes tenia el -qa al final
-          argoWait="argocd app wait ${{ steps.name.outputs.applicationName }} --health --operation --timeout 30"
-          for i in {1..5}
-          do
-          if eval "$argoWait"; then
-                echo "ArgoCD app wait OK"
-                break
-            else
-                echo "ArgoCD app wait $i/5"
-                sleep 20
-            fi
-          done
-      - name: Clear cache
-        shell: bash
-        run: |
-          #Limpia cache de argocd - hard refresh
-          argocd app get ${{ steps.name.outputs.applicationName }} refresh --hard-refresh --grpc-web 2>&1
-          
-      - name: Sync
-        shell: bash
-        run: |
-          #Synch del repo (Fuerza el cambio de la aplicación a lo que se encuentra en los repos)
-          argoCommand="argocd app sync ${{ steps.name.outputs.applicationName }} --prune --force --retry-limit 5 --grpc-web --async"
-          variableOk=0
-          for i in {1..10}
-          do
-          if eval "$argoCommand"; then
-              echo "ArgoCD sync OK"
-              variableOk=1
-              break
-             else
-               echo "ArgoCD sync $i/10"
-               sleep 20
-             fi
-          done
-          if [[ $variableOk != "1" ]]
-          then
-              echo "Error en ArgoCD sync" >&2;
-              exit 1
-          fi
-
-      - name: Wait Sync
-        shell: bash
-        run: |
-          #Wait. Espera la synchronizacion, esperan 30s, esperan 5 veces
-          argoWait="argocd app wait ${{ steps.name.outputs.applicationName }} --health --operation --timeout 30"
-          for i in {1..5}
-          do
-          if eval "$argoWait"; then
-                echo "ArgoCD app wait OK"
-                break
-            else
-                echo "ArgoCD app wait $i/5"
-                sleep 20
-            fi
-          done
-
+    - name: Start
+      shell: bash
+      run: |-
+        echo "Comenzando a reiniciar el servicio."
+        echo "----------------------------------------"
+        echo ::notice::Motivo: ${{ inputs.restartMotive }}
+        echo "----------------------------------------"
+    - name: ArgoCD Login
+      shell: bash
+      run: |-
+        echo "Login a ArgoCD"
+        argocd login --username ${{ inputs.ARGO_USERNAME }} --password ${{ inputs.ARGO_PASSWORD }} --insecure ${{inputs.ARGO_URL}} --grpc-web
+    - name: Restart Process
+      shell: bash
+      run: |-
+        echo "Restarting Service"
+        argocd app actions run ${{ inputs.projectName }}-${{ inputs.appName }}-${{ inputs.environmentName }} restart --kind Deployment
+    - name: Wait
+      shell: bash
+      run: |-
+        echo "Esperando que se estabilice"
+        echo "----------------------------------------"
+        argocd app wait ${{ inputs.projectName }}-${{ inputs.appName }}-${{ inputs.environmentName }} --health --operation --timeout 30
+    - name: End
+      shell: bash
+      run: |-
+        echo "El servicio o app ha sido reiniciado"
+        echo "----------------------------------------"
