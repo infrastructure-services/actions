@@ -24,13 +24,16 @@ inputs:
     description: "Ambiente"
     required: true
     default: ""
+  instance:
+    description: 'Instancia (Solo el sufijo)'
+    required: true
 runs:
   using: "composite"
   steps:
     - name: Start
       shell: bash
       run: |-
-        echo "Comenzando a reiniciar el servicio."
+        echo "Comenzando a reiniciar el servicio instancia: ${{ inputs.instance }}."
         echo "----------------------------------------"
         echo ::notice::Motivo: ${{ inputs.restartMotive }}
         echo "----------------------------------------"
@@ -43,13 +46,13 @@ runs:
       shell: bash
       run: |-
         echo "Restarting Service"
-        argocd app actions run ${{ inputs.projectName }}-${{ inputs.appName }}-${{ inputs.environmentName }} restart --kind Deployment
+        argocd app actions run ${{ inputs.projectName }}-${{ inputs.appName }}-${{ inputs.instance }}-${{ inputs.environmentName }} restart --kind Deployment
     - name: Wait
       shell: bash
       run: |-
         echo "Esperando que se estabilice"
         echo "----------------------------------------"
-        argocd app wait ${{ inputs.projectName }}-${{ inputs.appName }}-${{ inputs.environmentName }} --health --operation --timeout 30
+        argocd app wait ${{ inputs.projectName }}-${{ inputs.appName }}-${{ inputs.instance }}-${{ inputs.environmentName }} --health --operation --timeout 30
     - name: End
       shell: bash
       run: |-
