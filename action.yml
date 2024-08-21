@@ -1,57 +1,100 @@
-name: 'Restart Service'
-
+name: "Publish to store Android"
+description: "Unique step to Publish to store Android"
 inputs:
+  # App
   appName:
     description: "Nombre de la aplicacion (dentro del proyecto)"
     required: true
-  restartMotive:
-    description: "Motivo del Restart"
+  appVersion:
+    description: "tag para subir imagen"
     required: true
-  ARGO_USERNAME:
-    description: "usuario de ARgocd"
-    required: true
-  ARGO_PASSWORD:
-    description: "pass de ARgocd"
-    required: true
-  ARGO_URL:
-    description: "url de ARgocd"
-    required: true
-  projectName:
-    description: "nombre de namespaces"
-    required: true
+  environment:
+    description: "nombre de environment"
+    required: false
     default: ""
-  environmentName:
-    description: "Ambiente"
-    required: true
+  artifact_name:
+    description: "nombre del artifact"
+    required: false
     default: ""
+  isProd:
+    description: "flag para saber si es un despliegue productivo"
+    required: false
+    default: "false"
+  filename:
+    description: "nombre del archivo"
+    required: false
+    default: "app-release-signed.apk"
+  gitOpsUrl:
+    description: "Url de github-integration"
+    required: false
+    default: "https://github-integration.andreani.com"
+outputs:
+  aplicacion_id:
+    description: "aplicacion id"
+    value: ${{ steps.publish.outputs.aplicacion_id }}
+
 runs:
   using: "composite"
   steps:
-    - name: Start
+    - run: echo publish to ${{ inputs.environment }}
       shell: bash
-      run: |-
-        echo "Comenzando a reiniciar el servicio."
-        echo "----------------------------------------"
-        echo ::notice::Motivo: ${{ inputs.restartMotive }}
-        echo "----------------------------------------"
-    - name: ArgoCD Login
+
+    - name: Set artifact name
+      id: setArtifactName
+      run: |
+        if [ -z "${{ inputs.artifact_name }}" ]; then
+          echo "artifact_name is empty, setting it to appName and environment"
+          echo "name=${{ inputs.appName }}-${{ inputs.environment }}" >> $GITHUB_OUTPUT
+        else
+          echo "artifact_name is provided: ${{ inputs.artifact_name }}"
+          echo "name=${{ inputs.artifact_name }}" >> $GITHUB_OUTPUT
+        fi
       shell: bash
-      run: |-
-        echo "Login a ArgoCD"
-        argocd login --username ${{ inputs.ARGO_USERNAME }} --password ${{ inputs.ARGO_PASSWORD }} --insecure ${{inputs.ARGO_URL}} --grpc-web
-    - name: Restart Process
+      
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Download artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ steps.setArtifactName.outputs.name }}
+        path: app
+
+    - name: Publish to store
+      id: publish
+      run: |
+        echo "Publishing to store"
+        echo "appName: ${{ inputs.appName }}"
+        echo "appVersion: ${{ inputs.appVersion }}"
+        echo "environment: ${{ inputs.environment }}"
+        echo "artifact_name: ${{ inputs.artifact_name }}"
+        echo "isProd: ${{ inputs.isProd }}"
+        echo "gitOpsUrl: ${{ inputs.gitOpsUrl }}"
+
+        # Set Organization and RepositoryName from GitHub context
+        ORGANIZATION="${{ github.repository_owner }}"
+        REPOSITORY="${{ github.repository }}"
+
+        response=$(curl -X POST "${{ inputs.gitOpsUrl }}/api/v1/Application/upload" \
+              -H "accept: application/json" \
+              -H "Content-Type: multipart/form-data" \
+              -F "Organization=$ORGANIZATION" \
+              -F "RepositoryName=$REPOSITORY" \
+              -F "AppName=${{ inputs.appName }}" \
+              -F "Version=${{ inputs.appVersion }}" \
+              -F "EnvironmentName=${{ inputs.environment }}" \
+              -F "IsEnvironmentProduction=${{ inputs.isProd }}" \
+              -F "DeploymentName=${{ inputs.environment }}" \
+              -F "File=@app/${{ inputs.filename }}")
+
+        status_code=$(echo "$response" | jq -r '.statusCode')
+
+        if [ "$status_code" -eq 200 ]; then
+          id=$(echo "$response" | jq -r '.id')
+          echo "aplicacion_id=$id" >> $GITHUB_OUTPUT
+        else
+          echo "Error: $response"
+        fi
       shell: bash
-      run: |-
-        echo "Restarting Service"
-        argocd app actions run ${{ inputs.projectName }}-${{ inputs.appName }}-${{ inputs.environmentName }} restart --kind Deployment
-    - name: Wait
-      shell: bash
-      run: |-
-        echo "Esperando que se estabilice"
-        echo "----------------------------------------"
-        argocd app wait ${{ inputs.projectName }}-${{ inputs.appName }}-${{ inputs.environmentName }} --health --operation --timeout 30
-    - name: End
-      shell: bash
-      run: |-
-        echo "El servicio o app ha sido reiniciado"
-        echo "----------------------------------------"
