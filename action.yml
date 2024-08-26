@@ -89,12 +89,22 @@ runs:
               -F "DeploymentName=${{ inputs.environment }}" \
               -F "File=@app/${{ inputs.filename }}")
 
+        echo "API Response: $response"
+
+        # Extraer el status_code de la respuesta
         status_code=$(echo "$response" | jq -r '.statusCode')
+
+        # Validar si el status_code está vacío o es nulo
+        if [ -z "$status_code" ]; then
+          echo "Error: Invalid API response or status code not found"
+          exit 1
+        fi
 
         if [ "$status_code" -eq 200 ]; then
           id=$(echo "$response" | jq -r '.id')
           echo "aplicacion_id=$id" >> $GITHUB_OUTPUT
         else
           echo "Error: $response"
+          exit 1
         fi
       shell: bash
