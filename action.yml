@@ -77,7 +77,7 @@ runs:
         ORGANIZATION="${{ github.repository_owner }}"
         REPOSITORY="${{ github.repository }}"
 
-        response=$(curl -X POST "${{ inputs.gitOpsUrl }}/api/v1/Application/upload" \
+        response=$(curl -X POST "${{ inputs.gitOpsUrl }}/api/v1/app-distribution" \
               -H "accept: application/json" \
               -H "Content-Type: multipart/form-data" \
               -F "Organization=$ORGANIZATION" \
