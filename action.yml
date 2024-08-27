@@ -87,12 +87,16 @@ runs:
               -F "EnvironmentName=${{ inputs.environment }}" \
               -F "IsEnvironmentProduction=${{ inputs.isProd }}" \
               -F "DeploymentName=${{ inputs.environment }}" \
-              -F "File=@app/${{ inputs.filename }}")
+              -F "File=@app/${{ inputs.filename }}" \
+              --connect-timeout 30 \
+              --max-time 60 \
+              -w "%{http_code}" \
+              -o response_body.txt)
 
-        echo "API Response: $response"
+        echo "API Response: $(<response_body.txt)"
 
         # Extraer el status_code de la respuesta
-        status_code=$(echo "$response" | jq -r '.statusCode')
+        status_code=$(cat response_body.txt | jq -r '.statusCode')
 
         # Validar si el status_code está vacío o es nulo
         if [ -z "$status_code" ]; then
@@ -101,10 +105,10 @@ runs:
         fi
 
         if [ "$status_code" -eq 200 ]; then
-          id=$(echo "$response" | jq -r '.id')
+          id=$(cat response_body.txt | jq -r '.id')
           echo "aplicacion_id=$id" >> $GITHUB_OUTPUT
         else
-          echo "Error: $response"
+          echo "Error: $(cat response_body.txt)"
           exit 1
         fi
       shell: bash
