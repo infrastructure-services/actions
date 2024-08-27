@@ -27,7 +27,7 @@ inputs:
   gitOpsUrl:
     description: "Url de github-integration"
     required: false
-    default: "https://github-integration.andreani.com"
+    default: "https://github-integration-gitops-prod.apps.andreani.com.ar"
 outputs:
   aplicacion_id:
     description: "aplicacion id"
