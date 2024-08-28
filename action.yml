@@ -96,20 +96,13 @@ runs:
         echo "API Response: $(<response_body.txt)"
         
         # Extraer el status_code de la respuesta usando grep y sed
-        status_code=$(grep -o '"statusCode":[^,]*' response_body.txt | sed 's/[^0-9]*//g')
-    
-        # Validar si el status_code está vacío o es nulo
-        if [ -z "$status_code" ]; then
-          echo "Error: Invalid API response or status code not found"
-          exit 1
-        fi
-    
+        #status_code=$(grep -o '"statusCode":[^,]*' response_body.txt | sed 's/[^0-9]*//g')
+        
+        status_code=$(echo "$response" | jq -r '.statusCode')
         if [ "$status_code" -eq 200 ]; then
-          # Extraer el id de la respuesta usando grep y sed
-          id=$(grep -o '"id":[^,]*' response_body.txt | sed 's/.*"id":"\([^"]*\)".*/\1/')
+          id=$(echo "$response" | jq -r '.id')
           echo "aplicacion_id=$id" >> $GITHUB_OUTPUT
         else
-          echo "Error: $(<response_body.txt)"
-          exit 1
+          echo "Error: $response"
         fi
       shell: bash
