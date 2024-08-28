@@ -61,6 +61,9 @@ runs:
       with:
         name: ${{ steps.setArtifactName.outputs.name }}
         path: app
+        
+    - name: Install jq
+      run: sudo apt-get install -y jq
 
     - name: Publish to store
       id: publish
