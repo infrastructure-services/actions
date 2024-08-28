@@ -61,10 +61,6 @@ runs:
       with:
         name: ${{ steps.setArtifactName.outputs.name }}
         path: app
-        
-    - name: Install jq
-      run: sudo apt-get install -y jq
-      shell: bash
 
     - name: Publish to store
       id: publish
@@ -100,12 +96,10 @@ runs:
         echo "API Response: $(<response_body.txt)"
         
         # Extraer el status_code de la respuesta usando grep y sed
-        #status_code=$(grep -o '"statusCode":[^,]*' response_body.txt | sed 's/[^0-9]*//g')
+        status_code=$(grep -o '"statusCode":[^,]*' response_body.txt | sed 's/[^0-9]*//g')
         
-        status_code=$(echo "$response" | jq -r '.statusCode')
         if [ "$status_code" -eq 200 ]; then
-          id=$(echo "$response" | jq -r '.id')
-          echo "aplicacion_id=$id" >> $GITHUB_OUTPUT
+          echo "statusCode: 200" >> $GITHUB_OUTPUT
         else
           echo "Error: $response"
         fi
