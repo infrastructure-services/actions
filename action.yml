@@ -64,6 +64,7 @@ runs:
         
     - name: Install jq
       run: sudo apt-get install -y jq
+      shell: bash
 
     - name: Publish to store
       id: publish
