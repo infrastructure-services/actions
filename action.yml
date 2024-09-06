@@ -89,7 +89,7 @@ runs:
               variableOk=1
               break
              else
-               echo "ArgoCD login $i/10"
+               echo "ArgoCD login $i/5"
                sleep 40
              fi
           done
@@ -113,7 +113,7 @@ runs:
               variableOk=1
               break
              else
-               echo "ArgoCD Project create $i/10"
+               echo "ArgoCD Project create $i/5"
                sleep 40
              fi
           done
@@ -136,7 +136,7 @@ runs:
               variableOk=1
               break
              else
-               echo "ArgoCD app create $i/10"
+               echo "ArgoCD app create $i/5"
                sleep 40
              fi
           done
@@ -148,7 +148,7 @@ runs:
       - name: Wait Sync
         shell: bash
         run: |
-          #Wait. Espera la synchronizacion, esperan 30s, esperan 5 veces
+          #Wait. Espera la synchronizacion, esperan 40s, esperan 3 veces
           # validar el nombre, antes tenia el -qa al final
           argoWait="argocd app wait ${{ steps.name.outputs.applicationName }} --health --operation --timeout 30"
           for i in {1..3}
@@ -180,7 +180,7 @@ runs:
               variableOk=1
               break
              else
-               echo "ArgoCD sync $i/10"
+               echo "ArgoCD sync $i/5"
                sleep 40
              fi
           done
@@ -193,7 +193,7 @@ runs:
       - name: Wait Sync
         shell: bash
         run: |
-          #Wait. Espera la synchronizacion, esperan 30s, esperan 5 veces
+          #Wait. Espera la synchronizacion, esperan 40s, esperan 3 veces
           argoWait="argocd app wait ${{ steps.name.outputs.applicationName }} --health --operation --timeout 30"
           for i in {1..3}
           do
