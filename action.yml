@@ -1,92 +1,173 @@
-name: 'Orleans build y push'
-description: 'Build y push de imagen de docker'
+name: "Build Android"
+description: "Unique step to Build Android"
 inputs:
-  ACR_USERNAME:
-    description: "user de acr"
-    required: true
-    default: ''
-  ACR_PASSWORD:
-    description: "passwrd de acr"
-    required: true
-    default: ''
-  ACR_NAME:
-    description: "nommbre del acr"
-    required: true
-    default: ''
-  ACR_FULL_NAME:
-    description: "nombre del acr con azurecr.io"
-    required: true
-    default: ''
+  # App
   appName:
     description: "Nombre de la aplicacion (dentro del proyecto)"
     required: true
-    default: orleans-grain
-  teamProject:
-    description: "Nombre del proyecto/equipo"
-    required: true
-    default: qa
   appVersion:
     description: "tag para subir imagen"
     required: true
-    default: latest
-  matrix_deploy:
-    description: "deploy en multiples ambientes"
+  environment:
+    description: "nombre de environment"
     required: false
-    default: "[]"
+    default: ""
+  isProd:
+    description: "si es produccion"
+    required: false
+    default: "false"
+  # Build React
+  matrix_version:
+    description: "matrix de pruebas node"
+    required: true
+  fontawesome_token:
+    description: "token de fontawesome"
+    required: false
+    default: ""
+  packages_token:
+    description: "token github para autenticarse en packages"
+    required: false
+    default: ""
+  # Build Android
+  java_version: 
+    description: "version de java para build"
+    required: false
+    default: "17"
+  command:
+    description: "comando a ejecutar la build"
+    required: false
+    default: "./gradlew assembleRelease bundleRelease --no-daemon"
+  ANDROID_KEYSTORE_PASSWORD:
+    description: "password del keystore"
+    required: true
+  ANDROID_KEY_ALIAS:
+    description: "alias del keystore"
+    required: true
+  ANDROID_KEYSTORE:
+    description: "keystore"
+    required: true
 
+outputs:
+  name_environment:
+    description: "Nombre del environment"
+    value: ${{ steps.setOutputs.outputs.environment }}
+  artifact_name:
+    description: "URL del environment"
+    value: ${{ steps.setOutputs.outputs.artifact_name }}
 
 runs:
   using: "composite"
   steps:
-      - name: Generate Docker Tags
-        id: tags
-        uses: actions/github-script@v7
-        with:
-          script: |
-            let tags = [];
-            let matrix_deploy = ${{ inputs.matrix_deploy }};
-            if (matrix_deploy.length > 0) {
-              matrix_deploy.forEach(deploy => {
-                let tag = `${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}-${deploy}:${{ inputs.appVersion}}`
-                tags.push(tag);
-              });
-            } else {
-              tags.push(`${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}`);
-            }
+    - run: echo Deploy ${{ inputs.environment }}
+      shell: bash
 
-            return tags.join('\n');
-          result-encoding: string
-        # Setup .NET Core SDK
-      - name: checkout
-        uses: actions/checkout@v3.5.0 #actions/checkout@v2
-        with:
-          fetch-depth: 0
-# Se debe sacar si se utiliza la estrategia de RH
-      - name: setear docker
-        uses: docker/setup-buildx-action@v3
-        with:
-            install: true
-      - name: Run a multi-line script
-        shell: bash
-        run: |-
-          echo  ${{ inputs.ACR_USERNAME }}
-          echo ${{ inputs.ACR_PASSWORD }}
-          echo ${{inputs.teamProject}}-${{inputs.appName}}
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
-      - name: Login to Azure Container Registry
-        uses: azure/docker-login@v1
-        with:
-          login-server: ${{ inputs.ACR_NAME }}.azurecr.io 
-          username: ${{ inputs.ACR_USERNAME }}
-          password: ${{ inputs.ACR_PASSWORD }}
+    - name: Set Outputs
+      id: setOutputs
+      shell: bash
+      run: |
+        echo "environment=${{ inputs.environment }}" >> $GITHUB_OUTPUT
+        echo "artifact_name=${{ inputs.appName }}-${{ inputs.environment }}" >> $GITHUB_OUTPUT
+        # si es prod el nombre se mantiene, si no es prod se le agrega el environment
+        if [ "${{ inputs.isProd }}" == "false" ]; then
+          echo "internal_name=[${{ inputs.environment }}] ${{ inputs.appName }}" >> $GITHUB_OUTPUT
+        else
+          echo "internal_name=${{ inputs.appName }}" >> $GITHUB_OUTPUT
+        fi
 
-      - name: Build and push
-        uses: docker/build-push-action@v5
-        with:
-          context: . 
-          file: Dockerfile 
-          push: true
-          tags: |
-            ${{ steps.tags.outputs.result }}
+    - name: Set up JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'microsoft' # See 'Supported distributions' for available options
+        java-version: ${{ inputs.java_version }}
 
+    - uses: architecture-it/actions@react-base-library
+      with:
+        matrix_version: ${{ inputs.matrix_version }}
+        # secrets enabled in all organizations
+        packages_token: ${{ inputs.packages_token }}
+        fontawesome_token: ${{ inputs.fontawesome_token }}
 
+    - name: Cache Gradle Wrapper
+      uses: actions/cache@v2
+      with:
+        path: ~/.gradle/wrapper
+        key: ${{ runner.os }}-gradle-wrapper-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+    - name: Cache Gradle Dependencies
+      uses: actions/cache@v2
+      with:
+        path: ~/.gradle/caches
+        key: ${{ runner.os }}-gradle-caches-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-caches-
+
+    - name: Bump version
+      uses: chkfung/android-version-actions@v1.2.3
+      with:
+        gradlePath: android/app/build.gradle # or app/build.gradle.kts
+        versionName: ${{ inputs.appVersion }} 
+        versionCode: ${{ github.run_number }}
+
+    - name: Make Gradlew Executable
+      run: cd android && chmod +x ./gradlew
+      shell: bash
+
+    - name: Build Android Release
+      env:
+          ENVFILE: .env.${{ inputs.environment }}
+          APP_SUFFIX: ${{ inputs.environment }}
+          APP_NAME: ${{ steps.setOutputs.outputs.internal_name }}
+      shell: bash
+      run: |
+        cd android && ${{ inputs.command }}
+      
+    - run: cd android && ls -la app/build/outputs/apk/release
+      shell: bash
+
+    - name: Setup build tool version variable
+      shell: bash
+      run: |
+        BUILD_TOOL_VERSION=$(ls /usr/local/lib/android/sdk/build-tools/ | tail -n 1)
+        echo "BUILD_TOOL_VERSION=$BUILD_TOOL_VERSION" >> $GITHUB_ENV
+        echo Last build tool version is: $BUILD_TOOL_VERSION
+
+    - name: Sign app APK
+      uses: r0adkll/sign-android-release@v1
+      id: sign_app
+      with:
+        releaseDirectory: android/app/build/outputs/apk/release
+        signingKeyBase64: ${{ inputs.ANDROID_KEYSTORE }}
+        alias: ${{ inputs.ANDROID_KEY_ALIAS }}
+        keyStorePassword: ${{ inputs.ANDROID_KEYSTORE_PASSWORD }}
+      env:
+        BUILD_TOOLS_VERSION: ${{ env.BUILD_TOOL_VERSION }}
+
+    # Upload to Artifact
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.setOutputs.outputs.artifact_name }}
+        path: ${{steps.sign_app.outputs.signedReleaseFile}}
+        
+    - name: Sign app APK
+      uses: r0adkll/sign-android-release@v1
+      id: sign_app_aab
+      with:
+        releaseDirectory: android/app/build/outputs/bundle/release
+        signingKeyBase64: ${{ inputs.ANDROID_KEYSTORE }}
+        alias: ${{ inputs.ANDROID_KEY_ALIAS }}
+        keyStorePassword: ${{ inputs.ANDROID_KEYSTORE_PASSWORD }}
+      env:
+        BUILD_TOOLS_VERSION: ${{ env.BUILD_TOOL_VERSION }}
+
+    # Upload to Artifact
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.setOutputs.outputs.artifact_name }}.aab
+        path: ${{steps.sign_app_aab.outputs.signedReleaseFile}}
