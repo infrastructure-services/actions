@@ -1,34 +1,27 @@
-name: 'Orleans build y push'
+name: 'Generic Build and Push'
 description: 'Build y push de imagen de docker'
 inputs:
   ACR_USERNAME:
     description: "user de acr"
     required: true
-    default: ''
   ACR_PASSWORD:
-    description: "passwrd de acr"
+    description: "password de acr"
     required: true
-    default: ''
   ACR_NAME:
-    description: "nommbre del acr"
+    description: "nombre del acr"
     required: true
-    default: ''
   ACR_FULL_NAME:
     description: "nombre del acr con azurecr.io"
     required: true
-    default: ''
   appName:
     description: "Nombre de la aplicacion (dentro del proyecto)"
     required: true
-    default: orleans-grain
   teamProject:
     description: "Nombre del proyecto/equipo"
     required: true
-    default: qa
   appVersion:
     description: "tag para subir imagen"
     required: true
-    default: latest
   matrix_deploy:
     description: "deploy en multiples ambientes"
     required: false
@@ -58,7 +51,7 @@ runs:
           result-encoding: string
         # Setup .NET Core SDK
       - name: checkout
-        uses: actions/checkout@v3.5.0 #actions/checkout@v2
+        uses: actions/checkout@v3.5.0
         with:
           fetch-depth: 0
 # Se debe sacar si se utiliza la estrategia de RH
