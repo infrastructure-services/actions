@@ -82,10 +82,29 @@ runs:
         echo 'key: |' >> values.yaml
         echo -e "${{inputs.APPS_KEY_CERTIFICATE}}" |  sed 's/^/    /' >> values.yaml
         echo 'name: ${{inputs.teamProject}}-${{inputs.appName}}' >> Chart.yaml
+
+    # - name: add secrets to existent to values.yaml to add Azure Key Vault Credentials to the values.yaml
+    #   uses: actions/github-script@v7
+    #   id: script 
+    #   with:
+    #     script: |
+    #       const fs = require('fs');
+    #       const yaml = require('js-yaml');
+    #       const path = require('path');
+    #       const values = yaml.safeLoad(fs.readFileSync(valuesPath, 'utf8'));
+
+    #       values.secrets.AZURE_CLIENT_ID = '${{ secrets.AZURE_CLIENT_ID }}';
+    #       values.secrets.AZURE_CLIENT_SECRET = '${{ secrets.AZURE_CLIENT_SECRET }}';
+    #       values.secrets.AZURE_TENANT_ID = '${{ secrets.AZURE_TENANT_ID }}';
+    #       values.secrets.AZURE_KEYVAULT_NAME = '${{ secrets.AZURE_KEYVAULT_NAME }}';
+
+    #       fs.writeFileSync(valuesPath, yaml.dump(values));
         
-    - name: show values
-      shell: bash
-      run: cat values.yaml
+        
+        
+    # # - name: show values
+    # #   shell: bash
+    # #   run: cat values.yaml
 
     - name: show Chart
       shell: bash
