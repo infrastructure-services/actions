@@ -37,6 +37,24 @@ inputs:
   teamProject:
     description: "Nombre del proyecto/equipo"
     required: true
+
+  AZURE_KEYVAULT_NAME:
+    description: "Nombre del keyvault"
+    required: true
+    default: "solucioneshw"
+  AZURE_KEYVAULT_TENANT:
+    description: "Tenant del keyvault"
+    required: false
+    default: "2815c130-391b-4383-8743-e3413f343e08"
+  AZURE_KEYVAULT_CLIENT_ID:
+    description: "Client ID del keyvault"
+    required: true
+  AZURE_KEYVAULT_SECRET:
+    description: "Secret del keyvault"
+    required: true
+  
+
+
 runs:
   using: "composite"
   steps:
@@ -93,18 +111,13 @@ runs:
     #       const path = require('path');
     #       const values = yaml.safeLoad(fs.readFileSync(valuesPath, 'utf8'));
 
-    #       values.secrets.AZURE_CLIENT_ID = '${{ secrets.AZURE_CLIENT_ID }}';
-    #       values.secrets.AZURE_CLIENT_SECRET = '${{ secrets.AZURE_CLIENT_SECRET }}';
-    #       values.secrets.AZURE_TENANT_ID = '${{ secrets.AZURE_TENANT_ID }}';
-    #       values.secrets.AZURE_KEYVAULT_NAME = '${{ secrets.AZURE_KEYVAULT_NAME }}';
+    #       values.secrets.AZURE_KEYVAULT_NAME = '${{ inputs.AZURE_KEYVAULT_NAME }}';
+    #       values.secrets.AZURE_KEYVAULT_TENANT = '${{ inputs.AZURE_KEYVAULT_TENANT }}';
+    #       values.secrets.AZURE_KEYVAULT_CLIENT_ID = '${{ inputs.AZURE_KEYVAULT_CLIENT_ID }}';
+    #       values.secrets.AZURE_KEYVAULT_SECRET = '${{ inputs.AZURE_KEYVAULT_NAME }}';
 
     #       fs.writeFileSync(valuesPath, yaml.dump(values));
         
-        
-        
-    # # - name: show values
-    # #   shell: bash
-    # #   run: cat values.yaml
 
     - name: show Chart
       shell: bash
