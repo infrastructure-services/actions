@@ -101,24 +101,11 @@ runs:
         echo -e "${{inputs.APPS_KEY_CERTIFICATE}}" |  sed 's/^/    /' >> values.yaml
         echo 'name: ${{inputs.teamProject}}-${{inputs.appName}}' >> Chart.yaml
 
-    # - name: add secrets to existent to values.yaml to add Azure Key Vault Credentials to the values.yaml
-    #   uses: actions/github-script@v7
-    #   id: script 
-    #   with:
-    #     script: |
-    #       const fs = require('fs');
-    #       const yaml = require('js-yaml');
-    #       const path = require('path');
-    #       const values = yaml.safeLoad(fs.readFileSync(valuesPath, 'utf8'));
-
-    #       values.secrets.AZURE_KEYVAULT_NAME = '${{ inputs.AZURE_KEYVAULT_NAME }}';
-    #       values.secrets.AZURE_KEYVAULT_TENANT = '${{ inputs.AZURE_KEYVAULT_TENANT }}';
-    #       values.secrets.AZURE_KEYVAULT_CLIENT_ID = '${{ inputs.AZURE_KEYVAULT_CLIENT_ID }}';
-    #       values.secrets.AZURE_KEYVAULT_SECRET = '${{ inputs.AZURE_KEYVAULT_NAME }}';
-
-    #       fs.writeFileSync(valuesPath, yaml.dump(values));
-        
-
+        sed -i '/replicacontroller:/i \  AZURE_KEYVAULT_NAME: ${{ inputs.AZURE_KEYVAULT_NAME }}' values.yaml
+        sed -i '/replicacontroller:/i \  AZURE_KEYVAULT_TENANT: ${{ inputs.AZURE_KEYVAULT_TENANT }}' values.yaml
+        sed -i '/replicacontroller:/i \  AZURE_KEYVAULT_CLIENT_ID: ${{ inputs.AZURE_KEYVAULT_CLIENT_ID }}' values.yaml
+        sed -i '/replicacontroller:/i \  AZURE_KEYVAULT_SECRET: ${{ inputs.AZURE_KEYVAULT_SECRET }}' values.yaml
+    # Insert the secrets before the replicacontroller section
     - name: show Chart
       shell: bash
       run: cat Chart.yaml
