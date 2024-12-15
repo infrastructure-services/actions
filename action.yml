@@ -102,7 +102,7 @@ runs:
         echo 'name: ${{inputs.teamProject}}-${{inputs.appName}}' >> Chart.yaml
 
         # Create a temporary file with the secrets
-        echo "  AZURE_KEYVAULT_NAME: ${{ inputs.AZURE_KEYVAULT_NAME }}" > temp_secrets.yaml
+        echo "  AZURE_KEYVAULT_NAME: ${{ inputs.AZURE_KEYVAULT_NAME }}" >> temp_secrets.yaml
         echo "  AZURE_KEYVAULT_TENANT: ${{ inputs.AZURE_KEYVAULT_TENANT }}" >> temp_secrets.yaml
         echo "  AZURE_KEYVAULT_CLIENT_ID: ${{ inputs.AZURE_KEYVAULT_CLIENT_ID }}" >> temp_secrets.yaml
         echo "  AZURE_KEYVAULT_SECRET: ${{ inputs.AZURE_KEYVAULT_SECRET }}" >> temp_secrets.yaml
