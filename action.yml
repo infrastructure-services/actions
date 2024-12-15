@@ -100,10 +100,10 @@ runs:
         echo 'key: |' >> values.yaml
         echo -e "${{inputs.APPS_KEY_CERTIFICATE}}" |  sed 's/^/    /' >> values.yaml
         echo 'name: ${{inputs.teamProject}}-${{inputs.appName}}' >> Chart.yaml
-        sed -i '/replicacontroller:/i \  AZURE_KEYVAULT_NAME: ${AZURE_KEYVAULT_NAME}' values.yaml
-        sed -i '/replicacontroller:/i \  AZURE_KEYVAULT_TENANT: ${AZURE_KEYVAULT_TENANT}' values.yaml
-        sed -i '/replicacontroller:/i \  AZURE_KEYVAULT_CLIENT_ID: ${AZURE_KEYVAULT_CLIENT_ID}' values.yaml
-        sed -i '/replicacontroller:/i \  AZURE_KEYVAULT_SECRET: ${AZURE_KEYVAULT_SECRET}' values.yaml
+        sed -i "/replicacontroller:/i \  AZURE_KEYVAULT_NAME: ${AZURE_KEYVAULT_NAME}" values.yaml
+        sed -i "/replicacontroller:/i \  AZURE_KEYVAULT_TENANT: ${AZURE_KEYVAULT_TENANT}" values.yaml
+        sed -i "/replicacontroller:/i \  AZURE_KEYVAULT_CLIENT_ID: ${AZURE_KEYVAULT_CLIENT_ID}" values.yaml
+        sed -i "/replicacontroller:/i \  AZURE_KEYVAULT_SECRET: ${AZURE_KEYVAULT_SECRET}" values.yaml
       env: 
         AZURE_KEYVAULT_CLIENT_ID: ${{ inputs.AZURE_KEYVAULT_CLIENT_ID }}
         AZURE_KEYVAULT_SECRET: ${{ inputs.AZURE_KEYVAULT_SECRET }}
