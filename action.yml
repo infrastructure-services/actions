@@ -106,9 +106,9 @@ runs:
         sed -i '/replicacontroller:/i \  AZURE_KEYVAULT_CLIENT_ID: ${{ inputs.AZURE_KEYVAULT_CLIENT_ID }}' values.yaml
         sed -i '/replicacontroller:/i \  AZURE_KEYVAULT_SECRET: ${{ inputs.AZURE_KEYVAULT_SECRET }}' values.yaml
     # Insert the secrets before the replicacontroller section
-    - name: show Chart
+    - name: show Chart and values
       shell: bash
-      run: cat Chart.yaml
+      run: cat Chart.yaml && cat values.yaml
 
     - name: Archive values yaml
       uses: actions/upload-artifact@v3
