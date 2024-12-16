@@ -111,10 +111,10 @@ runs:
         sed -i "/  secret:/i \    AZURE_KEYVAULT_CLIENT_ID: ${AZURE_KEYVAULT_CLIENT_ID}" values.yaml
         sed -i "/  secret:/i \    AZURE_KEYVAULT_SECRET: ${AZURE_KEYVAULT_SECRET}" values.yaml
 
-        sed -i "/replicacontroller:/i \  AZURE_KEYVAULT_NAME: ${AZURE_KEYVAULT_NAME}" values.yaml
-        sed -i "/replicacontroller:/i \  AZURE_KEYVAULT_TENANT: ${AZURE_KEYVAULT_TENANT}" values.yaml
-        sed -i "/replicacontroller:/i \  AZURE_KEYVAULT_CLIENT_ID: ${AZURE_KEYVAULT_CLIENT_ID}" values.yaml
-        sed -i "/replicacontroller:/i \  AZURE_KEYVAULT_SECRET: ${AZURE_KEYVAULT_SECRET}" values.yaml
+        sed -i "/replicacontroller:/i \    AZURE_KEYVAULT_NAME: ${AZURE_KEYVAULT_NAME}" values.yaml
+        sed -i "/replicacontroller:/i \    AZURE_KEYVAULT_TENANT: ${AZURE_KEYVAULT_TENANT}" values.yaml
+        sed -i "/replicacontroller:/i \    AZURE_KEYVAULT_CLIENT_ID: ${AZURE_KEYVAULT_CLIENT_ID}" values.yaml
+        sed -i "/replicacontroller:/i \    AZURE_KEYVAULT_SECRET: ${AZURE_KEYVAULT_SECRET}" values.yaml
     # Insert the secrets before the replicacontroller section
     - name: show Chart
       shell: bash
