@@ -1,4 +1,6 @@
 name: 'Generate values.yaml'
+description: 'Genera el archivo values.yaml para el despliegue de una aplicacion en ARO'
+
 inputs:
   APPS_CERTIFICATE:
     description: "Certificado para el dominio de apps en ARO"
@@ -41,17 +43,19 @@ inputs:
   AZURE_KEYVAULT_NAME:
     description: "Nombre del keyvault"
     required: true
-    default: "solucioneshw"
+    default: ""
   AZURE_KEYVAULT_TENANT:
     description: "Tenant del keyvault"
     required: false
-    default: "2815c130-391b-4383-8743-e3413f343e08"
+    default: ""
   AZURE_KEYVAULT_CLIENT_ID:
     description: "Client ID del keyvault"
-    required: true
+    required: false
+    default: ""
   AZURE_KEYVAULT_SECRET:
     description: "Secret del keyvault"
-    required: true
+    required: false
+    default: ""
   
 
 
@@ -88,11 +92,6 @@ runs:
     
     - name: Helm customizer le agregan valores al values
       shell: bash
-      env: 
-        AZURE_KEYVAULT_CLIENT_ID: ${{ inputs.AZURE_KEYVAULT_CLIENT_ID }}
-        AZURE_KEYVAULT_SECRET: ${{ inputs.AZURE_KEYVAULT_SECRET }}
-        AZURE_KEYVAULT_NAME: ${{ inputs.AZURE_KEYVAULT_NAME }}
-        AZURE_KEYVAULT_TENANT: ${{ inputs.AZURE_KEYVAULT_TENANT }}
       run: |-
         echo -e 'cluster:\n  fqdn: ${{ inputs.clusterFqdn}}' >> values.yaml
         ls
@@ -106,18 +105,23 @@ runs:
         echo -e "${{inputs.APPS_KEY_CERTIFICATE}}" |  sed 's/^/    /' >> values.yaml
         echo 'name: ${{inputs.teamProject}}-${{inputs.appName}}' >> Chart.yaml
 
+    - name: Inject Azure Key Vault if exists
+      shell: bash
+      env: 
+        AZURE_KEYVAULT_CLIENT_ID: ${{ inputs.AZURE_KEYVAULT_CLIENT_ID }}
+        AZURE_KEYVAULT_SECRET: ${{ inputs.AZURE_KEYVAULT_SECRET }}
+        AZURE_KEYVAULT_NAME: ${{ inputs.AZURE_KEYVAULT_NAME }}
+        AZURE_KEYVAULT_TENANT: ${{ inputs.AZURE_KEYVAULT_TENANT }}
+      if: ${{ inputs.AZURE_KEYVAULT_NAME != '' && inputs.AZURE_KEYVAULT_TENANT != '' && inputs.AZURE_KEYVAULT_CLIENT_ID != '' && inputs.AZURE_KEYVAULT_SECRET != '' }}
+      run: |
         sed -i "/replicacontroller:/i \    AzureKeyVault__Name: ${AZURE_KEYVAULT_NAME}" values.yaml
         sed -i "/replicacontroller:/i \    AzureKeyVault__TenantId: ${AZURE_KEYVAULT_TENANT}" values.yaml
         sed -i "/replicacontroller:/i \    AzureKeyVault__ClientId: ${AZURE_KEYVAULT_CLIENT_ID}" values.yaml
         sed -i "/replicacontroller:/i \    AzureKeyVault__ClientSecret: ${AZURE_KEYVAULT_SECRET}" values.yaml
-    # Insert the secrets before the replicacontroller section
-    - name: show Chart
-      shell: bash
-      run: cat Chart.yaml
 
-    - name: show values
+    - name: show Chart and Values
       shell: bash
-      run: cat values.yaml
+      run: cat Chart.yaml && cat values.yaml
 
     - name: Archive values yaml
       uses: actions/upload-artifact@v3
