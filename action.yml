@@ -92,9 +92,10 @@ runs:
       run: cat Chart.yaml
 
     - name: Archive values yaml
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ${{inputs.appName}}-${{inputs.namespace}}
+        overwrite: true
         path: |
           values.yaml
           Chart.yaml
