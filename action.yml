@@ -1,27 +1,25 @@
 name: Build Lambda Node
 
-on:
-  workflow_call:
-    inputs:
-      aws-access-key-id: 
-        description: 'Id de la credencial de acceso de AWS'
-        required: true
-        type: string
+inputs:
+  aws-access-key-id: 
+    description: 'Id de la credencial de acceso de AWS'
+    required: true
+    type: string
 
-      aws-secret-access-key: 
-        description: 'Key de acceso a los secretos de AWS'
-        required: true
-        type: string
+  aws-secret-access-key: 
+    description: 'Key de acceso a los secretos de AWS'
+    required: true
+    type: string
 
-      aws-region: 
-        description: 'Región'
-        required: true
-        type: string
+  aws-region: 
+    description: 'Región'
+    required: true
+    type: string
 
-      lambda-name:
-        description: 'Nombre de la función'
-        required: true
-        type: string
+  lambda-name:
+    description: 'Nombre de la función'
+    required: true
+    type: string
     
 runs:
   using: "composite"
