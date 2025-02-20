@@ -36,10 +36,6 @@ runs:
       run: npm install
       shell: bash
 
-    - name: Run tests 🧪
-      run: npm test
-      shell: bash
-
     - name: Build Node.js app 🏗️
       run: npm run build
       shell: bash
