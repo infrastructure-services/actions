@@ -25,7 +25,7 @@ on:
     
 runs:
   using: "composite"
-    steps:
+  steps:
     - name: Checkout code 📥
       uses: actions/checkout@v4
 
@@ -36,12 +36,15 @@ runs:
 
     - name: Install dependencies 📦
       run: go mod tidy
+      shell: bash
 
     - name: Build the Go binary 🔨
       run: GOOS=linux GOARCH=amd64 go build -tags lambda.norpc -o bootstrap main.go
+      shell: bash
 
     - name: Zip the binary 🗜️
       run: zip main.zip bootstrap
+      shell: bash
 
     - name: Configure AWS credentials 🔐
       uses: aws-actions/configure-aws-credentials@v2
@@ -53,3 +56,4 @@ runs:
     - name: Deploy to AWS Lambda 🚀
       run: |
         aws lambda update-function-code --function-name ${{ inputs.lambda-name }} --zip-file fileb://main.zip
+      shell: bash
