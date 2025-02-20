@@ -1,4 +1,4 @@
-name: Build Lambda Go
+name: Build Lambda Node
 
 on:
   workflow_call:
@@ -25,23 +25,26 @@ on:
     
 runs:
   using: "composite"
-    steps:
+  steps:
     - name: Checkout code 📥
       uses: actions/checkout@v4
 
-    - name: Set up Go 🛠
-      uses: actions/setup-go@v4
+    - name: Set up Node.js 🛠
+      uses: actions/setup-node@v4
       with:
-        go-version: '1.22'
+        node-version: '20'
 
     - name: Install dependencies 📦
-      run: go mod tidy
+      run: npm install
 
-    - name: Build the Go binary 🔨
-      run: GOOS=linux GOARCH=amd64 go build -tags lambda.norpc -o bootstrap main.go
+    - name: Run tests 🧪
+      run: npm test
 
-    - name: Zip the binary 🗜️
-      run: zip main.zip bootstrap
+    - name: Build Node.js app 🏗️
+      run: npm run build
+
+    - name: Package app 📦
+      run: zip -r main.zip ./
 
     - name: Configure AWS credentials 🔐
       uses: aws-actions/configure-aws-credentials@v2
@@ -53,3 +56,6 @@ runs:
     - name: Deploy to AWS Lambda 🚀
       run: |
         aws lambda update-function-code --function-name ${{ inputs.lambda-name }} --zip-file fileb://main.zip
+
+
+#Puedo clavar el deploy  ahorro subir y bajar el artefacto 
