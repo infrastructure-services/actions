@@ -1,60 +1,55 @@
-name: 'Restart Service'
+name: Build Lambda Go
 
-inputs:
-  appName:
-    description: "Nombre de la aplicacion (dentro del proyecto)"
-    required: true
-  restartMotive:
-    description: "Motivo del Restart"
-    required: true
-  ARGO_USERNAME:
-    description: "usuario de ARgocd"
-    required: true
-  ARGO_PASSWORD:
-    description: "pass de ARgocd"
-    required: true
-  ARGO_URL:
-    description: "url de ARgocd"
-    required: true
-  projectName:
-    description: "nombre de namespaces"
-    required: true
-    default: ""
-  environmentName:
-    description: "Ambiente"
-    required: true
-    default: ""
-  instance:
-    description: 'Instancia (Solo el sufijo)'
-    required: true
+on:
+  workflow_call:
+    inputs:
+      aws-access-key-id: 
+        description: 'Id de la credencial de acceso de AWS'
+        required: true
+        type: string
+
+      aws-secret-access-key: 
+        description: 'Key de acceso a los secretos de AWS'
+        required: true
+        type: string
+
+      aws-region: 
+        description: 'Región'
+        required: true
+        type: string
+
+      lambda-name:
+        description: 'Nombre de la función'
+        required: true
+        type: string
+    
 runs:
   using: "composite"
-  steps:
-    - name: Start
-      shell: bash
-      run: |-
-        echo "Comenzando a reiniciar el servicio instancia: ${{ inputs.instance }}."
-        echo "----------------------------------------"
-        echo ::notice::Motivo: ${{ inputs.restartMotive }}
-        echo "----------------------------------------"
-    - name: ArgoCD Login
-      shell: bash
-      run: |-
-        echo "Login a ArgoCD"
-        argocd login --username ${{ inputs.ARGO_USERNAME }} --password ${{ inputs.ARGO_PASSWORD }} --insecure ${{inputs.ARGO_URL}} --grpc-web
-    - name: Restart Process
-      shell: bash
-      run: |-
-        echo "Restarting Service"
-        argocd app actions run ${{ inputs.projectName }}-${{ inputs.appName }}-${{ inputs.instance }}-${{ inputs.environmentName }} restart --kind Deployment
-    - name: Wait
-      shell: bash
-      run: |-
-        echo "Esperando que se estabilice"
-        echo "----------------------------------------"
-        argocd app wait ${{ inputs.projectName }}-${{ inputs.appName }}-${{ inputs.instance }}-${{ inputs.environmentName }} --health --operation --timeout 30
-    - name: End
-      shell: bash
-      run: |-
-        echo "El servicio o app ha sido reiniciado"
-        echo "----------------------------------------"
+    steps:
+    - name: Checkout code 📥
+      uses: actions/checkout@v4
+
+    - name: Set up Go 🛠
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.22'
+
+    - name: Install dependencies 📦
+      run: go mod tidy
+
+    - name: Build the Go binary 🔨
+      run: GOOS=linux GOARCH=amd64 go build -tags lambda.norpc -o bootstrap main.go
+
+    - name: Zip the binary 🗜️
+      run: zip main.zip bootstrap
+
+    - name: Configure AWS credentials 🔐
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ inputs.aws-access-key-id }}
+        aws-secret-access-key: ${{ inputs.aws-secret-access-key }}
+        aws-region: ${{ inputs.aws-region }}
+
+    - name: Deploy to AWS Lambda 🚀
+      run: |
+        aws lambda update-function-code --function-name ${{ inputs.lambda-name }} --zip-file fileb://main.zip
