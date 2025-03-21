@@ -49,7 +49,17 @@ runs:
       run: |-
         echo "Esperando que se estabilice"
         echo "----------------------------------------"
-        argocd app wait ${{ inputs.projectName }}-${{ inputs.appName }}-${{ inputs.environmentName }} --health --operation --timeout 30
+        argoWait="argocd app wait ${{ inputs.projectName }}-${{ inputs.appName }}-${{ inputs.environmentName }} --health --operation --timeout 30"
+          for i in {1..3}
+          do
+          if eval "$argoWait"; then
+                echo "Estabilizado OK"
+                break
+            else
+                echo "Seguimos esperando $i/3"
+                sleep 60
+            fi
+          done
     - name: End
       shell: bash
       run: |-
