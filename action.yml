@@ -38,7 +38,7 @@ runs:
       shell: bash
       run: |-
         echo "Login a ArgoCD"
-        argocd login --username ${{ inputs.ARGO_USERNAME }} --password ${{ inputs.ARGO_PASSWORD }} --insecure ${{inputs.ARGO_URL}} --grpc-web
+        argocd login --username ${{ inputs.ARGO_USERNAME }} --password ${{ inputs.ARGO_PASSWORD }} --insecure ${{inputs.ARGO_URL}} --grpc-web --skip-test-tls
     - name: Restart Process
       shell: bash
       run: |-
