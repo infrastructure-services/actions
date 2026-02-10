@@ -2,9 +2,7 @@ name: 'Instalar Dependencias'
 description: 'Asegura que estén instalados yq, wget y jq'
 
 runs:
-
   steps:
-
     - name: Instalando Dependencias
       shell: bash
       run: |-
