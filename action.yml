@@ -1,136 +1,23 @@
-name: 'Generate values.yaml'
-description: 'Genera el archivo values.yaml para el despliegue de una aplicacion en ARO'
-
-inputs:
-  APPS_CERTIFICATE:
-    description: "Certificado para el dominio de apps en ARO"
-    required: true
-  APPS_CA_CERTIFICATE:
-    description: "Certificado de la CA"
-    required: true
-  APPS_KEY_CERTIFICATE:
-    description: "Certificado ARO Key"
-    required: true
-  GITHUB_HELMREPO_TOKEN:
-    description: "Token para descargar el codigo de templates HELM"
-    required: true
-  helmRepo:
-    description: "Repositorio de helm"
-    required: false
-    default: "infrastructure-services/poc-orleans"
-  helmRepoRef:
-    description: "Ref del repositorio de Helm"
-    required: false
-    default: "main"
-  appName:
-    description: "Nombre de la aplicacion (dentro del proyecto)"
-    required: true
-    default: orleans-grain
-  namespace:
-    description: "nombre de namespaces"
-    required: false
-    default: ""
-  clusterFqdn:
-     description: "FQDN para pasarle a helm"
-     required: true
-  fileValuesPath:
-    description: "path archivo de values.yaml"
-    required: true
-  teamProject:
-    description: "Nombre del proyecto/equipo"
-    required: true
-
-  AZURE_KEYVAULT_NAME:
-    description: "Nombre del keyvault"
-    required: true
-    default: ""
-  AZURE_KEYVAULT_TENANT:
-    description: "Tenant del keyvault"
-    required: false
-    default: ""
-  AZURE_KEYVAULT_CLIENT_ID:
-    description: "Client ID del keyvault"
-    required: false
-    default: ""
-  AZURE_KEYVAULT_SECRET:
-    description: "Secret del keyvault"
-    required: false
-    default: ""
-  
-
+name: 'Instalar Dependencias'
+description: 'Asegura que estén instalados yq, wget y jq'
 
 runs:
-  using: "composite"
+
   steps:
-    - run: echo '🎁Generate values.yaml'
-      shell: bash
 
-    - name: Install Helm
-      uses: azure/setup-helm@v3
-      with:
-        version: v3.12.3 #Helm 13 tiene un bug
-        
-    - name: checkout codigo
-      uses: actions/checkout@v4 #actions/checkout@v2
-
-    - name: Copy values.yaml
+    - name: Instalando Dependencias
       shell: bash
       run: |-
-          ls ../
-          cp ${{ inputs.fileValuesPath }} ../values.yaml
-
-    - name: Checkout code helm templates
-      uses: actions/checkout@v4
-      with:
-        repository: ${{ inputs.helmRepo }}
-        ref: ${{ inputs.helmRepoRef }}
-        token: ${{ inputs.GITHUB_HELMREPO_TOKEN }}
-    
-    - name: Restore values.yaml
-      shell: bash
-      run: cp ../values.yaml values.yaml
-    
-    - name: Helm customizer le agregan valores al values
-      shell: bash
-      run: |-
-        echo -e 'cluster:\n  fqdn: ${{ inputs.clusterFqdn}}' >> values.yaml
-        ls
-        echo 'namespace: ${{inputs.namespace}}' >> values.yaml
-        echo 'appname: ${{inputs.appName}}' >> values.yaml
-        echo 'caCertificate: |' >> values.yaml
-        echo -e "${{inputs.APPS_CA_CERTIFICATE}}" | sed 's/^/    /' >> values.yaml
-        echo 'certificate: |' >> values.yaml
-        echo -e "${{inputs.APPS_CERTIFICATE}}" | sed 's/^/    /' >> values.yaml
-        echo 'key: |' >> values.yaml
-        echo -e "${{inputs.APPS_KEY_CERTIFICATE}}" |  sed 's/^/    /' >> values.yaml
-        echo 'name: ${{inputs.teamProject}}-${{inputs.appName}}' >> Chart.yaml
-
-    - name: Inject Azure Key Vault if exists
-      shell: bash
-      env: 
-        AZURE_KEYVAULT_CLIENT_ID: ${{ inputs.AZURE_KEYVAULT_CLIENT_ID }}
-        AZURE_KEYVAULT_SECRET: ${{ inputs.AZURE_KEYVAULT_SECRET }}
-        AZURE_KEYVAULT_NAME: ${{ inputs.AZURE_KEYVAULT_NAME }}
-        AZURE_KEYVAULT_TENANT: ${{ inputs.AZURE_KEYVAULT_TENANT }}
-      if: ${{ inputs.AZURE_KEYVAULT_NAME != '' && inputs.AZURE_KEYVAULT_TENANT != '' && inputs.AZURE_KEYVAULT_CLIENT_ID != '' && inputs.AZURE_KEYVAULT_SECRET != '' }}
-      run: |
-        sed -i "/replicacontroller:/i \    AzureKeyVault__Name: ${AZURE_KEYVAULT_NAME}" values.yaml
-        sed -i "/replicacontroller:/i \    AzureKeyVault__TenantId: ${AZURE_KEYVAULT_TENANT}" values.yaml
-        sed -i "/replicacontroller:/i \    AzureKeyVault__ClientId: ${AZURE_KEYVAULT_CLIENT_ID}" values.yaml
-        sed -i "/replicacontroller:/i \    AzureKeyVault__ClientSecret: ${AZURE_KEYVAULT_SECRET}" values.yaml
-
-    - name: show Chart and Values
-      shell: bash
-      run: cat Chart.yaml && cat values.yaml
-
-    - name: Archive values yaml
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{inputs.appName}}-${{inputs.namespace}}
-        overwrite: true
-        path: |
-          values.yaml
-          Chart.yaml
-          templates/
-
-
+          # Instalar dependencias una sola vez
+          if ! command -v jq &> /dev/null; then
+            if grep -qiE 'debian|ubuntu' /etc/os-release; then
+              sudo apt-get update -y && sudo apt-get install -y wget jq
+            elif grep -qiE 'rhel|fedora|centos' /etc/os-release; then
+              sudo yum install -y wget jq
+            fi
+          fi
+          
+          if ! command -v yq &> /dev/null; then
+            sudo wget -qO /usr/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+            sudo chmod a+x /usr/bin/yq
+          fi
