@@ -17,6 +17,7 @@ runs:
           fi
           
           if ! command -v yq &> /dev/null; then
+            sudo yum install -y wget
             sudo wget -qO /usr/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
             sudo chmod a+x /usr/bin/yq
           fi
