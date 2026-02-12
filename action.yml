@@ -73,37 +73,14 @@ runs:
             let tags = [];
             let matrix_deploy = ${{ inputs.matrix_deploy }};
             if (matrix_deploy.length > 0) {
-              if (${{ inputs.andreani }}) {
-                matrix_deploy.forEach(deploy => {
-                  let tag = `${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}-${deploy}:${{ inputs.appVersion}}`
-                  tags.push(tag);
-                });
-              }
-              if (${{ inputs.witwot }}) {
-                matrix_deploy.forEach(deploy => {
-                  let tag = `witwotcr.azurecr.io/${{inputs.teamProject}}-${{inputs.appName}}-${deploy}:${{ inputs.appVersion}}`
-                  tags.push(tag);
-                });
-              }
-              if (${{ inputs.hop }}) {
-                matrix_deploy.forEach(deploy => {
-                  let tag = `public.ecr.aws/hopenvios-sbx/${{inputs.teamProject}}-${{inputs.appName}}-${deploy}:${{ inputs.appVersion}}`
-                  tags.push(tag);
-                });
-              }              
-
+              matrix_deploy.forEach(deploy => {
+                let tag = `${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}-${deploy}:${{ inputs.appVersion}}`
+                tags.push(tag);
+              });
             } else {
-              if (${{ inputs.andreani }}) {
-                tags.push(`${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}`);
-                }
-              if (${{ inputs.hop }}) {
-                tags.push(`public.ecr.aws/hopenvios-sbx/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}`);
-                }
-              if (${{ inputs.witwot }}) {
-                tags.push(`witwotcr.azurecr.io/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}`);
-                }
+              tags.push(`${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}`);
             }
-
+            tags.push(`${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:ultima`);
             return tags.join('\n');
           result-encoding: string
 
@@ -132,13 +109,7 @@ runs:
           username: ${{ inputs.ACR_USERNAME }}
           password: ${{ inputs.ACR_PASSWORD }}
 
-      - name: Login to Azure Container Registry Witwot
-        if: ${{ inputs.witwot }}
-        uses: azure/docker-login@v1
-        with:
-          login-server: ${{ inputs.ACR_FULL_NAMEWW }}
-          username: ${{ inputs.ACR_USERNAMEWW }}
-          password: ${{ inputs.ACR_PASSWORDWW }}
+
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -149,4 +120,21 @@ runs:
           tags: |
             ${{ steps.tags.outputs.result }}
 
+      - name: Login to Azure Container Registry Witwot
+        if: ${{ inputs.witwot }}
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{ inputs.ACR_FULL_NAMEWW }}
+          username: ${{ inputs.ACR_USERNAMEWW }}
+          password: ${{ inputs.ACR_PASSWORDWW }}
 
+#tags.push(`witwotcr.azurecr.io/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}`);
+      - name: Push image to Azure Container Registry Witwot
+        if: ${{ inputs.witwot }}
+        shell: bash
+        run: |
+          docker buildx imagetools create \
+            --tag witwotcr.azurecr.io/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}} \
+            ${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:ultima
+
+#tags.push(`public.ecr.aws/hopenvios-sbx/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}`);
