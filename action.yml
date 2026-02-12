@@ -54,19 +54,19 @@ runs:
             let tags = [];
             let matrix_deploy = ${{ inputs.matrix_deploy }};
             if (matrix_deploy.length > 0) {
-              if (inputs.andreani) {
+              if (${{ inputs.andreani }}) {
                 matrix_deploy.forEach(deploy => {
                   let tag = `${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}-${deploy}:${{ inputs.appVersion}}`
                   tags.push(tag);
                 });
               }
-              if (inputs.witwot) {
+              if (${{ inputs.witwot }}) {
                 matrix_deploy.forEach(deploy => {
                   let tag = `witwotcr.azurecr.io/${{inputs.teamProject}}-${{inputs.appName}}-${deploy}:${{ inputs.appVersion}}`
                   tags.push(tag);
                 });
               }
-              if (inputs.hop) {
+              if (${{ inputs.hop }}) {
                 matrix_deploy.forEach(deploy => {
                   let tag = `public.ecr.aws/hopenvios-sbx/${{inputs.teamProject}}-${{inputs.appName}}-${deploy}:${{ inputs.appVersion}}`
                   tags.push(tag);
@@ -74,13 +74,13 @@ runs:
               }              
 
             } else {
-              if (inputs.andreani) {
+              if (${{ inputs.andreani }}) {
                 tags.push(`${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}`);
                 }
-              if (inputs.hop) {
+              if (${{ inputs.hop }}) {
                 tags.push(`public.ecr.aws/hopenvios-sbx/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}`);
                 }
-              if (inputs.witwot) {
+              if (${{ inputs.witwot }}) {
                 tags.push(`witwotcr.azurecr.io/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}`);
                 }
             }
