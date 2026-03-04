@@ -1,5 +1,5 @@
 name: Build Lambda Go
-
+description: 'build lambda go'
 
 inputs:
   aws-access-key-id: 
@@ -38,7 +38,7 @@ runs:
       shell: bash
 
     - name: Build the Go binary 🔨
-      run: GOOS=linux GOARCH=amd64 go build -tags lambda.norpc -o bootstrap main.go
+      run: GOOS=linux GOARCH=amd64 go build -tags lambda.norpc -o bootstrap .
       shell: bash
 
     - name: Zip the binary 🗜️
