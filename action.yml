@@ -1,4 +1,5 @@
 name: Build Lambda Node
+description: 'Build lambda Node'
 
 inputs:
   aws-access-key-id: 
@@ -36,8 +37,13 @@ runs:
       run: npm install
       shell: bash
 
-    - name: Zip the JavaScript file 🗜️
-      run: zip -r main.zip ./
+    - name: Create deployment package 🗜️
+      run: |
+        zip -r main.zip . \
+          -x "*.git*" \
+          -x "*.github*" \
+          -x "*.zip*" \
+          -x "node_modules/.cache/*"
       shell: bash
 
     - name: Configure AWS credentials 🔐
