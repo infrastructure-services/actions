@@ -62,6 +62,10 @@ runs:
       - name: Set up Docker Buildx
         id: buildx
         uses: docker/setup-buildx-action@v4
+        with:
+          #driver-opts: image=moby/buildkit:latest
+          #buildkitd-flags: --debug
+          name: mybuildxbuilder
             
       - name: Run a multi-line script
         shell: bash
@@ -83,7 +87,7 @@ runs:
           context: . 
           file: Dockerfile 
           push: true
-          builder: ${{ steps.buildx.outputs.name }}
+          builder: mybuildxbuilder
           tags: |
             ${{ steps.tags.outputs.result }}
 
