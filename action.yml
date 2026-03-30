@@ -33,7 +33,7 @@ runs:
   steps:
       - name: Generate Docker Tags
         id: tags
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             let tags = [];
