@@ -57,6 +57,7 @@ inputs:
     description: "deploy en multiples ambientes"
     required: false
     default: "[]"
+ 
   andreani:
     description: "Se pushea a la registry de Andreani"
     required: false
@@ -66,7 +67,7 @@ inputs:
     description: "Se pushea a la registry de Witwot"
     required: true
     type: boolean
-    default: true
+    default: false
   hop:
     description: "Se pushea a la registry de HOP"
     required: true
