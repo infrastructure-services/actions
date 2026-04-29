@@ -65,12 +65,12 @@ inputs:
     default: true
   witwot:
     description: "Se pushea a la registry de Witwot"
-    required: true
+    required: false
     type: boolean
     default: false
   hop:
     description: "Se pushea a la registry de HOP"
-    required: true
+    required: false
     type: boolean
     default: false
 
