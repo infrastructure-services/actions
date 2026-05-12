@@ -6,7 +6,7 @@ inputs:
     description: Personal o Group Access Token de GitLab (scope: api)
     required: true
   gitlab_url:
-    description: Host de GitLab sin protocolo (ej: gitlab.apps.ocptest.andreani.com.ar)
+    description: Host de GitLab sin protocolo (ej: gitlab.apps.andreani.com.ar)
     required: true
   repository:
     description: Repositorio en formato owner/repo (ej: infrastructure-services/devops-luana-api)
