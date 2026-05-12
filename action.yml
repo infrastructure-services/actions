@@ -80,8 +80,16 @@ runs:
     - name: Mirror a GitLab
       shell: bash
       run: |
-        git remote add gitlab \
-          https://oauth2:${{ inputs.gitlab_token }}@${{ inputs.gitlab_url }}/${{ inputs.repository }}.git || true
+        GITLAB_REMOTE_URL="https://oauth2:${{ inputs.gitlab_token }}@${{ inputs.gitlab_url }}/${{ inputs.repository }}.git"
+
+        # Si el remote ya existe, actualizar la URL; si no, crearlo
+        if git remote get-url gitlab &>/dev/null; then
+          echo "🔄 Remote gitlab ya existe, actualizando URL..."
+          git remote set-url gitlab "$GITLAB_REMOTE_URL"
+        else
+          echo "➕ Agregando remote gitlab..."
+          git remote add gitlab "$GITLAB_REMOTE_URL"
+        fi
 
         # Push de todas las branches
         git push gitlab --all --force
