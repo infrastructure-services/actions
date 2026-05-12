@@ -3,13 +3,13 @@ description: Crea el repo en GitLab si no existe y hace mirror de todas las bran
 
 inputs:
   gitlab_token:
-    description: Personal o Group Access Token de GitLab (scope: api)
+    description: "Personal o Group Access Token de GitLab (scope: api)"
     required: true
   gitlab_url:
-    description: Host de GitLab sin protocolo (ej: gitlab.apps.andreani.com.ar)
+    description: "Host de GitLab sin protocolo (ej: gitlab.apps.andreani.com.ar)"
     required: true
   repository:
-    description: Repositorio en formato owner/repo (ej: infrastructure-services/devops-luana-api)
+    description: "Repositorio en formato owner/repo (ej: infrastructure-services/devops-luana-api)"
     required: true
 
 runs:
