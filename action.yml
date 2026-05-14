@@ -134,7 +134,7 @@ runs:
           AWS_REGION: us-east-1
         shell: bash
         run: |
-          REPOSITORY_NAME="${{ inputs.PROJECT }}-${{ inputs.APPNAME }}"
+          REPOSITORY_NAME="${{ inputs.teamProject }}-${{ inputs.APPNAME }}"
           aws ecr-public describe-repositories --repository-names "$REPOSITORY_NAME" --region $AWS_REGION || \
           aws ecr-public create-repository --repository-name "$REPOSITORY_NAME" --region $AWS_REGION
           
