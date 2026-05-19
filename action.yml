@@ -116,7 +116,7 @@ runs:
       with:
         result-encoding: string
         script: |
-          cconst tags = [];
+          const tags = [];
 
           let matrixDeploy = [];
 
