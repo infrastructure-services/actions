@@ -116,7 +116,7 @@ runs:
       with:
         result-encoding: string
         script: |
-          const tags = [];
+          cconst tags = [];
 
           let matrixDeploy = [];
 
@@ -141,12 +141,16 @@ runs:
 
           } else {
 
-            tags.push(`${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${version});
+            tags.push(
+              `${registry}/${project}-${app}:${version}`
+            );
 
           }
 
           // tag interna
-          tags.push(`${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:ultima`);
+          tags.push(
+            `${registry}/${project}-${app}:ultima`
+          );
 
           console.log(tags);
 
