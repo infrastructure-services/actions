@@ -1,151 +1,289 @@
 name: 'Generic Build and Push'
-description: 'Build y push de imagen de docker'
+
+description: 'Build y push de imagen Docker'
+
 inputs:
+
+  #########################################################
+  # ACR
+  #########################################################
+
   ACR_USERNAME:
-    description: "user de acr"
+    description: "Usuario ACR"
     required: true
+
   ACR_PASSWORD:
-    description: "password de acr"
+    description: "Password ACR"
     required: true
+
   ACR_NAME:
-    description: "nombre del acr"
+    description: "Nombre del ACR"
     required: true
+
   ACR_FULL_NAME:
-    description: "nombre del acr con azurecr.io"
+    description: "Nombre completo del ACR"
     required: true
-  ACR_USERNAMEWW:
-    description: "user de acr"
-    required: false
-  ACR_PASSWORDWW:
-    description: "password de acr"
-    required: false
-  ACR_NAMEWW:
-    description: "nombre del acr"
-    required: false
-  ACR_FULL_NAMEWW:
-    description: "nombre del acr con azurecr.io"
-    required: false
+
+  #########################################################
+  # AWS ECR
+  #########################################################
+
   ECR_ID:
-    description: "user de acr"
-    required: false
-  ECR_PASSWORD:
-    description: "password de acr"
+    description: "AWS Access Key"
     required: false
 
+  ECR_PASSWORD:
+    description: "AWS Secret Key"
+    required: false
+
+  push_ecr:
+    description: "Push a AWS ECR Public"
+    required: false
+    default: "true"
+
+  #########################################################
+  # APP
+  #########################################################
+
   appName:
-    description: "Nombre de la aplicacion (dentro del proyecto)"
+    description: "Nombre de la aplicación"
     required: true
+
   teamProject:
     description: "Nombre del proyecto/equipo"
     required: true
+
   appVersion:
-    description: "tag para subir imagen"
+    description: "Tag de la imagen"
     required: true
+
+  #########################################################
+  # MATRIX DEPLOY
+  #########################################################
+
   matrix_deploy:
-    description: "deploy en multiples ambientes"
+    description: 'Nombre de las instancias '
     required: false
     default: "[]"
- 
-  andreani:
-    description: "Se pushea a la registry de Andreani"
-    required: false
-    type: boolean
-    default: true
-  witwot:
-    description: "Se pushea a la registry de Witwot"
-    required: false
-    type: boolean
-    default: false
-  hop:
-    description: "Se pushea a la registry de HOP"
-    required: false
-    type: boolean
-    default: false
 
+  #########################################################
+  # REGISTRIES
+  #########################################################
+
+  andreani:
+    description: "Push registry Andreani"
+    required: false
+    default: "true"
+
+  witwot:
+    description: "Push registry Witwot"
+    required: false
+    default: "false"
+
+  hop:
+    description: "Push registry HOP"
+    required: false
+    default: "false"
 
 runs:
   using: "composite"
+
   steps:
-      - name: Generate Docker Tags
-        id: tags
-        uses: actions/github-script@v7
-        with:
-          script: |
-            let tags = [];
-            let matrix_deploy = ${{ inputs.matrix_deploy }};
-            if (matrix_deploy.length > 0) {
-              matrix_deploy.forEach(deploy => {
-                let tag = `${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}-${deploy}:${{ inputs.appVersion}}`
-                tags.push(tag);
-              });
-            } else {
-              tags.push(`${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}`);
-            }
-            tags.push(`${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:ultima`);
-            return tags.join('\n');
-          result-encoding: string
 
-      - name: "Debug echos"
-        id: version
-        shell: bash
-        run: |
-              echo "Tags Creados"
-              echo "${{ steps.tags.outputs.result }}"
+    #########################################################
+    # CHECKOUT
+    #########################################################
 
+    - name: Checkout
+      uses: actions/checkout@v5
 
-      - name: checkout
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-      - name: setear docker
-        uses: docker/setup-buildx-action@v3
-        with:
-            install: true
-            
-      - name: Login to Azure Container Registry Andreani
-        if: ${{ inputs.andreani }}
-        uses: azure/docker-login@v1
-        with:
-          login-server: ${{ inputs.ACR_FULL_NAME }}
-          username: ${{ inputs.ACR_USERNAME }}
-          password: ${{ inputs.ACR_PASSWORD }}
+    #########################################################
+    # DOCKER BUILDX
+    #########################################################
 
+    - name: Setup Docker Buildx
+      uses: docker/setup-buildx-action@v3
 
+    #########################################################
+    # GENERATE TAGS
+    #########################################################
 
-      - name: Build and push
-        uses: docker/build-push-action@v5
-        with:
-          context: . 
-          file: Dockerfile 
-          push: true
-          tags: |
-            ${{ steps.tags.outputs.result }}
+    - name: Generate Docker Tags
+      id: tags
+      uses: actions/github-script@v7
+      env:
+        MATRIX_DEPLOY: ${{ inputs.matrix_deploy }}
+      with:
+        result-encoding: string
+        script: |
+          const tags = [];
 
+          let matrixDeploy = [];
 
-      - name: AWS Login to ECR
-        shell: bash
-        run: |
-          aws configure set aws_access_key_id ${{ inputs.ECR_ID }}
-          aws configure set aws_secret_access_key ${{ inputs.ECR_PASSWORD }}
-          aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws
+          try {
+            matrixDeploy = JSON.parse(process.env.MATRIX_DEPLOY || "[]");
+          } catch (e) {
+            console.log("matrix_deploy inválido");
+          }
 
-      - name: Ensure ECR Repository Exists
-        env:
-          AWS_REGION: us-east-1
-        shell: bash
-        run: |
-          REPOSITORY_NAME="${{ inputs.teamProject }}-${{ inputs.APPNAME }}"
-          aws ecr-public describe-repositories --repository-names "$REPOSITORY_NAME" --region $AWS_REGION || \
-          aws ecr-public create-repository --repository-name "$REPOSITORY_NAME" --region $AWS_REGION
-          
-          # Obtener el URI completo del repositorio público
-          REPOSITORY_URI=$(aws ecr-public describe-repositories --repository-names "$REPOSITORY_NAME" --region $AWS_REGION --query 'repositories[0].repositoryUri' --output text)
-          echo "REPOSITORY_URI=$REPOSITORY_URI" >> $GITHUB_ENV
-          
-      
-      - name: Push image to ECR
-        shell: bash
-        run: |
-          docker buildx imagetools create \
-            --tag ${REPOSITORY_URI}:${{ inputs.appVersion }} \
-            ${{ inputs.ACR_FULL_NAME }}/${{ inputs.teamProject }}-${{ inputs.appName }}:ultima
+          const registry = '${{ inputs.ACR_FULL_NAME }}';
+          const project = '${{ inputs.teamProject }}';
+          const app = '${{ inputs.appName }}';
+          const version = '${{ inputs.appVersion }}';
+
+          if (Array.isArray(matrixDeploy) && matrixDeploy.length > 0) {
+
+            matrixDeploy.forEach(deploy => {
+              tags.push(
+                `${registry}/${project}-${app}-${deploy}:${version}`
+              );
+            });
+
+          } else {
+
+            tags.push(
+              `${registry}/${project}-${app}:${version}`
+            );
+
+          }
+
+          // tag interna
+          tags.push(
+            `${registry}/${project}-${app}:ultima`
+          );
+
+          console.log(tags);
+
+          return tags.join('\n');
+
+    #########################################################
+    # DEBUG TAGS
+    #########################################################
+
+    - name: Show Tags
+      shell: bash
+      run: |
+        echo "Tags generados:"
+        echo "${{ steps.tags.outputs.result }}"
+
+    #########################################################
+    # LOGIN ACR
+    #########################################################
+
+    - name: Login ACR
+      if: ${{ inputs.andreani == 'true' }}
+      uses: azure/docker-login@v1
+      with:
+        login-server: ${{ inputs.ACR_FULL_NAME }}
+        username: ${{ inputs.ACR_USERNAME }}
+        password: ${{ inputs.ACR_PASSWORD }}
+
+    #########################################################
+    # BUILD + PUSH ACR
+    #########################################################
+
+    - name: Build and Push
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+
+        push: true
+
+        platforms: linux/amd64
+
+        tags: ${{ steps.tags.outputs.result }}
+
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+        labels: |
+          org.opencontainers.image.source=${{ github.repository }}
+          org.opencontainers.image.revision=${{ github.sha }}
+          org.opencontainers.image.version=${{ inputs.appVersion }}
+
+    #########################################################
+    # AWS CREDENTIALS
+    #########################################################
+
+    - name: Configure AWS Credentials
+      if: ${{ inputs.push_ecr == 'true' }}
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ inputs.ECR_ID }}
+        aws-secret-access-key: ${{ inputs.ECR_PASSWORD }}
+        aws-region: us-east-1
+
+    #########################################################
+    # LOGIN ECR
+    #########################################################
+
+    - name: Login ECR Public
+      if: ${{ inputs.push_ecr == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        aws ecr-public get-login-password --region us-east-1 \
+          | docker login \
+              --username AWS \
+              --password-stdin public.ecr.aws
+
+    #########################################################
+    # CREATE ECR REPO
+    #########################################################
+
+    - name: Ensure ECR Repository Exists
+      if: ${{ inputs.push_ecr == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        REPOSITORY_NAME="${{ inputs.teamProject }}-${{ inputs.appName }}"
+
+        aws ecr-public describe-repositories \
+          --repository-names "$REPOSITORY_NAME" \
+          --region us-east-1 >/dev/null 2>&1 || \
+        aws ecr-public create-repository \
+          --repository-name "$REPOSITORY_NAME" \
+          --region us-east-1
+
+        REPOSITORY_URI=$(aws ecr-public describe-repositories \
+          --repository-names "$REPOSITORY_NAME" \
+          --region us-east-1 \
+          --query 'repositories[0].repositoryUri' \
+          --output text)
+
+        echo "REPOSITORY_URI=$REPOSITORY_URI" >> $GITHUB_ENV
+
+    #########################################################
+    # PUSH ECR
+    #########################################################
+
+    - name: Push to ECR
+      if: ${{ inputs.push_ecr == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        SOURCE_IMAGE="${{ inputs.ACR_FULL_NAME }}/${{ inputs.teamProject }}-${{ inputs.appName }}:ultima"
+
+        TARGET_IMAGE="${REPOSITORY_URI}:${{ inputs.appVersion }}"
+
+        echo "Pulling image desde ACR..."
+        docker pull "$SOURCE_IMAGE"
+
+        echo "Tagging image..."
+        docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+
+        echo "Pushing image a ECR..."
+        docker push "$TARGET_IMAGE"
+
+    #########################################################
+    # FINISHED
+    #########################################################
+
+    - name: Finish
+      shell: bash
+      run: |
+        echo "Build y Push completado correctamente"
