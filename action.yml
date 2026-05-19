@@ -182,25 +182,14 @@ runs:
     # BUILD + PUSH ACR
     #########################################################
 
-    - name: Build and Push
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        file: ./Dockerfile
-
-        push: true
-
-        platforms: linux/amd64
-
-        tags: ${{ steps.tags.outputs.result }}
-
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
-
-        labels: |
-          org.opencontainers.image.source=${{ github.repository }}
-          org.opencontainers.image.revision=${{ github.sha }}
-          org.opencontainers.image.version=${{ inputs.appVersion }}
+    - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: . 
+          file: Dockerfile 
+          push: true
+          tags: |
+            ${{ steps.tags.outputs.result }}
 
     #########################################################
     # AWS CREDENTIALS
