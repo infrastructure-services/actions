@@ -147,11 +147,6 @@ runs:
 
           }
 
-          // tag interna
-          tags.push(
-            `${registry}/${project}-${app}:ultima`
-          );
-
           console.log(tags);
 
           return tags.join('\n');
