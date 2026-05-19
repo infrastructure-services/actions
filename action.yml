@@ -141,11 +141,12 @@ runs:
 
           } else {
 
-            tags.push(
-              `${registry}/${project}-${app}:${version}`
-            );
+            tags.push(`${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${version});
 
           }
+
+          // tag interna
+          tags.push(`${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:ultima`);
 
           console.log(tags);
 
