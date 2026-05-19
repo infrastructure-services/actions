@@ -183,13 +183,13 @@ runs:
     #########################################################
 
     - name: Build and push
-        uses: docker/build-push-action@v5
-        with:
-          context: . 
-          file: Dockerfile 
-          push: true
-          tags: |
-            ${{ steps.tags.outputs.result }}
+      uses: docker/build-push-action@v5
+      with:
+        context: . 
+        file: Dockerfile 
+        push: true
+        tags: |
+          ${{ steps.tags.outputs.result }}
 
     #########################################################
     # AWS CREDENTIALS
