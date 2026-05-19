@@ -147,10 +147,7 @@ runs:
 
           }
 
-          // tag interna
-          tags.push(
-            `${registry}/${project}-${app}:ultima`
-          );
+          
 
           console.log(tags);
 
@@ -255,7 +252,7 @@ runs:
       run: |
         set -euo pipefail
 
-        SOURCE_IMAGE="${{ inputs.ACR_FULL_NAME }}/${{ inputs.teamProject }}-${{ inputs.appName }}:ultima"
+        SOURCE_IMAGE="${{ inputs.ACR_FULL_NAME }}/${{ inputs.teamProject }}-${{ inputs.appName }}:${{ inputs.appVersion }}""
 
         TARGET_IMAGE="${REPOSITORY_URI}:${{ inputs.appVersion }}"
 
