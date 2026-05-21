@@ -210,7 +210,7 @@ runs:
       run: |
         set -euo pipefail
 
-        aws ecr-public get-login-password --region us-east-1 \
+        aws ecr get-login-password --region us-east-1 \
           | docker login \
               --username AWS \
               --password-stdin 055260053765.dkr.ecr.us-east-1.amazonaws.com
@@ -227,14 +227,14 @@ runs:
 
         REPOSITORY_NAME="${{ inputs.teamProject }}-${{ inputs.appName }}"
 
-        aws ecr-public describe-repositories \
+        aws ecr describe-repositories \
           --repository-names "$REPOSITORY_NAME" \
           --region us-east-1 >/dev/null 2>&1 || \
-        aws ecr-public create-repository \
+        aws ecr create-repository \
           --repository-name "$REPOSITORY_NAME" \
           --region us-east-1
 
-        REPOSITORY_URI=$(aws ecr-public describe-repositories \
+        REPOSITORY_URI=$(aws ecr describe-repositories \
           --repository-names "$REPOSITORY_NAME" \
           --region us-east-1 \
           --query 'repositories[0].repositoryUri' \
