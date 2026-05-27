@@ -36,10 +36,9 @@ inputs:
     description: "AWS Secret Key"
     required: false
 
-  push_ecr:
-    description: "Push a AWS ECR Public"
+  ECR_FULLNAME:
+    description: "ECR fullname"
     required: false
-    default: "true"
 
   #########################################################
   # APP
@@ -193,7 +192,7 @@ runs:
     #########################################################
 
     - name: Configure AWS Credentials
-      if: ${{ inputs.push_ecr == 'true' }}
+      if: ${{ inputs.andreani == 'true' }}
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ inputs.ECR_ID }}
@@ -205,7 +204,7 @@ runs:
     #########################################################
 
     - name: Login ECR Public
-      if: ${{ inputs.push_ecr == 'true' }}
+      if: ${{ inputs.andreani == 'true' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -213,14 +212,14 @@ runs:
         aws ecr get-login-password --region us-east-1 \
           | docker login \
               --username AWS \
-              --password-stdin 055260053765.dkr.ecr.us-east-1.amazonaws.com
+              --password-stdin ${{ inputs.ECR_FULLNAME }}
 
     #########################################################
     # CREATE ECR REPO
     #########################################################
 
     - name: Ensure ECR Repository Exists
-      if: ${{ inputs.push_ecr == 'true' }}
+      if: ${{ inputs.andreani == 'true' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -247,7 +246,7 @@ runs:
     #########################################################
 
     - name: Push to ECR
-      if: ${{ inputs.push_ecr == 'true' }}
+      if: ${{ inputs.andreani == 'true' }}
       shell: bash
       run: |
         set -euo pipefail
