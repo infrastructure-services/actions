@@ -82,7 +82,11 @@ runs:
       run: |
         GITLAB_REMOTE_URL="https://oauth2:${{ inputs.gitlab_token }}@${{ inputs.gitlab_url }}/${{ inputs.repository }}.git"
 
-        # Si el remote ya existe, actualizar la URL; si no, crearlo
+        # Traer todas las ramas y tags remotos como refs locales
+        git fetch origin '+refs/heads/*:refs/heads/*' --force
+        git fetch origin '+refs/tags/*:refs/tags/*' --force
+
+        # Configurar remote gitlab
         if git remote get-url gitlab &>/dev/null; then
           echo "🔄 Remote gitlab ya existe, actualizando URL..."
           git remote set-url gitlab "$GITLAB_REMOTE_URL"
@@ -91,10 +95,8 @@ runs:
           git remote add gitlab "$GITLAB_REMOTE_URL"
         fi
 
-        # Push de todas las branches
-        git push gitlab --all --force
-
-        # Push de todos los tags
-        git push gitlab --tags --force
+        # Push de todas las ramas y tags via refspec explícito
+        git push gitlab '+refs/heads/*:refs/heads/*' --force
+        git push gitlab '+refs/tags/*:refs/tags/*' --force
 
         echo "✅ Mirror completado: ${{ inputs.repository }}"
