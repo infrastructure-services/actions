@@ -24,8 +24,9 @@ runs:
         echo "GITLAB_NAMESPACE= $GITLAB_NAMESPACE"
         echo "REPO_NAME= $REPO_NAME"
 
-        # Verificar si el repo ya existe
+        # Verificar si el repo ya existe (con -L para seguir redirects)
         HTTP_STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" \
+          -L \
           --header "PRIVATE-TOKEN: ${{ inputs.gitlab_token }}" \
           "https://${{ inputs.gitlab_url }}/api/v4/projects/$GITLAB_NAMESPACE%2F$REPO_NAME")
 
@@ -34,8 +35,7 @@ runs:
         if [ "$HTTP_STATUS" == "404" ]; then
           echo "📁 Repo no existe, creando..."
 
-          # Buscar el namespace con match exacto por full_path
-          NAMESPACE_ID=$(curl --silent \
+          NAMESPACE_ID=$(curl --silent -L \
             --header "PRIVATE-TOKEN: ${{ inputs.gitlab_token }}" \
             "https://${{ inputs.gitlab_url }}/api/v4/namespaces?search=$GITLAB_NAMESPACE" \
             | jq -r --arg ns "$GITLAB_NAMESPACE" '.[] | select(.full_path == $ns) | .id')
@@ -47,7 +47,7 @@ runs:
             exit 1
           fi
 
-          CREATE_RESPONSE=$(curl --silent \
+          CREATE_RESPONSE=$(curl --silent -L \
             --write-out "\nHTTP_CODE:%{http_code}" \
             --request POST \
             --header "PRIVATE-TOKEN: ${{ inputs.gitlab_token }}" \
@@ -70,8 +70,6 @@ runs:
           fi
 
           echo "✅ Repo creado exitosamente"
-
-          # Esperar que GitLab termine de inicializar el repo
           sleep 3
         else
           echo "✅ Repo ya existe, continuando..."
