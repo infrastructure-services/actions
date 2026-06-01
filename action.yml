@@ -82,9 +82,12 @@ runs:
       run: |
         GITLAB_REMOTE_URL="https://oauth2:${{ inputs.gitlab_token }}@${{ inputs.gitlab_url }}/${{ inputs.repository }}.git"
 
-        # Traer todas las ramas remotas como remote-tracking refs (evita conflicto con rama activa)
-        git fetch origin --force
+        # Forzar fetch explícito de TODAS las ramas de origin como remote-tracking refs
+        git fetch origin '+refs/heads/*:refs/remotes/origin/*' --force
         git fetch origin '+refs/tags/*:refs/tags/*' --force
+
+        echo "🔍 Ramas disponibles en refs/remotes/origin:"
+        git branch -r | grep "origin/" | wc -l
 
         # Configurar remote gitlab
         if git remote get-url gitlab &>/dev/null; then
