@@ -82,12 +82,11 @@ runs:
       run: |
         GITLAB_REMOTE_URL="https://oauth2:${{ inputs.gitlab_token }}@${{ inputs.gitlab_url }}/${{ inputs.repository }}.git"
 
-        # Forzar fetch explícito de TODAS las ramas de origin como remote-tracking refs
+        # Forzar fetch explícito de TODAS las ramas y tags
         git fetch origin '+refs/heads/*:refs/remotes/origin/*' --force
         git fetch origin '+refs/tags/*:refs/tags/*' --force
 
-        echo "🔍 Ramas disponibles en refs/remotes/origin:"
-        git branch -r | grep "origin/" | wc -l
+        echo "🔍 Ramas fetcheadas: $(git for-each-ref --format='%(refname)' refs/remotes/origin/ | grep -v 'HEAD' | wc -l)"
 
         # Configurar remote gitlab
         if git remote get-url gitlab &>/dev/null; then
@@ -98,8 +97,13 @@ runs:
           git remote add gitlab "$GITLAB_REMOTE_URL"
         fi
 
-        # Push de todas las ramas desde remote-tracking refs de origin
-        git push gitlab '+refs/remotes/origin/*:refs/heads/*' --force
+        # Construir refspecs dinámicamente para soportar ramas con '/' en el nombre
+        REFSPECS=$(git for-each-ref --format='+%(refname):refs/heads/%(refname:lstrip=3)' refs/remotes/origin/ | grep -v 'HEAD')
+
+        echo "🔍 Ramas a pushear: $(echo "$REFSPECS" | wc -l)"
+
+        # Push de todas las ramas con refspecs explícitos
+        echo "$REFSPECS" | xargs git push gitlab --force
 
         # Push de todos los tags
         git push gitlab '+refs/tags/*:refs/tags/*' --force
