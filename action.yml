@@ -82,8 +82,8 @@ runs:
       run: |
         GITLAB_REMOTE_URL="https://oauth2:${{ inputs.gitlab_token }}@${{ inputs.gitlab_url }}/${{ inputs.repository }}.git"
 
-        # Traer todas las ramas y tags remotos como refs locales
-        git fetch origin '+refs/heads/*:refs/heads/*' --force
+        # Traer todas las ramas remotas como remote-tracking refs (evita conflicto con rama activa)
+        git fetch origin --force
         git fetch origin '+refs/tags/*:refs/tags/*' --force
 
         # Configurar remote gitlab
@@ -95,8 +95,10 @@ runs:
           git remote add gitlab "$GITLAB_REMOTE_URL"
         fi
 
-        # Push de todas las ramas y tags via refspec explícito
-        git push gitlab '+refs/heads/*:refs/heads/*' --force
+        # Push de todas las ramas desde remote-tracking refs de origin
+        git push gitlab '+refs/remotes/origin/*:refs/heads/*' --force
+
+        # Push de todos los tags
         git push gitlab '+refs/tags/*:refs/tags/*' --force
 
         echo "✅ Mirror completado: ${{ inputs.repository }}"
