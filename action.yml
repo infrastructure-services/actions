@@ -70,14 +70,14 @@ runs:
           echo ${{inputs.teamProject}}-${{inputs.appName}}
 
       - name: Login to Azure Container Registry
-        uses: azure/docker-login@v1
+        uses: azure/docker-login@v2
         with:
           login-server: ${{ inputs.ACR_NAME }}.azurecr.io 
           username: ${{ inputs.ACR_USERNAME }}
           password: ${{ inputs.ACR_PASSWORD }}
 
       - name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: . 
           file: Dockerfile 
