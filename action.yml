@@ -1,6 +1,7 @@
 name: 'Generic Build and Push'
 description: 'Build y push de imagen de docker'
 inputs:
+# ACR Datas
   ACR_USERNAME:
     description: "user de acr"
     required: true
@@ -13,6 +14,7 @@ inputs:
   ACR_FULL_NAME:
     description: "nombre del acr con azurecr.io"
     required: true
+#ACR WW Datas 
   ACR_USERNAMEWW:
     description: "user de acr"
     required: true
@@ -25,6 +27,7 @@ inputs:
   ACR_FULL_NAMEWW:
     description: "nombre del acr con azurecr.io"
     required: true
+#ECR HOP Datas
   ECR_ID:
     description: "user de acr"
     required: true
@@ -43,7 +46,8 @@ inputs:
   SWR_URL:
     description: "url de swr"
     required: true
-  
+
+  ## App Datas
   appName:
     description: "Nombre de la aplicacion (dentro del proyecto)"
     required: true
@@ -67,7 +71,7 @@ inputs:
     description: "Se pushea a la registry de Witwot"
     required: true
     type: boolean
-    default: true
+    default: false
   hop:
     description: "Se pushea a la registry de HOP"
     required: true
@@ -154,14 +158,14 @@ runs:
 
 
       - name: Login to Huawei SWR
-        if: ${{ inputs.andreani }}
+        if: ${{ inputs.witwot }}
         uses: docker/login-action@v3
         with:
           registry: ${{ inputs.SWR_URL }}
           username: ${{ inputs.SWR_USERNAME }}
           password: ${{ inputs.SWR_PASSWORD }}
       - name: Push image to Huawei SWR
-        if: ${{ inputs.andreani }}
+        if: ${{ inputs.witwot }}
         shell: bash
         run: |
           docker buildx imagetools create \
