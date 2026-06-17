@@ -172,7 +172,7 @@ runs:
     - name: Obtener connection string desde Key Vault
       id: kv
       if: ${{ inputs.migration-risk != 'NONE' }}
-      uses: ./.github/actions/get-keyvault-secret
+      uses: infrastructure-services/actions@get-keyvault-secret
       with:
         keyvault-name: ${{ inputs.keyvault-name }}
         client-id: ${{ inputs.client-id }}
@@ -183,7 +183,7 @@ runs:
     - name: Validar conexión SQL Server
       id: sql
       if: ${{ inputs.migration-risk != 'NONE' }}
-      uses: ./.github/actions/validate-sqlserver-connection
+      uses: infrastructure-services/actions@validate-sqlserver-connection
       with:
         connection-string: ${{ steps.kv.outputs['secret-value'] }}
         dotnet-version: ${{ inputs.dotnet-version }}
