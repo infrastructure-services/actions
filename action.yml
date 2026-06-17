@@ -1,0 +1,283 @@
+name: Validate SQL Server Connection
+description: Valida conectividad real contra SQL Server usando una connection string
+
+inputs:
+  connection-string:
+    description: Connection string de SQL Server
+    required: true
+
+  dotnet-version:
+    description: Versión esperada de .NET SDK. Solo se valida, no se instala.
+    required: false
+    default: "10"
+
+  test-framework:
+    description: Target framework usado para compilar el validador temporal
+    required: false
+    default: "net10.0"
+
+  connection-timeout:
+    description: Timeout de conexión en segundos
+    required: false
+    default: "15"
+
+outputs:
+  normalized-connection-string:
+    description: Connection string normalizada para usar luego en EF Core
+    value: ${{ steps.validate.outputs.normalized_connection_string }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validar .NET instalado en runner
+      shell: bash
+      env:
+        DOTNET_VERSION_EXPECTED: ${{ inputs.dotnet-version }}
+      run: |
+        set -euo pipefail
+
+        echo "Validando dotnet instalado en el runner..."
+
+        if ! command -v dotnet >/dev/null 2>&1; then
+          echo "❌ dotnet no está instalado o no está en el PATH del runner"
+          echo "Instalá .NET SDK en el runner self-hosted antes de ejecutar este workflow."
+          exit 1
+        fi
+
+        echo "dotnet path:"
+        which dotnet
+
+        echo ""
+        echo "dotnet --info:"
+        dotnet --info
+
+        echo ""
+        echo "SDKs instalados:"
+        dotnet --list-sdks
+
+        if [[ -n "${DOTNET_VERSION_EXPECTED:-}" ]]; then
+          EXPECTED_MAJOR="$(echo "$DOTNET_VERSION_EXPECTED" | sed -E 's/^([0-9]+).*/\1/')"
+
+          if ! dotnet --list-sdks | grep -Eq "^${EXPECTED_MAJOR}\."; then
+            echo "❌ No se encontró .NET SDK ${EXPECTED_MAJOR}.x instalado en el runner"
+            echo "SDKs disponibles:"
+            dotnet --list-sdks
+            exit 1
+          fi
+
+          echo "✅ .NET SDK ${EXPECTED_MAJOR}.x encontrado"
+        fi
+
+    - name: Validate SQL Server connection
+      id: validate
+      shell: bash
+      env:
+        DB_CONNECTION: ${{ inputs.connection-string }}
+        CONNECTION_TIMEOUT: ${{ inputs.connection-timeout }}
+        TEST_FRAMEWORK: ${{ inputs.test-framework }}
+      run: |
+        set -euo pipefail
+
+        if [[ -z "${DB_CONNECTION:-}" ]]; then
+          echo "❌ La connection string está vacía"
+          exit 1
+        fi
+
+        echo "::add-mask::$DB_CONNECTION"
+
+        NORMALIZED="$DB_CONNECTION"
+
+        if ! echo "$NORMALIZED" | grep -Eiq '(^|;)Encrypt='; then
+          NORMALIZED="${NORMALIZED};Encrypt=True"
+        fi
+
+        if ! echo "$NORMALIZED" | grep -Eiq '(^|;)TrustServerCertificate='; then
+          NORMALIZED="${NORMALIZED};TrustServerCertificate=True"
+        fi
+
+        if ! echo "$NORMALIZED" | grep -Eiq '(^|;)Connection Timeout='; then
+          NORMALIZED="${NORMALIZED};Connection Timeout=${CONNECTION_TIMEOUT}"
+        fi
+
+        echo "::add-mask::$NORMALIZED"
+
+        WORKDIR="$(mktemp -d)"
+        trap 'rm -rf "$WORKDIR"' EXIT
+
+        cd "$WORKDIR"
+
+        echo "Creando proyecto temporal para validar SQL Server..."
+        echo "Framework: ${TEST_FRAMEWORK}"
+
+        dotnet new console --framework "$TEST_FRAMEWORK" --no-restore >/dev/null
+        dotnet add package Microsoft.Data.SqlClient >/dev/null
+
+        cat > Program.cs <<'EOF'
+        using Microsoft.Data.SqlClient;
+        using System.Net.Sockets;
+
+        var connectionString = Environment.GetEnvironmentVariable("DB_CONNECTION");
+
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            Console.Error.WriteLine("❌ Connection string vacía");
+            Environment.Exit(1);
+        }
+
+        SqlConnectionStringBuilder builder;
+
+        try
+        {
+            builder = new SqlConnectionStringBuilder(connectionString);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine("❌ La connection string no tiene un formato válido");
+            Console.Error.WriteLine(ex.Message);
+            Environment.Exit(1);
+            return;
+        }
+
+        var dataSource = builder.DataSource;
+        var database = builder.InitialCatalog;
+
+        Console.WriteLine("Diagnóstico seguro:");
+        Console.WriteLine($"DataSource: {dataSource}");
+        Console.WriteLine($"Database: {database}");
+        Console.WriteLine($"Encrypt: {builder.Encrypt}");
+        Console.WriteLine($"TrustServerCertificate: {builder.TrustServerCertificate}");
+        Console.WriteLine($"ConnectionTimeout: {builder.ConnectTimeout}");
+
+        if (string.IsNullOrWhiteSpace(dataSource))
+        {
+            Console.Error.WriteLine("❌ La connection string no contiene Server/Data Source");
+            Environment.Exit(1);
+        }
+
+        if (string.IsNullOrWhiteSpace(database))
+        {
+            Console.Error.WriteLine("❌ La connection string no contiene Database/Initial Catalog");
+            Environment.Exit(1);
+        }
+
+        var serverForTcp = dataSource
+            .Replace("tcp:", "", StringComparison.OrdinalIgnoreCase)
+            .Trim();
+
+        var tcpHost = serverForTcp;
+        var tcpPort = 1433;
+
+        if (serverForTcp.Contains(","))
+        {
+            var parts = serverForTcp.Split(',', 2);
+            tcpHost = parts[0];
+
+            if (int.TryParse(parts[1], out var parsedPort))
+            {
+                tcpPort = parsedPort;
+            }
+        }
+
+        if (tcpHost.Contains("\\"))
+        {
+            Console.WriteLine("⚠️ El DataSource usa instancia SQL con backslash.");
+            Console.WriteLine("⚠️ En runners Linux es mejor usar host,puerto.");
+            Console.WriteLine("Ejemplo: Server=tcp:mi-servidor,1433;Database=...");
+            tcpHost = tcpHost.Split('\\')[0];
+        }
+
+        Console.WriteLine($"TCP Host detectado: {tcpHost}");
+        Console.WriteLine($"TCP Port detectado: {tcpPort}");
+
+        try
+        {
+            Console.WriteLine("Validando conectividad TCP...");
+
+            using var tcpClient = new TcpClient();
+
+            var connectTask = tcpClient.ConnectAsync(tcpHost, tcpPort);
+            var timeoutTask = Task.Delay(TimeSpan.FromSeconds(10));
+
+            var completedTask = await Task.WhenAny(connectTask, timeoutTask);
+
+            if (completedTask == timeoutTask)
+            {
+                Console.Error.WriteLine($"❌ Timeout conectando por TCP a {tcpHost}:{tcpPort}");
+                Console.Error.WriteLine("Probable causa: red, firewall, DNS, ruta o puerto cerrado desde el runner.");
+                Environment.Exit(1);
+            }
+
+            await connectTask;
+
+            Console.WriteLine($"✅ TCP OK contra {tcpHost}:{tcpPort}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"❌ No se pudo abrir conexión TCP a {tcpHost}:{tcpPort}");
+            Console.Error.WriteLine(ex.Message);
+            Environment.Exit(1);
+        }
+
+        try
+        {
+            Console.WriteLine("Intentando abrir conexión SQL Server...");
+
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync();
+
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT DB_NAME()";
+
+            var databaseName = await command.ExecuteScalarAsync();
+
+            await using var testCommand = connection.CreateCommand();
+            testCommand.CommandText = "SELECT 1";
+
+            var result = await testCommand.ExecuteScalarAsync();
+
+            Console.WriteLine($"✅ Conexión SQL válida contra la base: {databaseName}");
+            Console.WriteLine($"✅ SELECT 1 OK: {result}");
+        }
+        catch (SqlException ex)
+        {
+            Console.Error.WriteLine("❌ Error SQL al validar conexión");
+            Console.Error.WriteLine($"Number: {ex.Number}");
+            Console.Error.WriteLine($"Message: {ex.Message}");
+
+            if (ex.Number == 258)
+            {
+                Console.Error.WriteLine("");
+                Console.Error.WriteLine("Diagnóstico probable:");
+                Console.Error.WriteLine("- El runner no llega al SQL Server.");
+                Console.Error.WriteLine("- El DNS no resuelve desde el runner.");
+                Console.Error.WriteLine("- El firewall no permite el puerto SQL.");
+                Console.Error.WriteLine("- La base está en una red privada no accesible desde este grupo de runners.");
+            }
+
+            if (ex.Number == 18456)
+            {
+                Console.Error.WriteLine("");
+                Console.Error.WriteLine("Diagnóstico probable:");
+                Console.Error.WriteLine("- Usuario o password incorrectos.");
+                Console.Error.WriteLine("- El login no tiene permisos sobre la base.");
+            }
+
+            Environment.Exit(1);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine("❌ Error general al validar conexión SQL");
+            Console.Error.WriteLine(ex.Message);
+            Environment.Exit(1);
+        }
+        EOF
+
+        DB_CONNECTION="$NORMALIZED" dotnet run --configuration Release
+
+        {
+          echo "normalized_connection_string<<EOF"
+          echo "$NORMALIZED"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+
+        echo "✅ Connection string validada correctamente"
