@@ -1,0 +1,275 @@
+name: Get Wizard DB Secrets
+description: Obtiene los nombres de secrets Owner desde GitHub Wizard API
+
+inputs:
+  app-id:
+    description: APP_ID de la aplicación en Wizard
+    required: true
+
+  wizard-api-token:
+    description: Token para consumir Wizard API
+    required: true
+
+  wizard-api-url:
+    description: URL base de Wizard API
+    required: false
+    default: "https://github-wizard-api-gitops-prod.apps.andreani.com.ar/api/v1/Application"
+
+  authorization-header:
+    description: Header de autorización. Ejemplo Authorization o x-api-key
+    required: false
+    default: "Authorization"
+
+  authorization-prefix:
+    description: Prefijo del token. Ejemplo Bearer. Dejar vacío si no aplica.
+    required: false
+    default: "Bearer"
+
+  owner-secret-suffix:
+    description: Sufijo usado para identificar el secret Owner
+    required: false
+    default: "--DataAccessRegistry--Owner"
+
+outputs:
+  test-owner-secret:
+    description: Secret name de TEST Owner
+    value: ${{ steps.parse.outputs.test_owner_secret }}
+
+  qa-owner-secret:
+    description: Secret name de QA Owner
+    value: ${{ steps.parse.outputs.qa_owner_secret }}
+
+  prod-owner-secret:
+    description: Secret name de PROD Owner
+    value: ${{ steps.parse.outputs.prod_owner_secret }}
+
+  owner-secrets-json:
+    description: JSON con los secrets Owner por ambiente
+    value: ${{ steps.parse.outputs.owner_secrets_json }}
+
+runs:
+  using: composite
+  steps:
+    - name: Get and parse Wizard DB secrets
+      id: parse
+      shell: bash
+      env:
+        APP_ID: ${{ inputs.app-id }}
+        WIZARD_API_TOKEN: ${{ inputs.wizard-api-token }}
+        WIZARD_API_URL: ${{ inputs.wizard-api-url }}
+        AUTHORIZATION_HEADER: ${{ inputs.authorization-header }}
+        AUTHORIZATION_PREFIX: ${{ inputs.authorization-prefix }}
+        OWNER_SECRET_SUFFIX: ${{ inputs.owner-secret-suffix }}
+      run: |
+        set -euo pipefail
+
+        if [[ -z "${APP_ID:-}" ]]; then
+          echo "❌ APP_ID no informado"
+          exit 1
+        fi
+
+        if [[ -z "${WIZARD_API_TOKEN:-}" ]]; then
+          echo "❌ Token de Wizard API no informado"
+          exit 1
+        fi
+
+        if [[ -z "${WIZARD_API_URL:-}" ]]; then
+          echo "❌ Wizard API URL no informada"
+          exit 1
+        fi
+
+        if [[ -z "${AUTHORIZATION_HEADER:-}" ]]; then
+          echo "❌ authorization-header no informado"
+          exit 1
+        fi
+
+        if [[ -z "${OWNER_SECRET_SUFFIX:-}" ]]; then
+          echo "❌ owner-secret-suffix no informado"
+          exit 1
+        fi
+
+        if ! command -v curl >/dev/null 2>&1; then
+          echo "❌ curl no está instalado en el runner"
+          exit 1
+        fi
+
+        if ! command -v jq >/dev/null 2>&1; then
+          echo "❌ jq no está instalado en el runner"
+          echo "Instalar jq en los runners self-hosted."
+          exit 1
+        fi
+
+        echo "::add-mask::$WIZARD_API_TOKEN"
+
+        API_URL="${WIZARD_API_URL%/}/${APP_ID}"
+
+        if [[ -n "${AUTHORIZATION_PREFIX:-}" ]]; then
+          AUTH_VALUE="${AUTHORIZATION_PREFIX} ${WIZARD_API_TOKEN}"
+        else
+          AUTH_VALUE="${WIZARD_API_TOKEN}"
+        fi
+
+        echo "::add-mask::$AUTH_VALUE"
+
+        RESPONSE_FILE="$(mktemp)"
+        trap 'rm -f "$RESPONSE_FILE"' EXIT
+
+        echo "Consultando Wizard API para APP_ID=${APP_ID}"
+        echo "URL: ${WIZARD_API_URL%/}/{APP_ID}"
+
+        HTTP_CODE="$(curl -sS \
+          --retry 3 \
+          --retry-delay 2 \
+          --connect-timeout 10 \
+          --max-time 60 \
+          -o "$RESPONSE_FILE" \
+          -w "%{http_code}" \
+          -H "${AUTHORIZATION_HEADER}: ${AUTH_VALUE}" \
+          -H "Accept: application/json" \
+          "$API_URL")"
+
+        if [[ "$HTTP_CODE" == "401" ]]; then
+          echo "❌ Wizard API respondió 401 Unauthorized"
+          echo "Validá token, header y prefijo de autorización."
+          exit 1
+        fi
+
+        if [[ "$HTTP_CODE" == "403" ]]; then
+          echo "❌ Wizard API respondió 403 Forbidden"
+          echo "El token existe, pero no tiene permisos para consultar APP_ID=${APP_ID}"
+          exit 1
+        fi
+
+        if [[ "$HTTP_CODE" == "404" ]]; then
+          echo "❌ Wizard API respondió 404 Not Found"
+          echo "No se encontró la aplicación APP_ID=${APP_ID}"
+          exit 1
+        fi
+
+        if [[ "$HTTP_CODE" -lt 200 || "$HTTP_CODE" -ge 300 ]]; then
+          echo "❌ Error consultando Wizard API. HTTP_CODE=${HTTP_CODE}"
+          echo "Respuesta truncada:"
+          head -c 2000 "$RESPONSE_FILE" || true
+          echo ""
+          exit 1
+        fi
+
+        if ! jq empty "$RESPONSE_FILE" >/dev/null 2>&1; then
+          echo "❌ Wizard API no respondió JSON válido"
+          echo "Respuesta truncada:"
+          head -c 2000 "$RESPONSE_FILE" || true
+          echo ""
+          exit 1
+        fi
+
+        get_owner_secret() {
+          local ENVIRONMENT="$1"
+
+          jq -r \
+            --arg ENVIRONMENT "$ENVIRONMENT" \
+            --arg SUFFIX "$OWNER_SECRET_SUFFIX" '
+              def payload:
+                if has("jsonData") then
+                  if (.jsonData | type) == "string" then
+                    (.jsonData | fromjson)
+                  else
+                    .jsonData
+                  end
+                else
+                  .
+                end;
+
+              def secret_name:
+                if type == "string" then
+                  .
+                elif type == "object" then
+                  (.name // .secretName // .key // .value // empty)
+                else
+                  empty
+                end;
+
+              payload
+              | (.keyvaults // [])
+              | .[]
+              | select(
+                  ((.environmentNameMapped // .environmentName // .environment // "") | ascii_upcase)
+                  == ($ENVIRONMENT | ascii_upcase)
+                )
+              | (.secrets // [])
+              | .[]
+              | secret_name
+              | select(endswith($SUFFIX))
+            ' "$RESPONSE_FILE" | head -n 1
+        }
+
+        TEST_SECRET="$(get_owner_secret "TEST")"
+        QA_SECRET="$(get_owner_secret "QA")"
+        PROD_SECRET="$(get_owner_secret "PROD")"
+
+        show_available_environments() {
+          echo "Ambientes disponibles encontrados en Wizard:"
+          jq -r '
+            def payload:
+              if has("jsonData") then
+                if (.jsonData | type) == "string" then
+                  (.jsonData | fromjson)
+                else
+                  .jsonData
+                end
+              else
+                .
+              end;
+
+            payload
+            | (.keyvaults // [])
+            | .[]
+            | (.environmentNameMapped // .environmentName // .environment // "UNKNOWN")
+          ' "$RESPONSE_FILE" | sort -u | sed 's/^/- /' || true
+        }
+
+        if [[ -z "$TEST_SECRET" || "$TEST_SECRET" == "null" ]]; then
+          echo "❌ No se encontró Owner para TEST con sufijo: $OWNER_SECRET_SUFFIX"
+          show_available_environments
+          exit 1
+        fi
+
+        if [[ -z "$QA_SECRET" || "$QA_SECRET" == "null" ]]; then
+          echo "❌ No se encontró Owner para QA con sufijo: $OWNER_SECRET_SUFFIX"
+          show_available_environments
+          exit 1
+        fi
+
+        if [[ -z "$PROD_SECRET" || "$PROD_SECRET" == "null" ]]; then
+          echo "❌ No se encontró Owner para PROD con sufijo: $OWNER_SECRET_SUFFIX"
+          show_available_environments
+          exit 1
+        fi
+
+        OWNER_SECRETS_JSON="$(jq -cn \
+          --arg test "$TEST_SECRET" \
+          --arg qa "$QA_SECRET" \
+          --arg prod "$PROD_SECRET" \
+          '{TEST:$test, QA:$qa, PROD:$prod}')"
+
+        {
+          echo "test_owner_secret=$TEST_SECRET"
+          echo "qa_owner_secret=$QA_SECRET"
+          echo "prod_owner_secret=$PROD_SECRET"
+          echo "owner_secrets_json=$OWNER_SECRETS_JSON"
+        } >> "$GITHUB_OUTPUT"
+
+        echo "✅ Secrets Owner encontrados correctamente"
+        echo "TEST: $TEST_SECRET"
+        echo "QA: $QA_SECRET"
+        echo "PROD: $PROD_SECRET"
+
+        {
+          echo "### Wizard DB Secrets"
+          echo ""
+          echo "| Ambiente | Secret Owner |"
+          echo "|---|---|"
+          echo "| TEST | \`$TEST_SECRET\` |"
+          echo "| QA | \`$QA_SECRET\` |"
+          echo "| PROD | \`$PROD_SECRET\` |"
+        } >> "$GITHUB_STEP_SUMMARY"
+
