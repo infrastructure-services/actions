@@ -1,0 +1,175 @@
+name: Detect .NET Startup Project
+description: Detecta el .csproj startup leyendo el Dockerfile y la línea dotnet publish
+
+inputs:
+  dockerfile:
+    description: Ruta del Dockerfile
+    required: false
+    default: Dockerfile
+
+outputs:
+  startup-project:
+    description: Ruta del .csproj detectado
+    value: ${{ steps.detect.outputs.startup_project }}
+
+  csproj-name:
+    description: Nombre del .csproj detectado
+    value: ${{ steps.detect.outputs.csproj_name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Detect startup project from Dockerfile
+      id: detect
+      shell: bash
+      env:
+        DOCKERFILE_PATH: ${{ inputs.dockerfile }}
+      run: |
+        set -euo pipefail
+
+        if [[ ! -f "$DOCKERFILE_PATH" ]]; then
+          echo "❌ No existe el Dockerfile informado: $DOCKERFILE_PATH"
+          echo "Dockerfiles encontrados:"
+          find . -iname "Dockerfile*" -not -path "*/bin/*" -not -path "*/obj/*" || true
+          exit 1
+        fi
+
+        echo "Analizando Dockerfile: $DOCKERFILE_PATH"
+
+        PUBLISH_LINE_NUMBER="$(grep -nE 'dotnet[[:space:]]+publish[[:space:]]+.*\.csproj' "$DOCKERFILE_PATH" | head -n 1 | cut -d: -f1 || true)"
+
+        if [[ -z "$PUBLISH_LINE_NUMBER" ]]; then
+          echo "❌ No se encontró una línea dotnet publish con .csproj en $DOCKERFILE_PATH"
+          echo "Ejemplo esperado:"
+          echo 'RUN dotnet publish "LuanaApi.csproj" -c Release -o /app/publish'
+          exit 1
+        fi
+
+        PUBLISH_LINE="$(sed -n "${PUBLISH_LINE_NUMBER}p" "$DOCKERFILE_PATH")"
+
+        echo "Línea publish encontrada:"
+        echo "$PUBLISH_LINE"
+
+        CSPROJ_REF="$(echo "$PUBLISH_LINE" \
+          | sed -nE 's/.*dotnet[[:space:]]+publish[[:space:]]+"?([^"[:space:]]+\.csproj)"?.*/\1/p' \
+          | head -n 1)"
+
+        if [[ -z "$CSPROJ_REF" ]]; then
+          echo "❌ No se pudo extraer el .csproj desde la línea dotnet publish"
+          exit 1
+        fi
+
+        CSPROJ_NAME="$(basename "$CSPROJ_REF")"
+
+        echo "csproj detectado en Dockerfile: $CSPROJ_REF"
+        echo "Nombre csproj: $CSPROJ_NAME"
+
+        STARTUP_PROJECT=""
+
+        # Caso 1: dotnet publish trae una ruta relativa válida
+        if [[ -f "$CSPROJ_REF" ]]; then
+          STARTUP_PROJECT="$CSPROJ_REF"
+        fi
+
+        # Caso 2: dotnet publish trae una ruta relativa con ./ válida
+        if [[ -z "$STARTUP_PROJECT" && -f "./$CSPROJ_REF" ]]; then
+          STARTUP_PROJECT="./$CSPROJ_REF"
+        fi
+
+        # Caso 3: intentar usar el último WORKDIR anterior al dotnet publish
+        if [[ -z "$STARTUP_PROJECT" ]]; then
+          WORKDIR_LINE="$(head -n "$PUBLISH_LINE_NUMBER" "$DOCKERFILE_PATH" \
+            | grep -E '^[[:space:]]*WORKDIR[[:space:]]+' \
+            | tail -n 1 \
+            || true)"
+
+          if [[ -n "$WORKDIR_LINE" ]]; then
+            WORKDIR_VALUE="$(echo "$WORKDIR_LINE" | sed -nE 's/^[[:space:]]*WORKDIR[[:space:]]+"?([^"]+)"?/\1/p')"
+
+            echo "WORKDIR previo detectado: $WORKDIR_VALUE"
+
+            # Mapeos habituales de Docker build context a repo
+            CANDIDATE_DIR="$WORKDIR_VALUE"
+
+            CANDIDATE_DIR="${CANDIDATE_DIR#/src/}"
+            CANDIDATE_DIR="${CANDIDATE_DIR#/source/}"
+            CANDIDATE_DIR="${CANDIDATE_DIR#/app/}"
+
+            if [[ "$WORKDIR_VALUE" == /src ]]; then
+              CANDIDATE_DIR="."
+            fi
+
+            if [[ "$WORKDIR_VALUE" == /src/* ]]; then
+              CANDIDATE_DIR="./${WORKDIR_VALUE#/src/}"
+            elif [[ "$WORKDIR_VALUE" == /source/* ]]; then
+              CANDIDATE_DIR="./${WORKDIR_VALUE#/source/}"
+            elif [[ "$WORKDIR_VALUE" == /app/* ]]; then
+              CANDIDATE_DIR="./${WORKDIR_VALUE#/app/}"
+            elif [[ "$WORKDIR_VALUE" == ./* ]]; then
+              CANDIDATE_DIR="$WORKDIR_VALUE"
+            elif [[ "$WORKDIR_VALUE" != /* ]]; then
+              CANDIDATE_DIR="./$WORKDIR_VALUE"
+            fi
+
+            CANDIDATE_PATH="${CANDIDATE_DIR}/${CSPROJ_NAME}"
+
+            echo "Probando path desde WORKDIR: $CANDIDATE_PATH"
+
+            if [[ -f "$CANDIDATE_PATH" ]]; then
+              STARTUP_PROJECT="$CANDIDATE_PATH"
+            fi
+          fi
+        fi
+
+        # Caso 4: buscar por nombre en todo el repo
+        if [[ -z "$STARTUP_PROJECT" ]]; then
+          MATCHES="$(find . \
+            -name "$CSPROJ_NAME" \
+            -not -path "*/bin/*" \
+            -not -path "*/obj/*" \
+            -print \
+            | sort)"
+
+          MATCH_COUNT="$(echo "$MATCHES" | sed '/^$/d' | wc -l | tr -d ' ')"
+
+          if [[ "$MATCH_COUNT" == "0" ]]; then
+            echo "❌ No se encontró $CSPROJ_NAME en el repo"
+            echo "Proyectos encontrados:"
+            find . -name "*.csproj" -not -path "*/bin/*" -not -path "*/obj/*" -print
+            exit 1
+          fi
+
+          if [[ "$MATCH_COUNT" == "1" ]]; then
+            STARTUP_PROJECT="$MATCHES"
+          else
+            echo "⚠️ Se encontraron múltiples proyectos con el nombre $CSPROJ_NAME:"
+            echo "$MATCHES"
+
+            API_MATCH="$(echo "$MATCHES" | grep -E '/src/Api/|/Api/' | head -n 1 || true)"
+
+            if [[ -n "$API_MATCH" ]]; then
+              echo "Usando match preferido de Api: $API_MATCH"
+              STARTUP_PROJECT="$API_MATCH"
+            else
+              echo "❌ No se pudo elegir automáticamente el startup project"
+              exit 1
+            fi
+          fi
+        fi
+
+        # Normalizar prefijo
+        if [[ "$STARTUP_PROJECT" != ./* ]]; then
+          STARTUP_PROJECT="./$STARTUP_PROJECT"
+        fi
+
+        if [[ ! -f "$STARTUP_PROJECT" ]]; then
+          echo "❌ El startup project detectado no existe: $STARTUP_PROJECT"
+          exit 1
+        fi
+
+        echo "✅ Startup project detectado: $STARTUP_PROJECT"
+
+        {
+          echo "startup_project=$STARTUP_PROJECT"
+          echo "csproj_name=$CSPROJ_NAME"
+        } >> "$GITHUB_OUTPUT"
