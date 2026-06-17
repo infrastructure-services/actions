@@ -1,0 +1,151 @@
+name: Get Azure Key Vault Secret
+description: Obtiene el valor de un secret desde Azure Key Vault usando REST API, sin Azure CLI
+
+inputs:
+  keyvault-name:
+    description: Nombre del Azure Key Vault
+    required: true
+
+  secret-name:
+    description: Nombre del secret dentro del Key Vault
+    required: true
+
+  client-id:
+    description: Azure Service Principal Client ID
+    required: true
+
+  client-secret:
+    description: Azure Service Principal Secret
+    required: true
+
+  tenant-id:
+    description: Azure Tenant ID
+    required: true
+
+  keyvault-api-version:
+    description: API version de Azure Key Vault
+    required: false
+    default: "2025-07-01"
+
+outputs:
+  secret-value:
+    description: Valor del secret obtenido desde Key Vault
+    value: ${{ steps.get_secret.outputs.secret_value }}
+
+runs:
+  using: composite
+  steps:
+    - name: Get secret from Azure Key Vault
+      id: get_secret
+      shell: bash
+      env:
+        KEYVAULT_NAME: ${{ inputs.keyvault-name }}
+        SECRET_NAME: ${{ inputs.secret-name }}
+        AZURE_CLIENT_ID: ${{ inputs.client-id }}
+        AZURE_CLIENT_SECRET: ${{ inputs.client-secret }}
+        AZURE_TENANT_ID: ${{ inputs.tenant-id }}
+        KEYVAULT_API_VERSION: ${{ inputs.keyvault-api-version }}
+      run: |
+        set -euo pipefail
+
+        if [[ -z "${KEYVAULT_NAME:-}" ]]; then
+          echo "❌ keyvault-name no informado"
+          exit 1
+        fi
+
+        if [[ -z "${SECRET_NAME:-}" ]]; then
+          echo "❌ secret-name no informado"
+          exit 1
+        fi
+
+        if [[ -z "${AZURE_CLIENT_ID:-}" ]]; then
+          echo "❌ client-id no informado"
+          exit 1
+        fi
+
+        if [[ -z "${AZURE_CLIENT_SECRET:-}" ]]; then
+          echo "❌ client-secret no informado"
+          exit 1
+        fi
+
+        if [[ -z "${AZURE_TENANT_ID:-}" ]]; then
+          echo "❌ tenant-id no informado"
+          exit 1
+        fi
+
+        echo "Obteniendo token de Azure..."
+        TOKEN_RESPONSE="$(curl -sS -X POST \
+          "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/token" \
+          -H "Content-Type: application/x-www-form-urlencoded" \
+          --data-urlencode "client_id=${AZURE_CLIENT_ID}" \
+          --data-urlencode "client_secret=${AZURE_CLIENT_SECRET}" \
+          --data-urlencode "grant_type=client_credentials" \
+          --data-urlencode "scope=https://vault.azure.net/.default")"
+
+        ACCESS_TOKEN="$(echo "$TOKEN_RESPONSE" | jq -r '.access_token // empty')"
+
+        if [[ -z "$ACCESS_TOKEN" ]]; then
+          echo "❌ No se pudo obtener access_token"
+          echo "$TOKEN_RESPONSE" | jq -r '{error: .error, error_description: .error_description}'
+          exit 1
+        fi
+
+        echo "::add-mask::$ACCESS_TOKEN"
+
+        SECRET_URL="https://${KEYVAULT_NAME}.vault.azure.net/secrets/${SECRET_NAME}?api-version=${KEYVAULT_API_VERSION}"
+
+        RESPONSE_FILE="$(mktemp)"
+
+        echo "Consultando secret en Key Vault"
+        echo "Key Vault: ${KEYVAULT_NAME}"
+        echo "Secret name: ${SECRET_NAME}"
+
+        HTTP_CODE="$(curl -sS \
+          -o "$RESPONSE_FILE" \
+          -w "%{http_code}" \
+          -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+          -H "Accept: application/json" \
+          "$SECRET_URL")"
+
+        if [[ "$HTTP_CODE" == "401" ]]; then
+          echo "❌ Key Vault respondió 401 Unauthorized"
+          echo "Validá tenant, client-id y client-secret"
+          exit 1
+        fi
+
+        if [[ "$HTTP_CODE" == "403" ]]; then
+          echo "❌ Key Vault respondió 403 Forbidden"
+          echo "El Service Principal autenticó correctamente, pero no tiene permisos secrets/get sobre el Key Vault ${KEYVAULT_NAME}"
+          cat "$RESPONSE_FILE" | jq -r '.error // .'
+          exit 1
+        fi
+
+        if [[ "$HTTP_CODE" == "404" ]]; then
+          echo "❌ Key Vault respondió 404 Not Found"
+          echo "No existe el secret ${SECRET_NAME} en el Key Vault ${KEYVAULT_NAME}"
+          cat "$RESPONSE_FILE" | jq -r '.error // .'
+          exit 1
+        fi
+
+        if [[ "$HTTP_CODE" -lt 200 || "$HTTP_CODE" -ge 300 ]]; then
+          echo "❌ Error consultando Key Vault. HTTP_CODE=${HTTP_CODE}"
+          cat "$RESPONSE_FILE" | jq -r '.error // .'
+          exit 1
+        fi
+
+        SECRET_VALUE="$(cat "$RESPONSE_FILE" | jq -r '.value // empty')"
+
+        if [[ -z "$SECRET_VALUE" ]]; then
+          echo "❌ El secret fue encontrado pero no tiene value"
+          exit 1
+        fi
+
+        echo "::add-mask::$SECRET_VALUE"
+
+        {
+          echo "secret_value<<EOF"
+          echo "$SECRET_VALUE"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+
+        echo "✅ Secret obtenido correctamente desde Key Vault"
