@@ -60,11 +60,6 @@ inputs:
     description: Ambiente donde se aplican migraciones. Ejemplo TEST, QA o PROD
     required: true
 
-  apply:
-    description: Debe ser true para aplicar migraciones. Protección contra ejecución accidental.
-    required: false
-    default: "false"
-
   show-sql-in-logs:
     description: Muestra el SQL generado en logs
     required: false
@@ -73,7 +68,7 @@ inputs:
   sql-log-max-lines:
     description: Máximo de líneas SQL a mostrar. Usar 0 para mostrar todo.
     required: false
-    default: "300"
+    default: "0"
 
   nuget-source-url:
     description: URL del feed privado NuGet/GitHub Packages
@@ -152,22 +147,6 @@ runs:
       run: |
         echo "migration-risk=NONE. No hay migraciones para aplicar."
         echo "skipped=true" >> "$GITHUB_OUTPUT"
-
-    - name: Validar confirmación apply
-      if: ${{ inputs.migration-risk != 'NONE' }}
-      shell: bash
-      env:
-        APPLY: ${{ inputs.apply }}
-      run: |
-        set -euo pipefail
-
-        if [[ "$APPLY" != "true" ]]; then
-          echo "❌ Protección activa: para aplicar migraciones el input apply debe ser true."
-          echo 'Usar: apply: "true"'
-          exit 1
-        fi
-
-        echo "✅ Confirmación apply=true recibida"
 
     - name: Obtener connection string desde Key Vault
       id: kv
