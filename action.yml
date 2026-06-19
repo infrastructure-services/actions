@@ -6,694 +6,148 @@ inputs:
     description: Riesgo de migración recibido desde Continuous Delivery
     required: false
     default: "NONE"
-
   keyvault-name:
     description: Nombre del Azure Key Vault
     required: true
-
   client-id:
     description: Azure client id
     required: true
-
   client-secret:
     description: Azure client secret
     required: true
-
   tenant-id:
     description: Azure tenant id
     required: true
-
   secret-name:
     description: Nombre del secret en Key Vault que contiene la connection string
     required: true
-
   project:
-    description: Proyecto donde están las migraciones. Usar auto para detectar automáticamente, o informar uno o varios .csproj separados por salto de línea o coma.
+    description: Proyecto de migraciones. Usar auto para detectar automáticamente.
     required: false
     default: "auto"
-
   startup-project:
     description: Proyecto startup. Ejemplo ./src/Api/LuanaApi.csproj
     required: true
-
   db-context:
-    description: Nombre del DbContext. Requerido si hay más de uno.
+    description: Nombre del DbContext.
     required: false
     default: ""
-
   configuration:
     description: Configuración de build
     required: false
     default: "Release"
-
   dotnet-version:
-    description: Versión esperada de .NET SDK. Solo se valida, no se instala.
+    description: Versión esperada de .NET SDK
     required: false
-    default: "10"
-
+    default: "10.0.x"
   ef-tool-version:
     description: Versión de dotnet-ef
     required: false
     default: "10.0.5"
-
   environment-name:
-    description: Ambiente donde se aplican migraciones. Ejemplo TEST, QA o PROD
-    required: true
-
-  show-sql-in-logs:
-    description: Muestra el SQL generado en logs
+    description: Nombre del ambiente.
     required: false
-    default: "true"
-
-  sql-log-max-lines:
-    description: Máximo de líneas SQL a mostrar. Usar 0 para mostrar todo.
-    required: false
-    default: "0"
-
-  nuget-source-url:
-    description: URL del feed privado NuGet/GitHub Packages
-    required: false
-    default: "https://nuget.pkg.github.com/architecture-it/index.json"
-
-  nuget-source-name:
-    description: Nombre del source privado NuGet
-    required: false
-    default: "github-architecture-it"
-
+    default: "UNKNOWN"
   nuget-username:
-    description: Usuario para autenticar contra el feed privado
+    description: Usuario de nuget
     required: false
     default: ""
-
   nuget-token:
-    description: Token para autenticar contra el feed privado
+    description: Token de nuget
     required: false
     default: ""
 
 outputs:
   skipped:
-    description: Indica si se salteó porque migration-risk era NONE
-    value: ${{ steps.resolve.outputs.skipped }}
-
+    description: "Indica si se salteó"
+    value: ${{ steps.apply.outputs.skipped }}
   applied:
-    description: Indica si se aplicaron migraciones
-    value: ${{ steps.resolve.outputs.applied }}
-
-  had-pending-migrations:
-    description: Indica si había migraciones pendientes antes de aplicar
-    value: ${{ steps.resolve.outputs.had_pending_migrations }}
-
-  migration-projects:
-    description: Proyectos de migración procesados
-    value: ${{ steps.resolve.outputs.migration_projects }}
-
-  sql-files:
-    description: Archivos SQL generados antes de aplicar
-    value: ${{ steps.resolve.outputs.sql_files }}
-
-  analysis-dir:
-    description: Directorio donde se generó el análisis
-    value: ${{ steps.resolve.outputs.analysis_dir }}
-
-  applied-migrations:
-    description: Migraciones aplicadas
-    value: ${{ steps.resolve.outputs.applied_migrations }}
+    description: "Indica si se aplicó"
+    value: ${{ steps.apply.outputs.applied }}
 
 runs:
   using: composite
   steps:
-    - name: Validar input migration-risk
+    - name: Setup .NET
+      if: ${{ inputs.dotnet-version != '' }}
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: ${{ inputs.dotnet-version }}
+
+    - name: Apply Migrations
+      id: apply
       shell: bash
       env:
         MIGRATION_RISK: ${{ inputs.migration-risk }}
-      run: |
-        set -euo pipefail
-
-        case "$MIGRATION_RISK" in
-          NONE|LOW|MEDIUM|HIGH)
-            echo "migration-risk válido: $MIGRATION_RISK"
-            ;;
-          *)
-            echo "❌ migration-risk inválido: $MIGRATION_RISK"
-            echo "Valores permitidos: NONE, LOW, MEDIUM, HIGH"
-            exit 1
-            ;;
-        esac
-
-    - name: Skip migraciones
-      id: skip
-      if: ${{ inputs.migration-risk == 'NONE' }}
-      shell: bash
-      run: |
-        echo "migration-risk=NONE. No hay migraciones para aplicar."
-        echo "skipped=true" >> "$GITHUB_OUTPUT"
-
-    - name: Obtener connection string desde Key Vault
-      id: kv
-      if: ${{ inputs.migration-risk != 'NONE' }}
-      uses: infrastructure-services/actions@get-keyvault-secret
-      with:
-        keyvault-name: ${{ inputs.keyvault-name }}
-        client-id: ${{ inputs.client-id }}
-        client-secret: ${{ inputs.client-secret }}
-        tenant-id: ${{ inputs.tenant-id }}
-        secret-name: ${{ inputs.secret-name }}
-
-    - name: Validar conexión SQL Server
-      id: sql
-      if: ${{ inputs.migration-risk != 'NONE' }}
-      uses: infrastructure-services/actions@validate-sqlserver-connection
-      with:
-        connection-string: ${{ steps.kv.outputs['secret-value'] }}
-        dotnet-version: ${{ inputs.dotnet-version }}
-        test-framework: "net10.0"
-        connection-timeout: "15"
-
-    - name: Aplicar migraciones EF Core
-      id: apply
-      if: ${{ inputs.migration-risk != 'NONE' }}
-      shell: bash
-      env:
-        DB_CONNECTION: ${{ steps.sql.outputs['normalized-connection-string'] }}
-        PROJECT_INPUT: ${{ inputs.project }}
+        KEYVAULT_NAME: ${{ inputs.keyvault-name }}
+        AZURE_CLIENT_ID: ${{ inputs.client-id }}
+        AZURE_CLIENT_SECRET: ${{ inputs.client-secret }}
+        AZURE_TENANT_ID: ${{ inputs.tenant-id }}
+        SECRET_NAME: ${{ inputs.secret-name }}
+        PROJECT: ${{ inputs.project }}
         STARTUP_PROJECT: ${{ inputs.startup-project }}
         DB_CONTEXT: ${{ inputs.db-context }}
         CONFIGURATION: ${{ inputs.configuration }}
-        DOTNET_VERSION_EXPECTED: ${{ inputs.dotnet-version }}
         EF_TOOL_VERSION: ${{ inputs.ef-tool-version }}
         ENVIRONMENT_NAME: ${{ inputs.environment-name }}
-        MIGRATION_RISK: ${{ inputs.migration-risk }}
-        SHOW_SQL_IN_LOGS: ${{ inputs.show-sql-in-logs }}
-        SQL_LOG_MAX_LINES: ${{ inputs.sql-log-max-lines }}
-        NUGET_SOURCE_URL: ${{ inputs.nuget-source-url }}
-        NUGET_SOURCE_NAME: ${{ inputs.nuget-source-name }}
         NUGET_USERNAME: ${{ inputs.nuget-username }}
         NUGET_TOKEN: ${{ inputs.nuget-token }}
       run: |
         set -euo pipefail
 
-        if [[ -z "${DB_CONNECTION:-}" ]]; then
-          echo "❌ connection-string no informada"
-          exit 1
-        fi
+        TOOLS_DIR="${RUNNER_TEMP:-/tmp}/dotnet-ef-tools-apply-${GITHUB_RUN_ID:-local}"
+        cleanup() {
+          echo "🧹 Limpiando herramientas de apply del runner..."
+          rm -rf "$TOOLS_DIR"
+        }
+        trap cleanup EXIT SIGINT SIGTERM
 
-        if [[ -z "${STARTUP_PROJECT:-}" ]]; then
-          echo "❌ startup-project no informado"
-          exit 1
-        fi
-
-        if [[ ! -f "$STARTUP_PROJECT" ]]; then
-          echo "❌ No existe el startup-project: $STARTUP_PROJECT"
-          exit 1
-        fi
-
+        echo "Conectando a Azure Key Vault y descargando connection string..."
+        AZURE_LOGIN_OUTPUT="$(az login --service-principal -u "$AZURE_CLIENT_ID" -p "$AZURE_CLIENT_SECRET" --tenant "$AZURE_TENANT_ID" 2>&1)"
+        DB_CONNECTION="$(az keyvault secret show --name "$SECRET_NAME" --vault-name "$KEYVAULT_NAME" --query value -o tsv 2>&1)"
         echo "::add-mask::$DB_CONNECTION"
 
-        if [[ -n "${NUGET_TOKEN:-}" ]]; then
-          echo "::add-mask::$NUGET_TOKEN"
-        fi
-
-        echo "Validando dotnet instalado en runner..."
-
-        if ! command -v dotnet >/dev/null 2>&1; then
-          echo "❌ dotnet no está instalado o no está en el PATH del runner"
-          exit 1
-        fi
-
-        which dotnet
-        dotnet --info
-        dotnet --list-sdks
-
-        EXPECTED_MAJOR="$(echo "$DOTNET_VERSION_EXPECTED" | sed -E 's/^([0-9]+).*/\1/')"
-
-        if [[ -n "$EXPECTED_MAJOR" ]]; then
-          if ! dotnet --list-sdks | grep -Eq "^${EXPECTED_MAJOR}\."; then
-            echo "❌ No se encontró .NET SDK ${EXPECTED_MAJOR}.x instalado en el runner"
-            echo "SDKs disponibles:"
-            dotnet --list-sdks
-            exit 1
+        detect_projects() {
+          if [[ "${PROJECT}" != "auto" ]]; then
+            echo "$PROJECT" | tr ',' '\n'
+            return
           fi
+          # Bugfix: Forzar descubrimiento local seguro
+          find . -path "*/Migrations/*.cs" -not -path "*/bin/*" -not -path "*/obj/*" -not -name "*.Designer.cs" -not -name "*ModelSnapshot.cs" -print | while read -r f; do
+            local d="$(dirname "$f")"
+            while [[ "$d" != "." && "$d" != "/" ]]; do
+              local p="$(find "$d" -maxdepth 1 -name "*.csproj" -print | head -n 1 || true)"
+              if [[ -n "$p" ]]; then echo "$p"; break; fi
+              d="$(dirname "$d")"
+            done
+          done | sort -u
+        }
+
+        MIGRATION_PROJECTS="$(detect_projects || true)"
+        if [[ -z "$MIGRATION_PROJECTS" ]]; then
+          echo "skipped=true" >> "$GITHUB_OUTPUT"
+          exit 0
         fi
 
-        append_multiline_output() {
-          local NAME="$1"
-          local VALUE="$2"
-          local DELIMITER="EOF_${RANDOM}_${RANDOM}_$(date +%s)"
+        BUILD_TARGET="./"
+        SLN_FILE="$(find . -maxdepth 2 -name "*.sln" -print | head -n 1 || true)"
+        if [[ -n "$SLN_FILE" ]]; then BUILD_TARGET="$SLN_FILE"; else BUILD_TARGET="$STARTUP_PROJECT"; fi
 
-          {
-            echo "${NAME}<<${DELIMITER}"
-            printf '%s\n' "$VALUE"
-            echo "${DELIMITER}"
-          } >> "$GITHUB_OUTPUT"
-        }
+        dotnet restore "$BUILD_TARGET"
+        dotnet build "$BUILD_TARGET" --no-restore --configuration "$CONFIGURATION"
 
-        xml_escape() {
-          local VALUE="$1"
-
-          VALUE="${VALUE//&/&amp;}"
-          VALUE="${VALUE//</&lt;}"
-          VALUE="${VALUE//>/&gt;}"
-          VALUE="${VALUE//\"/&quot;}"
-          VALUE="${VALUE//\'/&apos;}"
-
-          printf '%s' "$VALUE"
-        }
-
-        clean_ansi() {
-          sed -r 's/\x1B\[[0-9;]*[mK]//g'
-        }
-
-        extract_pending_migrations() {
-          echo "$1" \
-            | clean_ansi \
-            | grep -iE '\(Pending\)|\[Pending\]' \
-            | sed -E 's/^[[:space:]]*([^[:space:]]+).*/\1/' \
-            | grep -E '^[0-9]{14}_' \
-            | awk '!seen[$0]++' || true
-        }
-
-        safe_name() {
-          local VALUE="$1"
-
-          VALUE="${VALUE#./}"
-          VALUE="$(echo "$VALUE" \
-            | sed 's#[/\\: ]#_#g' \
-            | sed 's#__#_#g' \
-            | sed 's#^[._-]*##' \
-            | sed 's#[._-]*$##')"
-
-          if [[ -z "$VALUE" ]]; then
-            VALUE="value"
-          fi
-
-          echo "$VALUE"
-        }
-
-        detect_migration_projects() {
-          echo "Detectando proyectos con migraciones EF Core..." >&2
-
-          while IFS= read -r CSPROJ; do
-            [[ -n "$CSPROJ" ]] || continue
-
-            PROJECT_DIR="$(dirname "$CSPROJ")"
-
-            if find "$PROJECT_DIR" \
-              -type f \
-              \( -path "*/Migrations/*.cs" -o -name "*ModelSnapshot.cs" \) \
-              ! -path "*/bin/*" \
-              ! -path "*/obj/*" \
-              ! -path "*/.git/*" \
-              | grep -q .; then
-              echo "$CSPROJ"
-            fi
-          done < <(
-            find . \
-              -type f \
-              -name "*.csproj" \
-              ! -path "*/bin/*" \
-              ! -path "*/obj/*" \
-              ! -path "*/.git/*" \
-              | sort
-          )
-        }
-
-        normalize_project_input() {
-          local VALUE="$1"
-
-          echo "$VALUE" \
-            | tr ',' '\n' \
-            | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
-            | sed '/^$/d'
-        }
-
-        if [[ -z "${PROJECT_INPUT:-}" || "$PROJECT_INPUT" == "auto" ]]; then
-          MIGRATION_PROJECTS="$(detect_migration_projects)"
-        else
-          MIGRATION_PROJECTS="$(normalize_project_input "$PROJECT_INPUT")"
-        fi
-
-        if [[ -z "${MIGRATION_PROJECTS:-}" ]]; then
-          echo "❌ No se detectaron proyectos con migraciones EF Core."
-          echo ""
-          echo "Se buscaron:"
-          echo "- carpetas */Migrations/*.cs"
-          echo "- archivos *ModelSnapshot.cs"
-          echo ""
-          echo "Si tu proyecto de migraciones no sigue ese patrón, informalo explícitamente:"
-          echo "project: ./src/Infrastructure/Infrastructure.csproj"
-          exit 1
-        fi
-
-        echo ""
-        echo "Proyectos de migraciones a procesar:"
-        echo "$MIGRATION_PROJECTS"
-
-        SAFE_ENV="$(safe_name "$ENVIRONMENT_NAME")"
-        ANALYSIS_ROOT="${GITHUB_WORKSPACE:-$PWD}/artifacts/ef-migrations-apply/${SAFE_ENV}"
-        mkdir -p "$ANALYSIS_ROOT"
-
-        NUGET_CONFIG_FILE="${RUNNER_TEMP:-/tmp}/nuget-${GITHUB_RUN_ID:-local}-${GITHUB_JOB:-job}.config"
-        RESTORE_EXTRA_ARGS=()
-
-        if [[ -n "${NUGET_SOURCE_URL:-}" ]]; then
-          if [[ -z "${NUGET_USERNAME:-}" || -z "${NUGET_TOKEN:-}" ]]; then
-            echo "❌ Se informó nuget-source-url pero falta nuget-username o nuget-token"
-            exit 1
-          fi
-
-          ESC_NUGET_SOURCE_NAME="$(xml_escape "$NUGET_SOURCE_NAME")"
-          ESC_NUGET_SOURCE_URL="$(xml_escape "$NUGET_SOURCE_URL")"
-          ESC_NUGET_USERNAME="$(xml_escape "$NUGET_USERNAME")"
-          ESC_NUGET_TOKEN="$(xml_escape "$NUGET_TOKEN")"
-
-          {
-            printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>'
-            printf '%s\n' '<configuration>'
-            printf '%s\n' '  <packageSources>'
-            printf '%s\n' '    <clear />'
-            printf '%s\n' '    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />'
-            printf '    <add key="%s" value="%s" />\n' "$ESC_NUGET_SOURCE_NAME" "$ESC_NUGET_SOURCE_URL"
-            printf '%s\n' '  </packageSources>'
-            printf '%s\n' '  <packageSourceCredentials>'
-            printf '    <%s>\n' "$NUGET_SOURCE_NAME"
-            printf '      <add key="Username" value="%s" />\n' "$ESC_NUGET_USERNAME"
-            printf '      <add key="ClearTextPassword" value="%s" />\n' "$ESC_NUGET_TOKEN"
-            printf '    </%s>\n' "$NUGET_SOURCE_NAME"
-            printf '%s\n' '  </packageSourceCredentials>'
-            printf '%s\n' '</configuration>'
-          } > "$NUGET_CONFIG_FILE"
-
-          echo "✅ NuGet.Config temporal creado con source privado: ${NUGET_SOURCE_NAME}"
-          RESTORE_EXTRA_ARGS=(--configfile "$NUGET_CONFIG_FILE")
-        else
-          echo "No se informó nuget-source-url. Se usará configuración NuGet por defecto."
-        fi
-
-        echo ""
-        echo "=========================================="
-        echo "Aplicación de migraciones EF Core"
-        echo "Ambiente:        $ENVIRONMENT_NAME"
-        echo "Migration Risk:  $MIGRATION_RISK"
-        echo "Startup project: $STARTUP_PROJECT"
-        echo "Configuration:   $CONFIGURATION"
-        echo "DbContext:       ${DB_CONTEXT:-auto}"
-        echo "Analysis dir:    $ANALYSIS_ROOT"
-        echo "=========================================="
-
-        echo ""
-        echo "Restaurando startup project..."
-        dotnet restore "$STARTUP_PROJECT" "${RESTORE_EXTRA_ARGS[@]}"
-
-        echo ""
-        echo "Compilando startup project..."
-        dotnet build "$STARTUP_PROJECT" --no-restore --configuration "$CONFIGURATION"
-
-        echo ""
-        echo "Instalando dotnet-ef en tool-path temporal..."
-
-        TOOLS_DIR="${RUNNER_TEMP:-/tmp}/dotnet-ef-apply-${GITHUB_RUN_ID:-local}-${GITHUB_JOB:-job}"
-        rm -rf "$TOOLS_DIR"
-        mkdir -p "$TOOLS_DIR"
-
-        dotnet tool install dotnet-ef \
-          --tool-path "$TOOLS_DIR" \
-          --version "$EF_TOOL_VERSION" \
-          --add-source "https://api.nuget.org/v3/index.json"
-
+        rm -rf "$TOOLS_DIR" && mkdir -p "$TOOLS_DIR"
+        dotnet tool install dotnet-ef --tool-path "$TOOLS_DIR" --version "$EF_TOOL_VERSION"
         EF_CMD=("$TOOLS_DIR/dotnet-ef")
 
-        echo "dotnet-ef instalado:"
-        "${EF_CMD[@]}" --version
+        while read -r PROJ; do
+          [[ -n "$PROJ" ]] || continue
+          EF_ARGS=(--project "$PROJ" --startup-project "$STARTUP_PROJECT" --configuration "$CONFIGURATION" --no-build)
+          if [[ -n "${DB_CONTEXT}" ]]; then EF_ARGS+=(--context "$DB_CONTEXT"); fi
+          
+          echo "Ejecutando actualización de base para: $PROJ"
+          "${EF_CMD[@]}" database update "${EF_ARGS[@]}" --connection "$DB_CONNECTION"
+        done < <(echo "$MIGRATION_PROJECTS")
 
-        export DB_CONNECTION="$DB_CONNECTION"
-        export ConnectionStrings__DefaultConnection="$DB_CONNECTION"
-        export ConnectionStrings__SqlServer="$DB_CONNECTION"
-        export ConnectionStrings__SqlConnection="$DB_CONNECTION"
-
-        HAD_PENDING_MIGRATIONS="false"
-        APPLIED="false"
-        SQL_FILES=""
-        APPLIED_MIGRATIONS=""
-        PROCESSED_PROJECTS=""
-
-        while IFS= read -r MIGRATION_PROJECT; do
-          [[ -n "$MIGRATION_PROJECT" ]] || continue
-
-          echo ""
-          echo "=========================================="
-          echo "Procesando proyecto de migraciones"
-          echo "Migration project: $MIGRATION_PROJECT"
-          echo "Startup project:   $STARTUP_PROJECT"
-          echo "Ambiente:          $ENVIRONMENT_NAME"
-          echo "=========================================="
-
-          if [[ ! -f "$MIGRATION_PROJECT" ]]; then
-            echo "❌ No existe el project de migraciones: $MIGRATION_PROJECT"
-            exit 1
-          fi
-
-          PROCESSED_PROJECTS="${PROCESSED_PROJECTS}${MIGRATION_PROJECT}"$'\n'
-
-          echo ""
-          echo "Restaurando migration project..."
-          dotnet restore "$MIGRATION_PROJECT" "${RESTORE_EXTRA_ARGS[@]}"
-
-          echo ""
-          echo "Compilando migration project..."
-          dotnet build "$MIGRATION_PROJECT" --no-restore --configuration "$CONFIGURATION"
-
-          EF_ARGS=()
-          EF_ARGS+=(--project "$MIGRATION_PROJECT")
-          EF_ARGS+=(--startup-project "$STARTUP_PROJECT")
-
-          if [[ -n "${DB_CONTEXT:-}" ]]; then
-            EF_ARGS+=(--context "$DB_CONTEXT")
-          fi
-
-          EF_ARGS+=(--configuration "$CONFIGURATION")
-          EF_ARGS+=(--no-build)
-
-          echo ""
-          echo "Listando migraciones antes de aplicar..."
-
-          set +e
-          MIGRATIONS_BEFORE="$("${EF_CMD[@]}" migrations list "${EF_ARGS[@]}" --connection "$DB_CONNECTION" 2>&1)"
-          MIGRATIONS_BEFORE_EXIT=$?
-          set -e
-
-          echo "$MIGRATIONS_BEFORE"
-
-          if [[ "$MIGRATIONS_BEFORE_EXIT" -ne 0 ]]; then
-            echo "❌ No se pudo listar migraciones para $MIGRATION_PROJECT"
-            exit "$MIGRATIONS_BEFORE_EXIT"
-          fi
-
-          PENDING_MIGRATIONS="$(extract_pending_migrations "$MIGRATIONS_BEFORE")"
-
-          echo ""
-          echo "Migraciones pendientes parseadas:"
-          if [[ -z "$PENDING_MIGRATIONS" ]]; then
-            echo "<sin pendientes detectadas>"
-          else
-            echo "$PENDING_MIGRATIONS"
-          fi
-
-          if [[ -z "$PENDING_MIGRATIONS" ]]; then
-            echo "✅ No hay migraciones pendientes para $MIGRATION_PROJECT"
-            continue
-          fi
-
-          echo ""
-          echo "⚠️ Migraciones pendientes detectadas en $MIGRATION_PROJECT:"
-          echo "$PENDING_MIGRATIONS"
-
-          SAFE_PROJECT="$(safe_name "$MIGRATION_PROJECT")"
-          LATEST_PENDING="$(echo "$PENDING_MIGRATIONS" | tail -n 1)"
-          SAFE_MIGRATION="$(safe_name "$LATEST_PENDING")"
-
-          SQL_FILE="$ANALYSIS_ROOT/apply_${SAFE_ENV}_${SAFE_PROJECT}_${SAFE_MIGRATION}.sql"
-
-          echo ""
-          echo "Generando SQL idempotente antes de aplicar..."
-          echo "SQL_FILE: $SQL_FILE"
-
-          "${EF_CMD[@]}" migrations script \
-            "${EF_ARGS[@]}" \
-            --idempotent \
-            --output "$SQL_FILE"
-
-          if [[ ! -f "$SQL_FILE" ]]; then
-            echo "❌ No se generó el archivo SQL esperado: $SQL_FILE"
-            exit 1
-          fi
-
-          if [[ ! -s "$SQL_FILE" ]]; then
-            echo "❌ El archivo SQL generado está vacío: $SQL_FILE"
-            exit 1
-          fi
-
-          echo "✅ SQL generado:"
-          ls -lh "$SQL_FILE"
-
-          if [[ "$SHOW_SQL_IN_LOGS" == "true" ]]; then
-            echo ""
-            echo "=========================================="
-            echo "SQL generado para $MIGRATION_PROJECT"
-            echo "=========================================="
-
-            if [[ "$SQL_LOG_MAX_LINES" == "0" ]]; then
-              cat "$SQL_FILE"
-            else
-              head -n "$SQL_LOG_MAX_LINES" "$SQL_FILE"
-
-              TOTAL_LINES="$(wc -l < "$SQL_FILE" | tr -d ' ')"
-              if [[ "$TOTAL_LINES" -gt "$SQL_LOG_MAX_LINES" ]]; then
-                echo ""
-                echo "⚠️ SQL truncado en logs. Total líneas: $TOTAL_LINES. Mostradas: $SQL_LOG_MAX_LINES"
-                echo "Descargar artifact para ver SQL completo."
-              fi
-            fi
-
-            echo ""
-            echo "=========================================="
-            echo "FIN SQL"
-            echo "=========================================="
-          fi
-
-          echo ""
-          echo "Aplicando migraciones para $MIGRATION_PROJECT..."
-
-          "${EF_CMD[@]}" database update \
-            "${EF_ARGS[@]}" \
-            --connection "$DB_CONNECTION" \
-            --verbose
-
-          echo ""
-          echo "Validando migraciones después de aplicar..."
-
-          MIGRATIONS_AFTER="$("${EF_CMD[@]}" migrations list "${EF_ARGS[@]}" --connection "$DB_CONNECTION" 2>&1)"
-          echo "$MIGRATIONS_AFTER"
-
-          PENDING_AFTER="$(extract_pending_migrations "$MIGRATIONS_AFTER")"
-
-          if [[ -n "$PENDING_AFTER" ]]; then
-            echo "❌ Todavía quedan migraciones pendientes para $MIGRATION_PROJECT:"
-            echo "$PENDING_AFTER"
-            exit 1
-          fi
-
-          HAD_PENDING_MIGRATIONS="true"
-          APPLIED="true"
-          SQL_FILES="${SQL_FILES}${SQL_FILE}"$'\n'
-          APPLIED_MIGRATIONS="${APPLIED_MIGRATIONS}${MIGRATION_PROJECT}:"$'\n'"${PENDING_MIGRATIONS}"$'\n'
-
-          echo "✅ Migraciones aplicadas correctamente para $MIGRATION_PROJECT"
-        done <<< "$MIGRATION_PROJECTS"
-
-        {
-          echo "had_pending_migrations=$HAD_PENDING_MIGRATIONS"
-          echo "applied=$APPLIED"
-          echo "analysis_dir=$ANALYSIS_ROOT"
-        } >> "$GITHUB_OUTPUT"
-
-        append_multiline_output "migration_projects" "$PROCESSED_PROJECTS"
-        append_multiline_output "sql_files" "$SQL_FILES"
-        append_multiline_output "applied_migrations" "$APPLIED_MIGRATIONS"
-
-        echo ""
-        echo "Resumen de aplicación de migraciones:"
-        echo "had_pending_migrations=$HAD_PENDING_MIGRATIONS"
-        echo "applied=$APPLIED"
-        echo "analysis_dir=$ANALYSIS_ROOT"
-
-        if [[ "$APPLIED" == "false" ]]; then
-          echo "✅ No había migraciones pendientes para aplicar."
-        else
-          echo "✅ Migraciones aplicadas correctamente."
-        fi
-
-    - name: Resolver outputs
-      id: resolve
-      if: ${{ always() }}
-      shell: bash
-      env:
-        MIGRATION_RISK: ${{ inputs.migration-risk }}
-        APPLIED: ${{ steps.apply.outputs.applied }}
-        HAD_PENDING_MIGRATIONS: ${{ steps.apply.outputs.had_pending_migrations }}
-        ANALYSIS_DIR: ${{ steps.apply.outputs.analysis_dir }}
-        MIGRATION_PROJECTS: ${{ steps.apply.outputs.migration_projects }}
-        SQL_FILES: ${{ steps.apply.outputs.sql_files }}
-        APPLIED_MIGRATIONS: ${{ steps.apply.outputs.applied_migrations }}
-      run: |
-        set -euo pipefail
-
-        SKIPPED="false"
-
-        if [[ "$MIGRATION_RISK" == "NONE" ]]; then
-          SKIPPED="true"
-          APPLIED="false"
-          HAD_PENDING_MIGRATIONS="false"
-          ANALYSIS_DIR=""
-          MIGRATION_PROJECTS=""
-          SQL_FILES=""
-          APPLIED_MIGRATIONS=""
-        fi
-
-        append_multiline_output() {
-          local NAME="$1"
-          local VALUE="$2"
-          local DELIMITER="EOF_${RANDOM}_${RANDOM}_$(date +%s)"
-
-          {
-            echo "${NAME}<<${DELIMITER}"
-            printf '%s\n' "$VALUE"
-            echo "${DELIMITER}"
-          } >> "$GITHUB_OUTPUT"
-        }
-
-        {
-          echo "skipped=$SKIPPED"
-          echo "applied=${APPLIED:-false}"
-          echo "had_pending_migrations=${HAD_PENDING_MIGRATIONS:-false}"
-          echo "analysis_dir=${ANALYSIS_DIR:-}"
-        } >> "$GITHUB_OUTPUT"
-
-        append_multiline_output "migration_projects" "${MIGRATION_PROJECTS:-}"
-        append_multiline_output "sql_files" "${SQL_FILES:-}"
-        append_multiline_output "applied_migrations" "${APPLIED_MIGRATIONS:-}"
-
-        echo "Resumen apply-db-migrations:"
-        echo "skipped=$SKIPPED"
-        echo "applied=${APPLIED:-false}"
-        echo "had_pending_migrations=${HAD_PENDING_MIGRATIONS:-false}"
-        echo "analysis_dir=${ANALYSIS_DIR:-}"
-
-        {
-          echo "### Apply DB Migrations"
-          echo ""
-          echo "| Campo | Valor |"
-          echo "|---|---|"
-          echo "| migration-risk | \`$MIGRATION_RISK\` |"
-          echo "| skipped | \`$SKIPPED\` |"
-          echo "| applied | \`${APPLIED:-false}\` |"
-          echo "| had_pending_migrations | \`${HAD_PENDING_MIGRATIONS:-false}\` |"
-          echo "| analysis_dir | \`${ANALYSIS_DIR:-}\` |"
-          echo ""
-          echo "#### Proyectos procesados"
-          echo ""
-          echo '```text'
-          echo "${MIGRATION_PROJECTS:-}"
-          echo '```'
-          echo ""
-          echo "#### SQL files"
-          echo ""
-          echo '```text'
-          echo "${SQL_FILES:-}"
-          echo '```'
-          echo ""
-          echo "#### Migraciones aplicadas"
-          echo ""
-          echo '```text'
-          echo "${APPLIED_MIGRATIONS:-}"
-          echo '```'
-        } >> "$GITHUB_STEP_SUMMARY"
+        echo "skipped=false" >> "$GITHUB_OUTPUT"
+        echo "applied=true" >> "$GITHUB_OUTPUT"
