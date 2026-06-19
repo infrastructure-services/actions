@@ -96,6 +96,12 @@ runs:
 
         RESPONSE_FILE="$(mktemp)"
 
+        # 🧹 FIX CRÍTICO PERSISTENCIA: Se asegura de borrar el JSON temporal del disco al salir
+        cleanup() {
+          rm -f "$RESPONSE_FILE"
+        }
+        trap cleanup EXIT SIGINT SIGTERM
+
         echo "Consultando secret en Key Vault"
         echo "Key Vault: ${KEYVAULT_NAME}"
         echo "Secret name: ${SECRET_NAME}"
