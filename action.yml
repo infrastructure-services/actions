@@ -28,12 +28,12 @@ inputs:
   dotnet-version:
     description: Versión de .NET SDK a instalar. Dejar vacío si el runner ya tiene dotnet.
     required: false
-    default: "8.0.x"
+    default: "10.0.x"
 
   ef-tool-version:
     description: Versión de dotnet-ef. Ejemplo 8.0.0
     required: false
-    default: "8.0.0"
+    default: "10.0.5"
 
   validate-model-changes:
     description: Ejecuta dotnet ef migrations has-pending-model-changes
