@@ -192,6 +192,10 @@ runs:
             RISK="$(max_risk "$RISK" "$LEVEL")"
           }
 
+          if grep -Eiq '(CREATE([[:space:]]+OR[[:space:]]+ALTER)?|DROP|ALTER)[[:space:]]+TRIGGER' "$SQL_WITHOUT_HISTORY"; then
+            add_finding "HIGH" "Detecta CREATE, DROP o ALTER de TRIGGER. Puede modificar lógica automática de base, afectar datos o impactar operaciones DML."
+          fi
+
           if grep -Eiq 'DROP[[:space:]]+TABLE' "$SQL_WITHOUT_HISTORY"; then
             add_finding "HIGH" "Detecta DROP TABLE. Puede eliminar tablas y datos."
           fi
