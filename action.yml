@@ -124,6 +124,11 @@ runs:
       run: |
         set -euo pipefail
 
+        # 1. Seguridad: Ofuscar el Connection String de entrada inmediatamente antes de cualquier otra cosa
+        if [[ -n "${DB_CONNECTION:-}" ]]; then
+          echo "::add-mask::$DB_CONNECTION"
+        fi
+
         if [[ -z "${DB_CONNECTION:-}" ]]; then
           echo "❌ connection-string no informada"
           exit 1
@@ -133,8 +138,6 @@ runs:
           echo "❌ startup-project no informado"
           exit 1
         fi
-
-        echo "::add-mask::$DB_CONNECTION"
 
         risk_value() {
           case "${1^^}" in
@@ -182,7 +185,12 @@ runs:
           : > "$FINDINGS_FILE"
 
           SQL_WITHOUT_HISTORY="$(mktemp)"
-          grep -vi "__EFMigrationsHistory" "$SQL_FILE" > "$SQL_WITHOUT_HISTORY" || true
+          
+          # Limpieza avanzada: Remover comentarios SQL (-- y /* */) para evitar falsos positivos
+          # e ignorar la tabla de historial de EF
+          sed -e 's/--.*$//g' "$SQL_FILE" \
+            | awk 'BEGIN{OFS=FS} /[^@]\/\*/{sub(/\/\*.*\*\//,"");col=1;while(!/\*\//){getline;sub(/\/\*.*\*\//,"")}sub(/^.*\*\//,"")}1' \
+            | grep -vi "__EFMigrationsHistory" > "$SQL_WITHOUT_HISTORY" || true
 
           add_finding() {
             local LEVEL="$1"
@@ -237,7 +245,7 @@ runs:
           fi
 
           if grep -Eiq 'ALTER[[:space:]]+TABLE.*ADD.*NOT[[:space:]]+NULL|ADD[[:space:]].*NOT[[:space:]]+NULL' "$SQL_WITHOUT_HISTORY"; then
-            add_finding "MEDIUM" "Detecta columna NOT NULL nueva o cambio a NOT NULL."
+            add_finding "MEDIUM" "Detecta columna NOT NULL nueva o cambio a NOT NULL. Riesgo de fallo si la tabla ya posee registros."
           fi
 
           if grep -Eiq 'CREATE[[:space:]]+TABLE' "$SQL_WITHOUT_HISTORY"; then
@@ -323,33 +331,32 @@ runs:
             return
           fi
 
-          find . \
-            -path "*/Migrations/*.cs" \
-            -not -path "*/bin/*" \
-            -not -path "*/obj/*" \
-            -not -name "*.Designer.cs" \
-            -not -name "*ModelSnapshot.cs" \
-            -print \
-            | while read -r migration_file; do
-                dir="$(dirname "$migration_file")"
+          # Recolectar proyectos de migraciones evitando subshells para que el flujo de control sea seguro
+          local found_projects=""
+          while read -r migration_file; do
+            local dir
+            dir="$(dirname "$migration_file")"
 
-                while [[ "$dir" != "." && "$dir" != "/" ]]; do
-                  csproj="$(find "$dir" -maxdepth 1 -name "*.csproj" -print | head -n 1 || true)"
+            while [[ "$dir" != "." && "$dir" != "/" ]]; do
+              local csproj
+              csproj="$(find "$dir" -maxdepth 1 -name "*.csproj" -print | head -n 1 || true)"
 
-                  if [[ -n "$csproj" ]]; then
-                    if grep -q '<Project Sdk=' "$csproj"; then
-                      echo "$csproj"
-                    else
-                      echo "⚠️ Ignorando proyecto no SDK-style: $csproj" >&2
-                    fi
+              if [[ -n "$csproj" ]]; then
+                if grep -q '<Project Sdk=' "$csproj"; then
+                  found_projects="${found_projects}${csproj}"$'\n'
+                else
+                  echo "⚠️ Ignorando proyecto no SDK-style: $csproj" >&2
+                fi
+                break
+              fi
 
-                    break
-                  fi
+              dir="$(dirname "$dir")"
+            done
+          done < <(find . -path "*/Migrations/*.cs" -not -path "*/bin/*" -not -path "*/obj/*" -not -name "*.Designer.cs" -not -name "*ModelSnapshot.cs" -print)
 
-                  dir="$(dirname "$dir")"
-                done
-              done \
-            | sort -u
+          if [[ -n "$found_projects" ]]; then
+            echo "$found_projects" | sort -u
+          fi
         }
 
         echo ""
@@ -448,6 +455,7 @@ runs:
           echo ""
         } > "$SUMMARY_FILE"
 
+        # Corrección: Process Substitution para evitar subshells en el bucle principal de evaluación
         while read -r MIGRATION_PROJECT; do
           [[ -n "$MIGRATION_PROJECT" ]] || continue
 
@@ -600,7 +608,7 @@ runs:
             echo "✅ No hay cambios de modelo pendientes de migración para $MIGRATION_PROJECT"
           fi
 
-        done <<< "$MIGRATION_PROJECTS"
+        done < <(echo "$MIGRATION_PROJECTS")
 
         if (( $(risk_value "$OVERALL_RISK") >= 2 )); then
           REQUIRES_DBA=true
@@ -621,16 +629,20 @@ runs:
 
         cat "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
 
+        # Sanatizar strings acumulados removiendo líneas en blanco extras antes de enviarlas al OUTPUT
+        SQL_FILES_CLEAN="$(echo "$SQL_FILES" | sed '/^$/d')"
+        ALL_PENDING_MIGRATIONS_CLEAN="$(echo "$ALL_PENDING_MIGRATIONS" | sed '/^$/d')"
+
         {
           echo "has_pending_db_migrations=$HAS_PENDING"
           echo "migration_risk=$OVERALL_RISK"
           echo "requires_dba=$REQUIRES_DBA"
           echo "analysis_dir=$ANALYSIS_ROOT"
           echo "sql_files<<EOF"
-          echo "$SQL_FILES"
+          echo "$SQL_FILES_CLEAN"
           echo "EOF"
           echo "pending_migrations<<EOF"
-          echo "$ALL_PENDING_MIGRATIONS"
+          echo "$ALL_PENDING_MIGRATIONS_CLEAN"
           echo "EOF"
         } >> "$GITHUB_OUTPUT"
 
@@ -642,7 +654,7 @@ runs:
         echo "Requiere DBA: $REQUIRES_DBA"
         echo "Análisis generado en: $ANALYSIS_ROOT"
         echo "SQL files:"
-        echo "$SQL_FILES"
+        echo "$SQL_FILES_CLEAN"
         echo "=========================================="
 
         if [[ -n "${FAIL_ON_RISK_LEVEL:-}" ]]; then
