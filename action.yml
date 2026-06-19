@@ -43,7 +43,7 @@ inputs:
   fail-on-pending:
     description: Falla si existen migraciones pendientes.
     required: false
-    default: "true"
+    default: "false"
   fail-on-risk-level:
     description: Falla si el riesgo es igual o superior a este nivel. Valores NONE, LOW, MEDIUM, HIGH. Vacío no falla por riesgo.
     required: false
