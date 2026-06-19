@@ -5,66 +5,53 @@ inputs:
   connection-string:
     description: Connection string de SQL Server
     required: true
-
   project:
     description: Proyecto donde están las migraciones. Si se deja vacío, se autodetecta.
     required: false
     default: ""
-
   startup-project:
     description: Proyecto startup. Ejemplo ./src/Api/Api.csproj
     required: true
-
   db-context:
     description: Nombre del DbContext. Requerido si hay más de uno.
     required: false
     default: ""
-
   configuration:
     description: Configuración de build
     required: false
     default: "Release"
-
   dotnet-version:
     description: Versión de .NET SDK a instalar. Dejar vacío si el runner ya tiene dotnet.
     required: false
     default: "10.0.x"
-
   ef-tool-version:
     description: Versión de dotnet-ef. Ejemplo 8.0.0
     required: false
     default: "10.0.5"
-
   validate-model-changes:
     description: Ejecuta dotnet ef migrations has-pending-model-changes
     required: false
     default: "true"
-
   fail-if-no-migrations:
     description: Falla si no encuentra migraciones en el repo
     required: false
     default: "false"
-
   environment-name:
     description: Nombre del ambiente analizado. Ejemplo TEST, QA o PROD.
     required: false
     default: "UNKNOWN"
-
   fail-on-pending:
     description: Falla si existen migraciones pendientes.
     required: false
     default: "true"
-
   fail-on-risk-level:
     description: Falla si el riesgo es igual o superior a este nivel. Valores NONE, LOW, MEDIUM, HIGH. Vacío no falla por riesgo.
     required: false
     default: ""
-
   show-sql-in-logs:
     description: Muestra el SQL generado en los logs de GitHub Actions.
     required: false
     default: "true"
-
   sql-log-max-lines:
     description: Cantidad máxima de líneas SQL a mostrar en logs. Usar 0 para mostrar todo.
     required: false
@@ -74,23 +61,18 @@ outputs:
   has-pending-db-migrations:
     description: Indica si la base tiene migraciones pendientes
     value: ${{ steps.validate.outputs.has_pending_db_migrations }}
-
   pending-migrations:
     description: Lista de migraciones pendientes
     value: ${{ steps.validate.outputs.pending_migrations }}
-
   migration-risk:
     description: Riesgo calculado de las migraciones pendientes
     value: ${{ steps.validate.outputs.migration_risk }}
-
   requires-dba:
     description: Indica si requiere revisión DBA
     value: ${{ steps.validate.outputs.requires_dba }}
-
   analysis-dir:
     description: Carpeta donde se generó el SQL y resumen de análisis
     value: ${{ steps.validate.outputs.analysis_dir }}
-
   sql-files:
     description: Archivos SQL generados
     value: ${{ steps.validate.outputs.sql_files }}
@@ -124,10 +106,17 @@ runs:
       run: |
         set -euo pipefail
 
-        # 1. Seguridad: Ofuscar el Connection String de entrada inmediatamente antes de cualquier otra cosa
         if [[ -n "${DB_CONNECTION:-}" ]]; then
           echo "::add-mask::$DB_CONNECTION"
         fi
+
+        TOOLS_DIR="${RUNNER_TEMP:-/tmp}/dotnet-ef-tools-${GITHUB_RUN_ID:-local}-${GITHUB_JOB:-job}"
+        
+        cleanup() {
+          echo "🧹 Limpiando dependencias de herramientas del runner..."
+          rm -rf "$TOOLS_DIR"
+        }
+        trap cleanup EXIT SIGINT SIGTERM
 
         if [[ -z "${DB_CONNECTION:-}" ]]; then
           echo "❌ connection-string no informada"
@@ -152,7 +141,6 @@ runs:
         max_risk() {
           local CURRENT="$1"
           local NEW="$2"
-
           if (( $(risk_value "$NEW") > $(risk_value "$CURRENT") )); then
             echo "$NEW"
           else
@@ -162,19 +150,9 @@ runs:
 
         safe_name() {
           local VALUE="$1"
-
           VALUE="${VALUE#./}"
-          VALUE="$(echo "$VALUE" \
-            | sed 's#[/\\: ]#_#g' \
-            | sed 's#__#_#g' \
-            | sed 's#^[._-]*##' \
-            | sed 's#[._-]*$##')"
-
-          if [[ -z "$VALUE" ]]; then
-            VALUE="migration_project"
-          fi
-
-          echo "$VALUE"
+          VALUE="$(echo "$VALUE" | sed 's#[/\\: ]#_#g' | sed 's#__#_#g' | sed 's#^[._-]*##' | sed 's#[._-]*$##')"
+          echo "${VALUE:-migration_project}"
         }
 
         classify_sql_risk() {
@@ -183,11 +161,9 @@ runs:
           local RISK="LOW"
 
           : > "$FINDINGS_FILE"
-
+          local SQL_WITHOUT_HISTORY
           SQL_WITHOUT_HISTORY="$(mktemp)"
-          
-          # Limpieza avanzada: Remover comentarios SQL (-- y /* */) para evitar falsos positivos
-          # e ignorar la tabla de historial de EF
+
           sed -e 's/--.*$//g' "$SQL_FILE" \
             | awk 'BEGIN{OFS=FS} /[^@]\/\*/{sub(/\/\*.*\*\//,"");col=1;while(!/\*\//){getline;sub(/\/\*.*\*\//,"")}sub(/^.*\*\//,"")}1' \
             | grep -vi "__EFMigrationsHistory" > "$SQL_WITHOUT_HISTORY" || true
@@ -195,441 +171,201 @@ runs:
           add_finding() {
             local LEVEL="$1"
             local MESSAGE="$2"
-
             echo "- **${LEVEL}**: ${MESSAGE}" >> "$FINDINGS_FILE"
             RISK="$(max_risk "$RISK" "$LEVEL")"
           }
 
           if grep -Eiq '(CREATE([[:space:]]+OR[[:space:]]+ALTER)?|DROP|ALTER)[[:space:]]+TRIGGER' "$SQL_WITHOUT_HISTORY"; then
-            add_finding "HIGH" "Detecta CREATE, DROP o ALTER de TRIGGER. Puede modificar lógica automática de base, afectar datos o impactar operaciones DML."
+            add_finding "HIGH" "Detecta CREATE, DROP o ALTER de TRIGGER."
           fi
-
           if grep -Eiq 'DROP[[:space:]]+TABLE' "$SQL_WITHOUT_HISTORY"; then
-            add_finding "HIGH" "Detecta DROP TABLE. Puede eliminar tablas y datos."
+            add_finding "HIGH" "Detecta DROP TABLE."
           fi
-
           if grep -Eiq 'DROP[[:space:]]+COLUMN' "$SQL_WITHOUT_HISTORY"; then
-            add_finding "HIGH" "Detecta DROP COLUMN. Puede eliminar datos de una columna."
+            add_finding "HIGH" "Detecta DROP COLUMN."
           fi
-
           if grep -Eiq 'TRUNCATE[[:space:]]+TABLE' "$SQL_WITHOUT_HISTORY"; then
-            add_finding "HIGH" "Detecta TRUNCATE TABLE. Elimina datos masivamente."
+            add_finding "HIGH" "Detecta TRUNCATE TABLE."
           fi
-
           if grep -Eiq 'DELETE[[:space:]]+FROM' "$SQL_WITHOUT_HISTORY"; then
-            add_finding "HIGH" "Detecta DELETE FROM. Puede eliminar datos."
+            add_finding "HIGH" "Detecta DELETE FROM."
           fi
-
           if grep -Eiq 'ALTER[[:space:]]+COLUMN' "$SQL_WITHOUT_HISTORY"; then
-            add_finding "HIGH" "Detecta ALTER COLUMN. Puede requerir lock, conversión de datos o fallar por incompatibilidad."
+            add_finding "HIGH" "Detecta ALTER COLUMN."
           fi
-
           if grep -Eiq 'sp_rename|RENAME[[:space:]]+COLUMN|RENAME[[:space:]]+TABLE' "$SQL_WITHOUT_HISTORY"; then
-            add_finding "HIGH" "Detecta rename de tabla/columna. Puede impactar dependencias."
+            add_finding "HIGH" "Detecta rename de tabla/columna."
           fi
-
           if grep -Eiq 'ALTER[[:space:]]+TABLE.*DROP[[:space:]]+CONSTRAINT|DROP[[:space:]]+CONSTRAINT' "$SQL_WITHOUT_HISTORY"; then
-            add_finding "MEDIUM" "Detecta DROP CONSTRAINT. Puede afectar integridad referencial o índices."
+            add_finding "MEDIUM" "Detecta DROP CONSTRAINT."
           fi
-
           if grep -Eiq 'ADD[[:space:]]+CONSTRAINT|FOREIGN[[:space:]]+KEY|UNIQUE' "$SQL_WITHOUT_HISTORY"; then
-            add_finding "MEDIUM" "Detecta creación de constraints, foreign keys o unique constraints."
+            add_finding "MEDIUM" "Detecta creación de constraints o foreign keys."
           fi
-
           if grep -Eiq 'CREATE[[:space:]]+(UNIQUE[[:space:]]+)?INDEX' "$SQL_WITHOUT_HISTORY"; then
-            add_finding "MEDIUM" "Detecta CREATE INDEX. Puede generar locks o impacto de performance."
+            add_finding "MEDIUM" "Detecta CREATE INDEX."
           fi
-
           if grep -Eiq 'UPDATE[[:space:]]+' "$SQL_WITHOUT_HISTORY"; then
             add_finding "MEDIUM" "Detecta UPDATE de datos."
           fi
-
           if grep -Eiq 'ALTER[[:space:]]+TABLE.*ADD.*NOT[[:space:]]+NULL|ADD[[:space:]].*NOT[[:space:]]+NULL' "$SQL_WITHOUT_HISTORY"; then
-            add_finding "MEDIUM" "Detecta columna NOT NULL nueva o cambio a NOT NULL. Riesgo de fallo si la tabla ya posee registros."
+            add_finding "MEDIUM" "Detecta columna NOT NULL nueva o cambio a NOT NULL."
           fi
-
           if grep -Eiq 'CREATE[[:space:]]+TABLE' "$SQL_WITHOUT_HISTORY"; then
             add_finding "LOW" "Detecta CREATE TABLE."
           fi
-
           if grep -Eiq 'ALTER[[:space:]]+TABLE.*ADD|ADD[[:space:]]+\[' "$SQL_WITHOUT_HISTORY"; then
-            add_finding "LOW" "Detecta agregado de columnas o alteraciones aditivas."
+            add_finding "LOW" "Detecta agregado de columnas."
           fi
 
           if [[ ! -s "$FINDINGS_FILE" ]]; then
-            echo "- **LOW**: No se detectaron operaciones destructivas conocidas. Revisar SQL igualmente." >> "$FINDINGS_FILE"
+            echo "- **LOW**: No se detectaron operaciones destructivas. Revisar SQL." >> "$FINDINGS_FILE"
             RISK="LOW"
           fi
 
           rm -f "$SQL_WITHOUT_HISTORY"
-
           echo "$RISK"
         }
 
         show_sql_file() {
           local SQL_FILE="$1"
           local TITLE="$2"
-
-          if [[ "${SHOW_SQL_IN_LOGS}" != "true" ]]; then
-            return
-          fi
-
-          echo ""
-          echo "=========================================="
-          echo "$TITLE"
-          echo "Archivo: $SQL_FILE"
-          echo "=========================================="
-
+          if [[ "${SHOW_SQL_IN_LOGS}" != "true" ]]; then return; fi
+          echo -e "\n==========================================\n$TITLE\nArchivo: $SQL_FILE\n=========================================="
+          local TOTAL_LINES
           TOTAL_LINES="$(wc -l < "$SQL_FILE" | tr -d ' ')"
-          MAX_LINES="${SQL_LOG_MAX_LINES:-500}"
-
+          local MAX_LINES="${SQL_LOG_MAX_LINES:-500}"
           if [[ "$MAX_LINES" == "0" ]]; then
             cat "$SQL_FILE"
           else
             sed -n "1,${MAX_LINES}p" "$SQL_FILE"
-
             if [[ "$TOTAL_LINES" -gt "$MAX_LINES" ]]; then
-              echo ""
-              echo "⚠️ SQL truncado en logs."
-              echo "Total de líneas: $TOTAL_LINES"
-              echo "Líneas mostradas: $MAX_LINES"
-              echo "Descargar el artifact para ver el SQL completo."
+              echo -e "\n⚠️ SQL truncado en logs (Lineas: $MAX_LINES / Total: $TOTAL_LINES). Descargar artifact para ver completo."
             fi
           fi
-
-          echo ""
-          echo "=========================================="
-          echo "FIN SQL"
-          echo "=========================================="
+          echo -e "==========================================\nFIN SQL\n=========================================="
         }
-
-        echo "Validando disponibilidad de dotnet..."
-        dotnet --info
-
-        echo ""
-        echo "Validando startup project..."
-        echo "Startup project informado: $STARTUP_PROJECT"
-
-        if [[ ! -f "$STARTUP_PROJECT" ]]; then
-          echo "❌ No existe el startup-project: $STARTUP_PROJECT"
-          echo ""
-          echo "Proyectos encontrados:"
-          find . -name "*.csproj" -not -path "*/bin/*" -not -path "*/obj/*" -print
-          exit 1
-        fi
-
-        echo "✅ Startup project encontrado"
 
         detect_migration_projects() {
           if [[ -n "${PROJECT:-}" ]]; then
-            if [[ ! -f "$PROJECT" ]]; then
-              echo "❌ No existe el project informado: $PROJECT" >&2
-              exit 1
-            fi
-
+            if [[ ! -f "$PROJECT" ]]; then exit 1; fi
             echo "$PROJECT"
             return
           fi
-
-          # Recolectar proyectos de migraciones evitando subshells para que el flujo de control sea seguro
           local found_projects=""
           while read -r migration_file; do
             local dir
             dir="$(dirname "$migration_file")"
-
             while [[ "$dir" != "." && "$dir" != "/" ]]; do
               local csproj
               csproj="$(find "$dir" -maxdepth 1 -name "*.csproj" -print | head -n 1 || true)"
-
               if [[ -n "$csproj" ]]; then
                 if grep -q '<Project Sdk=' "$csproj"; then
                   found_projects="${found_projects}${csproj}"$'\n'
-                else
-                  echo "⚠️ Ignorando proyecto no SDK-style: $csproj" >&2
                 fi
                 break
               fi
-
               dir="$(dirname "$dir")"
             done
           done < <(find . -path "*/Migrations/*.cs" -not -path "*/bin/*" -not -path "*/obj/*" -not -name "*.Designer.cs" -not -name "*ModelSnapshot.cs" -print)
-
+          
           if [[ -n "$found_projects" ]]; then
             echo "$found_projects" | sort -u
           fi
         }
 
-        echo ""
-        echo "Detectando proyectos con migraciones..."
         MIGRATION_PROJECTS="$(detect_migration_projects || true)"
-
         ANALYSIS_ROOT="${GITHUB_WORKSPACE:-$PWD}/artifacts/ef-migrations/$(safe_name "${ENVIRONMENT_NAME:-UNKNOWN}")"
         mkdir -p "$ANALYSIS_ROOT"
 
         if [[ -z "$MIGRATION_PROJECTS" ]]; then
-          echo "⚠️ No se encontraron migraciones en el repo."
-
           {
             echo "has_pending_db_migrations=false"
             echo "migration_risk=NONE"
             echo "requires_dba=false"
             echo "analysis_dir=$ANALYSIS_ROOT"
-            echo "sql_files<<EOF"
-            echo ""
-            echo "EOF"
-            echo "pending_migrations<<EOF"
-            echo ""
-            echo "EOF"
+            echo "sql_files="
+            echo "pending_migrations="
           } >> "$GITHUB_OUTPUT"
-
-          if [[ "$FAIL_IF_NO_MIGRATIONS" == "true" ]]; then
-            echo "❌ fail-if-no-migrations=true, se corta el workflow."
-            exit 1
-          fi
-
-          echo "✅ No hay migraciones para validar."
+          if [[ "$FAIL_IF_NO_MIGRATIONS" == "true" ]]; then exit 1; fi
           exit 0
         fi
 
-        echo "Proyectos con migraciones detectados:"
-        echo "$MIGRATION_PROJECTS"
-
-        echo ""
-        echo "Restaurando dependencias..."
-
-        BUILD_TARGET=""
+        BUILD_TARGET="./"
         SLN_FILE="$(find . -maxdepth 2 -name "*.sln" -print | head -n 1 || true)"
-
-        if [[ -n "$SLN_FILE" ]]; then
-          BUILD_TARGET="$SLN_FILE"
-          echo "Usando solution: $BUILD_TARGET"
-        else
-          BUILD_TARGET="$STARTUP_PROJECT"
-          echo "Usando startup project como build target: $BUILD_TARGET"
-        fi
+        if [[ -n "$SLN_FILE" ]]; then BUILD_TARGET="$SLN_FILE"; else BUILD_TARGET="$STARTUP_PROJECT"; fi
 
         dotnet restore "$BUILD_TARGET"
-
-        echo ""
-        echo "Compilando..."
         dotnet build "$BUILD_TARGET" --no-restore --configuration "$CONFIGURATION"
 
-        echo ""
-        echo "Configurando dotnet-ef..."
-
-        TOOLS_DIR="${RUNNER_TEMP:-/tmp}/dotnet-ef-tools-${GITHUB_RUN_ID:-local}-${GITHUB_JOB:-job}"
-        rm -rf "$TOOLS_DIR"
-        mkdir -p "$TOOLS_DIR"
-
-        if [[ -n "${EF_TOOL_VERSION:-}" ]]; then
-          echo "Instalando dotnet-ef versión $EF_TOOL_VERSION en tool-path temporal..."
-          dotnet tool install dotnet-ef \
-            --tool-path "$TOOLS_DIR" \
-            --version "$EF_TOOL_VERSION"
-        else
-          echo "Instalando dotnet-ef latest en tool-path temporal..."
-          dotnet tool install dotnet-ef \
-            --tool-path "$TOOLS_DIR"
-        fi
-
+        rm -rf "$TOOLS_DIR" && mkdir -p "$TOOLS_DIR"
+        dotnet tool install dotnet-ef --tool-path "$TOOLS_DIR" --version "$EF_TOOL_VERSION"
         EF_CMD=("$TOOLS_DIR/dotnet-ef")
-
-        echo "dotnet-ef instalado:"
-        "${EF_CMD[@]}" --version
 
         HAS_PENDING=false
         OVERALL_RISK="NONE"
         ALL_PENDING_MIGRATIONS=""
         SQL_FILES=""
-
         SUMMARY_FILE="$ANALYSIS_ROOT/migration-risk-summary.md"
 
         {
           echo "# Análisis de migraciones EF Core"
-          echo ""
-          echo "| Campo | Valor |"
-          echo "|---|---|"
-          echo "| Ambiente | ${ENVIRONMENT_NAME:-UNKNOWN} |"
-          echo "| Startup project | ${STARTUP_PROJECT} |"
-          echo "| Configuration | ${CONFIGURATION} |"
-          echo ""
+          echo -e "\n| Campo | Valor |\n|---|---|\n| Ambiente | ${ENVIRONMENT_NAME:-UNKNOWN} |\n| Startup project | ${STARTUP_PROJECT} |\n"
         } > "$SUMMARY_FILE"
 
-        # Corrección: Process Substitution para evitar subshells en el bucle principal de evaluación
         while read -r MIGRATION_PROJECT; do
           [[ -n "$MIGRATION_PROJECT" ]] || continue
-
-          echo ""
-          echo "=========================================="
-          echo "Validando migraciones EF Core"
-          echo "Migration project: $MIGRATION_PROJECT"
-          echo "Startup project:   $STARTUP_PROJECT"
-          echo "Configuration:     $CONFIGURATION"
-          echo "DbContext:         ${DB_CONTEXT:-auto}"
-          echo "=========================================="
-
-          EF_ARGS=()
-          EF_ARGS+=(--project "$MIGRATION_PROJECT")
-          EF_ARGS+=(--startup-project "$STARTUP_PROJECT")
-
-          if [[ -n "${DB_CONTEXT:-}" ]]; then
-            EF_ARGS+=(--context "$DB_CONTEXT")
-          fi
-
-          EF_ARGS+=(--configuration "$CONFIGURATION")
-          EF_ARGS+=(--no-build)
+          
+          EF_ARGS=(--project "$MIGRATION_PROJECT" --startup-project "$STARTUP_PROJECT" --configuration "$CONFIGURATION" --no-build)
+          if [[ -n "${DB_CONTEXT:-}" ]]; then EF_ARGS+=(--context "$DB_CONTEXT"); fi
 
           set +e
           MIGRATIONS_OUTPUT="$("${EF_CMD[@]}" migrations list "${EF_ARGS[@]}" --connection "$DB_CONNECTION" --verbose 2>&1)"
           MIGRATIONS_EXIT_CODE=$?
           set -e
 
-          echo "$MIGRATIONS_OUTPUT"
+          if [[ "$MIGRATIONS_EXIT_CODE" -ne 0 ]]; then exit "$MIGRATIONS_EXIT_CODE"; fi
 
-          if [[ "$MIGRATIONS_EXIT_CODE" -ne 0 ]]; then
-            echo "❌ No se pudo conectar al ORM/base o listar migraciones"
-            echo "Migration project: $MIGRATION_PROJECT"
-            echo "Startup project: $STARTUP_PROJECT"
-            exit "$MIGRATIONS_EXIT_CODE"
-          fi
-
-          PENDING_MIGRATIONS="$(echo "$MIGRATIONS_OUTPUT" \
-            | sed -nE 's/^[[:space:]]*([0-9]{14}_[A-Za-z0-9_]+)[[:space:]]+\(Pending\).*$/\1/p' \
-            | awk '!seen[$0]++')"
-
-          APPLIED_MIGRATIONS="$(
-            {
-              echo "$MIGRATIONS_OUTPUT" \
-                | grep -Ev '\(Pending\)' \
-                | sed -nE 's/^[[:space:]]*([0-9]{14}_[A-Za-z0-9_]+).*$/\1/p' \
-                | awk '!seen[$0]++'
-            } || true
-          )"
+          PENDING_MIGRATIONS="$(echo "$MIGRATIONS_OUTPUT" | sed -nE 's/^[[:space:]]*([0-9]{14}_[A-Za-z0-9_]+)[[:space:]]+\(Pending\).*$/\1/p' | awk '!seen[$0]++')"
+          APPLIED_MIGRATIONS="$(echo "$MIGRATIONS_OUTPUT" | grep -Ev '\(Pending\)' | sed -nE 's/^[[:space:]]*([0-9]{14}_[A-Za-z0-9_]+).*$/\1/p' | awk '!seen[$0]++' || true)"
 
           if [[ -z "$PENDING_MIGRATIONS" ]]; then
-            echo "✅ La base no tiene migraciones pendientes para $MIGRATION_PROJECT"
-
-            {
-              echo ""
-              echo "## Proyecto: \`$MIGRATION_PROJECT\`"
-              echo ""
-              echo "- Resultado: sin migraciones pendientes."
-              echo "- Riesgo: **NONE**"
-            } >> "$SUMMARY_FILE"
+            echo -e "\n## Proyecto: \`$MIGRATION_PROJECT\`\n- Resultado: sin migraciones pendientes.\n- Riesgo: **NONE**" >> "$SUMMARY_FILE"
           else
             HAS_PENDING=true
-
             LAST_APPLIED="$(echo "$APPLIED_MIGRATIONS" | tail -n 1)"
             LATEST_PENDING="$(echo "$PENDING_MIGRATIONS" | tail -n 1)"
             FROM_MIGRATION="${LAST_APPLIED:-0}"
 
             ALL_PENDING_MIGRATIONS="${ALL_PENDING_MIGRATIONS}${PENDING_MIGRATIONS}"$'\n'
-
             SAFE_PROJECT="$(safe_name "$MIGRATION_PROJECT")"
             SCRIPT_FILE="$ANALYSIS_ROOT/${SAFE_PROJECT}_${ENVIRONMENT_NAME}_pending.sql"
             FINDINGS_FILE="$ANALYSIS_ROOT/${SAFE_PROJECT}_${ENVIRONMENT_NAME}_findings.md"
 
-            echo "⚠️ Migraciones pendientes detectadas:"
-            echo "$PENDING_MIGRATIONS"
-            echo ""
-            echo "Generando SQL idempotente..."
-            echo "FROM_MIGRATION=$FROM_MIGRATION"
-            echo "LATEST_PENDING=$LATEST_PENDING"
-            echo "SCRIPT_FILE=$SCRIPT_FILE"
-
-            "${EF_CMD[@]}" migrations script \
-              "$FROM_MIGRATION" \
-              "$LATEST_PENDING" \
-              "${EF_ARGS[@]}" \
-              --idempotent \
-              --output "$SCRIPT_FILE"
-
-            echo ""
-            echo "Validando archivo SQL generado..."
-
-            if [[ ! -f "$SCRIPT_FILE" ]]; then
-              echo "❌ No se generó el archivo SQL esperado: $SCRIPT_FILE"
-              echo "Contenido actual de ANALYSIS_ROOT:"
-              find "$ANALYSIS_ROOT" -maxdepth 5 -type f -print || true
-              exit 1
-            fi
-
-            if [[ ! -s "$SCRIPT_FILE" ]]; then
-              echo "❌ El archivo SQL se generó pero está vacío: $SCRIPT_FILE"
-              exit 1
-            fi
-
-            echo "✅ SQL generado correctamente:"
-            ls -lh "$SCRIPT_FILE"
-
-            SQL_FILES="${SQL_FILES}${SCRIPT_FILE}"$'\n'
-
-            echo ""
-            echo "Contenido actual de ANALYSIS_ROOT:"
-            find "$ANALYSIS_ROOT" -maxdepth 5 -type f -print || true
-
-            show_sql_file "$SCRIPT_FILE" "CAT SQL generado para $MIGRATION_PROJECT"
+            "${EF_CMD[@]}" migrations script "$FROM_MIGRATION" "$LATEST_PENDING" "${EF_ARGS[@]}" --idempotent --output "$SCRIPT_FILE"
+            show_sql_file "$SCRIPT_FILE" "SQL Generado: $MIGRATION_PROJECT"
 
             PROJECT_RISK="$(classify_sql_risk "$SCRIPT_FILE" "$FINDINGS_FILE")"
             OVERALL_RISK="$(max_risk "$OVERALL_RISK" "$PROJECT_RISK")"
-
-            echo "Riesgo calculado para $MIGRATION_PROJECT: $PROJECT_RISK"
+            SQL_FILES="${SQL_FILES}${SCRIPT_FILE}"$'\n'
 
             {
-              echo ""
-              echo "## Proyecto: \`$MIGRATION_PROJECT\`"
-              echo ""
-              echo "| Campo | Valor |"
-              echo "|---|---|"
-              echo "| Desde | \`$FROM_MIGRATION\` |"
-              echo "| Hasta | \`$LATEST_PENDING\` |"
-              echo "| Riesgo | **$PROJECT_RISK** |"
-              echo "| SQL generado | \`$(basename "$SCRIPT_FILE")\` |"
-              echo ""
-              echo "### Migraciones pendientes"
-              echo ""
-              echo '```text'
-              echo "$PENDING_MIGRATIONS"
-              echo '```'
-              echo ""
-              echo "### Hallazgos"
-              echo ""
+              echo -e "\n## Proyecto: \`$MIGRATION_PROJECT\`\n| Campo | Valor |\n|---|---|\n| Desde | \`$FROM_MIGRATION\` |\n| Hasta | \`$LATEST_PENDING\` |\n| Riesgo | **$PROJECT_RISK** |\n| SQL generado | \`$(basename "$SCRIPT_FILE")\` |\n\n### Migraciones pendientes\n\`\`\`text\n$PENDING_MIGRATIONS\n\`\`\`\n\n### Hallazgos"
               cat "$FINDINGS_FILE"
-              echo ""
             } >> "$SUMMARY_FILE"
           fi
 
           if [[ "$VALIDATE_MODEL_CHANGES" == "true" ]]; then
-            echo ""
-            echo "Validando si el modelo tiene cambios sin migración..."
-
             "${EF_CMD[@]}" migrations has-pending-model-changes "${EF_ARGS[@]}"
-
-            echo "✅ No hay cambios de modelo pendientes de migración para $MIGRATION_PROJECT"
           fi
-
         done < <(echo "$MIGRATION_PROJECTS")
 
-        if (( $(risk_value "$OVERALL_RISK") >= 2 )); then
-          REQUIRES_DBA=true
-        else
-          REQUIRES_DBA=false
-        fi
+        REQUIRES_DBA=false
+        if (( $(risk_value "$OVERALL_RISK") >= 2 )); then REQUIRES_DBA=true; fi
 
-        {
-          echo ""
-          echo "## Resultado final"
-          echo ""
-          echo "| Campo | Valor |"
-          echo "|---|---|"
-          echo "| Tiene migraciones pendientes | **$HAS_PENDING** |"
-          echo "| Riesgo total | **$OVERALL_RISK** |"
-          echo "| Requiere DBA | **$REQUIRES_DBA** |"
-        } >> "$SUMMARY_FILE"
-
+        echo -e "\n## Resultado final\n| Campo | Valor |\n|---|---|\n| Pendientes | **$HAS_PENDING** |\n| Riesgo total | **$OVERALL_RISK** |\n| Requiere DBA | **$REQUIRES_DBA** |" >> "$SUMMARY_FILE"
         cat "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
 
-        # Sanatizar strings acumulados removiendo líneas en blanco extras antes de enviarlas al OUTPUT
         SQL_FILES_CLEAN="$(echo "$SQL_FILES" | sed '/^$/d')"
         ALL_PENDING_MIGRATIONS_CLEAN="$(echo "$ALL_PENDING_MIGRATIONS" | sed '/^$/d')"
 
@@ -646,27 +382,7 @@ runs:
           echo "EOF"
         } >> "$GITHUB_OUTPUT"
 
-        echo ""
-        echo "=========================================="
-        echo "Resultado final"
-        echo "Tiene pendientes: $HAS_PENDING"
-        echo "Riesgo: $OVERALL_RISK"
-        echo "Requiere DBA: $REQUIRES_DBA"
-        echo "Análisis generado en: $ANALYSIS_ROOT"
-        echo "SQL files:"
-        echo "$SQL_FILES_CLEAN"
-        echo "=========================================="
-
         if [[ -n "${FAIL_ON_RISK_LEVEL:-}" ]]; then
-          if (( $(risk_value "$OVERALL_RISK") >= $(risk_value "$FAIL_ON_RISK_LEVEL") && $(risk_value "$OVERALL_RISK") > 0 )); then
-            echo "❌ Riesgo $OVERALL_RISK >= fail-on-risk-level $FAIL_ON_RISK_LEVEL"
-            exit 1
-          fi
+          if (( $(risk_value "$OVERALL_RISK") >= $(risk_value "$FAIL_ON_RISK_LEVEL") && $(risk_value "$OVERALL_RISK") > 0 )); then exit 1; fi
         fi
-
-        if [[ "$FAIL_ON_PENDING" == "true" && "$HAS_PENDING" == "true" ]]; then
-          echo "❌ Existen migraciones pendientes y fail-on-pending=true"
-          exit 1
-        fi
-
-        echo "✅ Validación de migraciones finalizada"
+        if [[ "$FAIL_ON_PENDING" == "true" && "$HAS_PENDING" == "true" ]]; then exit 1; fi
