@@ -1,5 +1,5 @@
 name: Apply DB Migrations
-description: Obtiene connection string desde Key Vault, valida SQL Server y aplica migraciones EF Core
+description: Obtiene connection string desde Key Vault de forma segura y aplica migraciones EF Core
 
 inputs:
   migration-risk:
@@ -26,7 +26,7 @@ inputs:
     required: false
     default: "auto"
   startup-project:
-    description: Proyecto startup. Ejemplo ./src/Api/LuanaApi.csproj
+    description: Proyecto startup dinámico detectado previamente.
     required: true
   db-context:
     description: Nombre del DbContext.
@@ -68,22 +68,23 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Setup .NET
-      if: ${{ inputs.dotnet-version != '' }}
-      uses: actions/setup-dotnet@v5
+    # ⚡ INTEGRACIÓN: Usa tu acción liviana sin Azure CLI para obtener las credenciales de base de datos
+    - name: Descargar Connection String mediante API REST
+      id: fetch_conn
+      uses: infrastructure-services/actions@get-keyvault-secret
       with:
-        dotnet-version: ${{ inputs.dotnet-version }}
+        keyvault-name: ${{ inputs.keyvault-name }}
+        secret-name: ${{ inputs.secret-name }}
+        client-id: ${{ inputs.client-id }}
+        client-secret: ${{ inputs.client-secret }}
+        tenant-id: ${{ inputs.tenant-id }}
 
     - name: Apply Migrations
       id: apply
       shell: bash
       env:
         MIGRATION_RISK: ${{ inputs.migration-risk }}
-        KEYVAULT_NAME: ${{ inputs.keyvault-name }}
-        AZURE_CLIENT_ID: ${{ inputs.client-id }}
-        AZURE_CLIENT_SECRET: ${{ inputs.client-secret }}
-        AZURE_TENANT_ID: ${{ inputs.tenant-id }}
-        SECRET_NAME: ${{ inputs.secret-name }}
+        DB_CONNECTION: ${{ steps.fetch_conn.outputs.secret-value }}
         PROJECT: ${{ inputs.project }}
         STARTUP_PROJECT: ${{ inputs.startup-project }}
         DB_CONTEXT: ${{ inputs.db-context }}
@@ -95,28 +96,27 @@ runs:
       run: |
         set -euo pipefail
 
+        # Directorio temporal aislado para la herramienta global dotnet-ef
         TOOLS_DIR="${RUNNER_TEMP:-/tmp}/dotnet-ef-tools-apply-${GITHUB_RUN_ID:-local}"
+        
+        # 🧹 FIX CRÍTICO PERSISTENCIA: Borra la herramienta dotnet-ef local instalada para no saturar los runners
         cleanup() {
           echo "🧹 Limpiando herramientas de apply del runner..."
           rm -rf "$TOOLS_DIR"
         }
         trap cleanup EXIT SIGINT SIGTERM
 
-        echo "Conectando a Azure Key Vault y descargando connection string..."
-        AZURE_LOGIN_OUTPUT="$(az login --service-principal -u "$AZURE_CLIENT_ID" -p "$AZURE_CLIENT_SECRET" --tenant "$AZURE_TENANT_ID" 2>&1)"
-        DB_CONNECTION="$(az keyvault secret show --name "$SECRET_NAME" --vault-name "$KEYVAULT_NAME" --query value -o tsv 2>&1)"
-        echo "::add-mask::$DB_CONNECTION"
-
         detect_projects() {
           if [[ "${PROJECT}" != "auto" ]]; then
             echo "$PROJECT" | tr ',' '\n'
             return
           fi
-          # Bugfix: Forzar descubrimiento local seguro
+          # 🐛 BUGFIX COMPLETO: Forzar descubrimiento local seguro basándose en la estructura descargada por el checkout
           find . -path "*/Migrations/*.cs" -not -path "*/bin/*" -not -path "*/obj/*" -not -name "*.Designer.cs" -not -name "*ModelSnapshot.cs" -print | while read -r f; do
             local d="$(dirname "$f")"
             while [[ "$d" != "." && "$d" != "/" ]]; do
-              local p="$(find "$d" -maxdepth 1 -name "*.csproj" -print | head -n 1 || true)"
+              local p
+              p="$(find "$d" -maxdepth 1 -name "*.csproj" -print | head -n 1 || true)"
               if [[ -n "$p" ]]; then echo "$p"; break; fi
               d="$(dirname "$d")"
             done
@@ -125,7 +125,9 @@ runs:
 
         MIGRATION_PROJECTS="$(detect_projects || true)"
         if [[ -z "$MIGRATION_PROJECTS" ]]; then
+          echo "⚠️ No se encontraron proyectos de infraestructura con migraciones para procesar. Seteando skip."
           echo "skipped=true" >> "$GITHUB_OUTPUT"
+          echo "applied=false" >> "$GITHUB_OUTPUT"
           exit 0
         fi
 
@@ -133,9 +135,11 @@ runs:
         SLN_FILE="$(find . -maxdepth 2 -name "*.sln" -print | head -n 1 || true)"
         if [[ -n "$SLN_FILE" ]]; then BUILD_TARGET="$SLN_FILE"; else BUILD_TARGET="$STARTUP_PROJECT"; fi
 
+        # Restauración y compilación limpia del entorno de persistencia
         dotnet restore "$BUILD_TARGET"
         dotnet build "$BUILD_TARGET" --no-restore --configuration "$CONFIGURATION"
 
+        # Instalación de herramienta ef local transitoria
         rm -rf "$TOOLS_DIR" && mkdir -p "$TOOLS_DIR"
         dotnet tool install dotnet-ef --tool-path "$TOOLS_DIR" --version "$EF_TOOL_VERSION"
         EF_CMD=("$TOOLS_DIR/dotnet-ef")
@@ -145,7 +149,7 @@ runs:
           EF_ARGS=(--project "$PROJ" --startup-project "$STARTUP_PROJECT" --configuration "$CONFIGURATION" --no-build)
           if [[ -n "${DB_CONTEXT}" ]]; then EF_ARGS+=(--context "$DB_CONTEXT"); fi
           
-          echo "Ejecutando actualización de base para: $PROJ"
+          echo "🚀 Ejecutando actualización de base para el proyecto: $PROJ"
           "${EF_CMD[@]}" database update "${EF_ARGS[@]}" --connection "$DB_CONNECTION"
         done < <(echo "$MIGRATION_PROJECTS")
 
