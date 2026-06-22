@@ -1,4 +1,4 @@
-name: Get Wizard DB Secrets
+name: Get DB Secrets
 description: Genera los nombres de secrets Owner a partir del APP_ID
 
 inputs:
@@ -47,6 +47,18 @@ runs:
 
         if [[ -z "${OWNER_SECRET_SUFFIX:-}" ]]; then
           echo "❌ owner-secret-suffix no informado"
+          exit 1
+        fi
+
+        if ! echo "$APP_ID" | grep -Eq '^[A-Za-z0-9-]+$'; then
+          echo "❌ APP_ID inválido: $APP_ID"
+          echo "Solo se permiten letras, números y guiones."
+          exit 1
+        fi
+
+        if ! echo "$OWNER_SECRET_SUFFIX" | grep -Eq '^[A-Za-z0-9-]+$'; then
+          echo "❌ owner-secret-suffix inválido: $OWNER_SECRET_SUFFIX"
+          echo "Solo se permiten letras, números y guiones."
           exit 1
         fi
 
