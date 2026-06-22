@@ -27,10 +27,23 @@ inputs:
     required: false
     default: "2025-07-01"
 
+  fail-on-not-found:
+    description: Indica si debe fallar cuando el secret no existe
+    required: false
+    default: "true"
+
 outputs:
   secret-value:
     description: Valor del secret obtenido desde Key Vault
     value: ${{ steps.get_secret.outputs.secret_value }}
+
+  secret-found:
+    description: Indica si el secret existe en Key Vault
+    value: ${{ steps.get_secret.outputs.secret_found }}
+
+  error-code:
+    description: Código de error controlado
+    value: ${{ steps.get_secret.outputs.error_code }}
 
 runs:
   using: composite
@@ -45,8 +58,78 @@ runs:
         AZURE_CLIENT_SECRET: ${{ inputs.client-secret }}
         AZURE_TENANT_ID: ${{ inputs.tenant-id }}
         KEYVAULT_API_VERSION: ${{ inputs.keyvault-api-version }}
+        FAIL_ON_NOT_FOUND: ${{ inputs.fail-on-not-found }}
       run: |
         set -euo pipefail
+
+        # Archivos temporales privados del proceso.
+        # Se usa RUNNER_TEMP si existe; si no, /tmp.
+        # umask 077 hace que los archivos queden solo accesibles por el usuario del runner.
+        umask 077
+
+        TEMP_BASE="${RUNNER_TEMP:-/tmp}"
+        TEMP_DIR="$(mktemp -d "${TEMP_BASE%/}/keyvault-secret.XXXXXX")"
+        TOKEN_RESPONSE_FILE="$TEMP_DIR/token-response.json"
+        RESPONSE_FILE="$TEMP_DIR/secret-response.json"
+
+        cleanup() {
+          echo "🧹 Limpiando archivos temporales de get-keyvault-secret..."
+          rm -rf "$TEMP_DIR"
+        }
+
+        trap cleanup EXIT SIGINT SIGTERM
+
+        append_multiline_output() {
+          local NAME="$1"
+          local VALUE="$2"
+          local DELIMITER="EOF_${RANDOM}_${RANDOM}_$(date +%s)"
+
+          {
+            echo "${NAME}<<${DELIMITER}"
+            printf '%s\n' "$VALUE"
+            echo "${DELIMITER}"
+          } >> "$GITHUB_OUTPUT"
+        }
+
+        write_outputs_not_found() {
+          local ERROR_CODE="$1"
+
+          {
+            echo "secret_found=false"
+            echo "error_code=${ERROR_CODE}"
+          } >> "$GITHUB_OUTPUT"
+
+          append_multiline_output "secret_value" ""
+        }
+
+        write_outputs_success() {
+          local SECRET_VALUE="$1"
+
+          {
+            echo "secret_found=true"
+            echo "error_code="
+          } >> "$GITHUB_OUTPUT"
+
+          append_multiline_output "secret_value" "$SECRET_VALUE"
+        }
+
+        print_response_error() {
+          local FILE="$1"
+
+          if [[ -f "$FILE" ]] && jq empty "$FILE" >/dev/null 2>&1; then
+            jq -r '.error // .' "$FILE" || true
+          elif [[ -f "$FILE" ]]; then
+            head -c 2000 "$FILE" || true
+            echo ""
+          else
+            echo "No hay response file disponible."
+          fi
+        }
+
+        normalize_bool() {
+          local VALUE="$1"
+          echo "$VALUE" | tr '[:upper:]' '[:lower:]'
+        }
 
         if [[ -z "${KEYVAULT_NAME:-}" ]]; then
           echo "❌ keyvault-name no informado"
@@ -73,20 +156,76 @@ runs:
           exit 1
         fi
 
+        if [[ -z "${KEYVAULT_API_VERSION:-}" ]]; then
+          echo "❌ keyvault-api-version no informado"
+          exit 1
+        fi
+
+        FAIL_ON_NOT_FOUND="$(normalize_bool "${FAIL_ON_NOT_FOUND:-true}")"
+
+        case "$FAIL_ON_NOT_FOUND" in
+          true|false)
+            ;;
+          *)
+            echo "❌ fail-on-not-found inválido: $FAIL_ON_NOT_FOUND"
+            echo "Valores permitidos: true o false"
+            exit 1
+            ;;
+        esac
+
+        if ! command -v curl >/dev/null 2>&1; then
+          echo "❌ curl no está instalado en el runner"
+          exit 1
+        fi
+
+        if ! command -v jq >/dev/null 2>&1; then
+          echo "❌ jq no está instalado en el runner"
+          exit 1
+        fi
+
+        echo "::add-mask::$AZURE_CLIENT_SECRET"
+
         echo "Obteniendo token de Azure..."
-        TOKEN_RESPONSE="$(curl -sS -X POST \
+
+        set +e
+        TOKEN_HTTP_CODE="$(curl -sS \
+          -X POST \
           "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/token" \
           -H "Content-Type: application/x-www-form-urlencoded" \
+          --connect-timeout 10 \
+          --max-time 60 \
+          -o "$TOKEN_RESPONSE_FILE" \
+          -w "%{http_code}" \
           --data-urlencode "client_id=${AZURE_CLIENT_ID}" \
           --data-urlencode "client_secret=${AZURE_CLIENT_SECRET}" \
           --data-urlencode "grant_type=client_credentials" \
           --data-urlencode "scope=https://vault.azure.net/.default")"
+        TOKEN_CURL_EXIT=$?
+        set -e
 
-        ACCESS_TOKEN="$(echo "$TOKEN_RESPONSE" | jq -r '.access_token // empty')"
+        if [[ "$TOKEN_CURL_EXIT" -ne 0 ]]; then
+          echo "❌ Error de red obteniendo token de Azure. curl exit code=${TOKEN_CURL_EXIT}"
+          exit 1
+        fi
+
+        if [[ "$TOKEN_HTTP_CODE" -lt 200 || "$TOKEN_HTTP_CODE" -ge 300 ]]; then
+          echo "❌ Error obteniendo token de Azure. HTTP_CODE=${TOKEN_HTTP_CODE}"
+          print_response_error "$TOKEN_RESPONSE_FILE"
+          exit 1
+        fi
+
+        if ! jq empty "$TOKEN_RESPONSE_FILE" >/dev/null 2>&1; then
+          echo "❌ Azure no respondió JSON válido al pedir token"
+          head -c 2000 "$TOKEN_RESPONSE_FILE" || true
+          echo ""
+          exit 1
+        fi
+
+        ACCESS_TOKEN="$(jq -r '.access_token // empty' "$TOKEN_RESPONSE_FILE")"
 
         if [[ -z "$ACCESS_TOKEN" ]]; then
           echo "❌ No se pudo obtener access_token"
-          echo "$TOKEN_RESPONSE" | jq -r '{error: .error, error_description: .error_description}'
+          print_response_error "$TOKEN_RESPONSE_FILE"
           exit 1
         fi
 
@@ -94,64 +233,109 @@ runs:
 
         SECRET_URL="https://${KEYVAULT_NAME}.vault.azure.net/secrets/${SECRET_NAME}?api-version=${KEYVAULT_API_VERSION}"
 
-        RESPONSE_FILE="$(mktemp)"
-
-        # 🧹 FIX CRÍTICO PERSISTENCIA: Se asegura de borrar el JSON temporal del disco al salir
-        cleanup() {
-          rm -f "$RESPONSE_FILE"
-        }
-        trap cleanup EXIT SIGINT SIGTERM
-
         echo "Consultando secret en Key Vault"
         echo "Key Vault: ${KEYVAULT_NAME}"
         echo "Secret name: ${SECRET_NAME}"
 
+        set +e
         HTTP_CODE="$(curl -sS \
+          --connect-timeout 10 \
+          --max-time 60 \
           -o "$RESPONSE_FILE" \
           -w "%{http_code}" \
           -H "Authorization: Bearer ${ACCESS_TOKEN}" \
           -H "Accept: application/json" \
           "$SECRET_URL")"
+        CURL_EXIT=$?
+        set -e
+
+        if [[ "$CURL_EXIT" -ne 0 ]]; then
+          echo "❌ Error de red consultando Key Vault. curl exit code=${CURL_EXIT}"
+          exit 1
+        fi
 
         if [[ "$HTTP_CODE" == "401" ]]; then
           echo "❌ Key Vault respondió 401 Unauthorized"
-          echo "Validá tenant, client-id y client-secret"
+          echo "Validá tenant, client-id y client-secret."
+          print_response_error "$RESPONSE_FILE"
           exit 1
         fi
 
         if [[ "$HTTP_CODE" == "403" ]]; then
           echo "❌ Key Vault respondió 403 Forbidden"
-          echo "El Service Principal autenticó correctamente, pero no tiene permisos secrets/get sobre el Key Vault ${KEYVAULT_NAME}"
-          cat "$RESPONSE_FILE" | jq -r '.error // .'
+          echo "El Service Principal autenticó correctamente, pero no tiene permisos secrets/get sobre el Key Vault ${KEYVAULT_NAME}."
+          print_response_error "$RESPONSE_FILE"
           exit 1
         fi
 
         if [[ "$HTTP_CODE" == "404" ]]; then
-          echo "❌ Key Vault respondió 404 Not Found"
-          echo "No existe el secret ${SECRET_NAME} en el Key Vault ${KEYVAULT_NAME}"
-          cat "$RESPONSE_FILE" | jq -r '.error // .'
+          echo "⚠️ Key Vault respondió 404 Not Found"
+          echo "No existe el secret ${SECRET_NAME} en el Key Vault ${KEYVAULT_NAME}."
+          print_response_error "$RESPONSE_FILE"
+
+          if [[ "$FAIL_ON_NOT_FOUND" == "false" ]]; then
+            echo "Se continúa sin secret porque fail-on-not-found=false."
+            write_outputs_not_found "SecretNotFound"
+
+            {
+              echo "### Azure Key Vault Secret"
+              echo ""
+              echo "| Campo | Valor |"
+              echo "|---|---|"
+              echo "| Key Vault | \`${KEYVAULT_NAME}\` |"
+              echo "| Secret name | \`${SECRET_NAME}\` |"
+              echo "| Secret found | \`false\` |"
+              echo "| Error code | \`SecretNotFound\` |"
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            exit 0
+          fi
+
+          echo "fail-on-not-found=true. Se corta el proceso."
           exit 1
         fi
 
         if [[ "$HTTP_CODE" -lt 200 || "$HTTP_CODE" -ge 300 ]]; then
           echo "❌ Error consultando Key Vault. HTTP_CODE=${HTTP_CODE}"
-          cat "$RESPONSE_FILE" | jq -r '.error // .'
+          print_response_error "$RESPONSE_FILE"
           exit 1
         fi
 
-        SECRET_VALUE="$(cat "$RESPONSE_FILE" | jq -r '.value // empty')"
+        if ! jq empty "$RESPONSE_FILE" >/dev/null 2>&1; then
+          echo "❌ Key Vault no respondió JSON válido"
+          head -c 2000 "$RESPONSE_FILE" || true
+          echo ""
+          exit 1
+        fi
+
+        SECRET_VALUE="$(jq -r '.value // empty' "$RESPONSE_FILE")"
 
         if [[ -z "$SECRET_VALUE" ]]; then
           echo "❌ El secret fue encontrado pero no tiene value"
+          {
+            echo "secret_found=false"
+            echo "error_code=EmptySecretValue"
+          } >> "$GITHUB_OUTPUT"
+
+          append_multiline_output "secret_value" ""
+
           exit 1
         fi
 
         echo "::add-mask::$SECRET_VALUE"
 
-        {
-          echo "secret_value<<EOF"
-          echo "$SECRET_VALUE"
-          echo "EOF"
-        } >> "$GITHUB_OUTPUT"
+        write_outputs_success "$SECRET_VALUE"
 
         echo "✅ Secret obtenido correctamente desde Key Vault"
+
+        {
+          echo "### Azure Key Vault Secret"
+          echo ""
+          echo "| Campo | Valor |"
+          echo "|---|---|"
+          echo "| Key Vault | \`${KEYVAULT_NAME}\` |"
+          echo "| Secret name | \`${SECRET_NAME}\` |"
+          echo "| Secret found | \`true\` |"
+          echo "| Error code | \`none\` |"
+        } >> "$GITHUB_STEP_SUMMARY"
+
