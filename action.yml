@@ -186,6 +186,7 @@ runs:
             ;;
           *)
             echo "❌ migration-risk inválido: $MIGRATION_RISK"
+            echo "Valores permitidos: NONE, LOW, MEDIUM, HIGH"
             exit 1
             ;;
         esac
@@ -273,7 +274,6 @@ runs:
           sed -r 's/\x1B\[[0-9;]*[mK]//g'
         }
 
-        ```bash
         assert_migrations_list_is_reliable() {
           local OUTPUT="$1"
           local PHASE="$2"
@@ -282,8 +282,6 @@ runs:
           local CLEAN_OUTPUT
           CLEAN_OUTPUT="$(echo "$OUTPUT" | clean_ansi)"
 
-          # Errores explícitos de EF cuando NO puede determinar estado real contra la DB.
-          # No usar palabras genéricas como "timeout", porque matchean falsos positivos como CommandTimeout='30'.
           if echo "$CLEAN_OUTPUT" | grep -qiE \
             'An error occurred while accessing the database|Continuing without the information provided by the database|Pending status not shown|Unable to determine which migrations have been applied|No se ha inicializado la propiedad ConnectionString|A network-related or instance-specific error|The server was not found or was not accessible|provider: TCP Provider|error: 35 -|Login failed for user|Cannot open database|Connection Timeout Expired|Timeout expired\.|The wait operation timed out|No such host is known|Name or service not known|Connection refused'; then
 
@@ -298,8 +296,6 @@ runs:
             exit 1
           fi
 
-          # Si EF dice explícitamente que no pudo mostrar el estado pending, se corta.
-          # Esto cubre casos donde cambia el texto pero mantiene la idea.
           if echo "$CLEAN_OUTPUT" | grep -qiE 'pending status not shown|unable to determine'; then
             echo "❌ EF Core no pudo determinar qué migraciones están aplicadas para ${PROJECT_NAME}."
             echo "Fase: ${PHASE}"
@@ -307,8 +303,6 @@ runs:
             exit 1
           fi
         }
-
-
 
         extract_pending_migrations() {
           echo "$1" \
@@ -644,11 +638,11 @@ runs:
           echo ""
           echo "| Campo | Valor |"
           echo "|---|---|"
-          echo "| Ambiente | \`$ENVIRONMENT_NAME\` |"
-          echo "| Migration Risk | \`$MIGRATION_RISK\` |"
-          echo "| Had pending migrations | \`$HAD_PENDING_MIGRATIONS\` |"
-          echo "| Applied | \`$APPLIED\` |"
-          echo "| Analysis dir | \`$OUTPUT_DIR\` |"
+          printf '| Ambiente | `%s` |\n' "$ENVIRONMENT_NAME"
+          printf '| Migration Risk | `%s` |\n' "$MIGRATION_RISK"
+          printf '| Had pending migrations | `%s` |\n' "$HAD_PENDING_MIGRATIONS"
+          printf '| Applied | `%s` |\n' "$APPLIED"
+          printf '| Analysis dir | `%s` |\n' "$OUTPUT_DIR"
           echo ""
           echo "#### Proyectos procesados"
           echo ""
