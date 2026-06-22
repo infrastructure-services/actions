@@ -128,6 +128,7 @@ runs:
         client-id: ${{ inputs.client-id }}
         client-secret: ${{ inputs.client-secret }}
         tenant-id: ${{ inputs.tenant-id }}
+        fail-on-not-found: "true"
 
     - name: Apply Migrations
       id: apply
@@ -135,6 +136,7 @@ runs:
       env:
         MIGRATION_RISK: ${{ inputs.migration-risk }}
         DB_CONNECTION: ${{ steps.fetch_conn.outputs['secret-value'] }}
+        SECRET_FOUND: ${{ steps.fetch_conn.outputs['secret-found'] }}
         PROJECT: ${{ inputs.project }}
         STARTUP_PROJECT: ${{ inputs.startup-project }}
         DB_CONTEXT: ${{ inputs.db-context }}
@@ -184,10 +186,14 @@ runs:
             ;;
           *)
             echo "❌ migration-risk inválido: $MIGRATION_RISK"
-            echo "Valores permitidos: NONE, LOW, MEDIUM, HIGH"
             exit 1
             ;;
         esac
+
+        if [[ "${SECRET_FOUND:-}" != "true" ]]; then
+          echo "❌ No se obtuvo el secret de Key Vault para aplicar migraciones."
+          exit 1
+        fi
 
         if [[ -n "${DB_CONNECTION:-}" ]]; then
           echo "::add-mask::$DB_CONNECTION"
@@ -265,6 +271,29 @@ runs:
 
         clean_ansi() {
           sed -r 's/\x1B\[[0-9;]*[mK]//g'
+        }
+
+        assert_migrations_list_is_reliable() {
+          local OUTPUT="$1"
+          local PHASE="$2"
+          local PROJECT_NAME="$3"
+
+          local CLEAN_OUTPUT
+          CLEAN_OUTPUT="$(echo "$OUTPUT" | clean_ansi)"
+
+          if echo "$CLEAN_OUTPUT" | grep -qiE \
+            'An error occurred while accessing the database|Continuing without the information provided by the database|Pending status not shown|Unable to determine which migrations have been applied|No se ha inicializado la propiedad ConnectionString|A network-related or instance-specific error|The server was not found or was not accessible|TCP Provider|error: 35|Login failed|timeout|timed out|connection string|server was not found|server was not accessible'; then
+
+            echo "❌ No se pudo determinar el estado real de migraciones para ${PROJECT_NAME}."
+            echo "Fase: ${PHASE}"
+            echo ""
+            echo "EF Core pudo listar migraciones del assembly, pero no pudo consultar correctamente la base."
+            echo "Por seguridad se corta el proceso para evitar desplegar sin validar/aprobar migraciones."
+            echo ""
+            echo "Salida detectada:"
+            echo "$CLEAN_OUTPUT"
+            exit 1
+          fi
         }
 
         extract_pending_migrations() {
@@ -491,6 +520,8 @@ runs:
             exit "$MIGRATIONS_BEFORE_EXIT"
           fi
 
+          assert_migrations_list_is_reliable "$MIGRATIONS_BEFORE" "before-apply" "$PROJ_NAME"
+
           PENDING_MIGRATIONS="$(extract_pending_migrations "$MIGRATIONS_BEFORE")"
           APPLIED_MIGRATIONS="$(extract_applied_migrations "$MIGRATIONS_BEFORE")"
 
@@ -559,6 +590,8 @@ runs:
             exit "$MIGRATIONS_AFTER_EXIT"
           fi
 
+          assert_migrations_list_is_reliable "$MIGRATIONS_AFTER" "after-apply" "$PROJ_NAME"
+
           PENDING_AFTER="$(extract_pending_migrations "$MIGRATIONS_AFTER")"
 
           if [[ -n "$PENDING_AFTER" ]]; then
@@ -615,3 +648,4 @@ runs:
           echo "$SQL_FILES"
           echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
+
