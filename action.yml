@@ -1,5 +1,5 @@
 name: Validate SQL Server Connection
-description: Valida conectividad real contra SQL Server usando una connection string
+description: Valida conectividad TCP y conexión SQL Server usando una connection string
 
 inputs:
   connection-string:
@@ -7,43 +7,49 @@ inputs:
     required: true
 
   dotnet-version:
-    description: Versión esperada de .NET SDK. Solo se valida, no se instala.
+    description: Versión esperada de .NET SDK
     required: false
-    default: "10"
+    default: "10.0.x"
 
   test-framework:
-    description: Target framework usado para compilar el validador temporal
+    description: Framework usado por el proyecto temporal
     required: false
     default: "net10.0"
 
   connection-timeout:
-    description: Timeout de conexión en segundos
+    description: Timeout de conexión SQL en segundos
     required: false
     default: "15"
 
 outputs:
   normalized-connection-string:
-    description: Connection string normalizada para usar luego en EF Core
+    description: Connection string normalizada
     value: ${{ steps.validate.outputs.normalized_connection_string }}
+
+  data-source:
+    description: DataSource detectado desde la connection string
+    value: ${{ steps.validate.outputs.data_source }}
+
+  database:
+    description: Database detectada desde la connection string
+    value: ${{ steps.validate.outputs.database }}
 
 runs:
   using: composite
   steps:
-    - name: Validar .NET instalado en runner
+    - name: Validar dotnet instalado en el runner
       shell: bash
       env:
         DOTNET_VERSION_EXPECTED: ${{ inputs.dotnet-version }}
       run: |
         set -euo pipefail
 
-        echo "Validando dotnet instalado en el runner..."
-
         if ! command -v dotnet >/dev/null 2>&1; then
-          echo "❌ dotnet no está instalado o no está en el PATH del runner"
-          echo "Instalá .NET SDK en el runner self-hosted antes de ejecutar este workflow."
+          echo "❌ dotnet no está instalado o no está en el PATH del runner."
           exit 1
         fi
 
+        echo "Validando dotnet instalado en el runner..."
         echo "dotnet path:"
         which dotnet
 
@@ -55,13 +61,11 @@ runs:
         echo "SDKs instalados:"
         dotnet --list-sdks
 
-        if [[ -n "${DOTNET_VERSION_EXPECTED:-}" ]]; then
-          EXPECTED_MAJOR="$(echo "$DOTNET_VERSION_EXPECTED" | sed -E 's/^([0-9]+).*/\1/')"
+        EXPECTED_MAJOR="$(echo "${DOTNET_VERSION_EXPECTED:-}" | sed -E 's/^([0-9]+).*/\1/')"
 
+        if [[ -n "$EXPECTED_MAJOR" ]]; then
           if ! dotnet --list-sdks | grep -Eq "^${EXPECTED_MAJOR}\."; then
-            echo "❌ No se encontró .NET SDK ${EXPECTED_MAJOR}.x instalado en el runner"
-            echo "SDKs disponibles:"
-            dotnet --list-sdks
+            echo "❌ No se encontró .NET SDK ${EXPECTED_MAJOR}.x instalado en el runner."
             exit 1
           fi
 
@@ -77,6 +81,18 @@ runs:
         TEST_FRAMEWORK: ${{ inputs.test-framework }}
       run: |
         set -euo pipefail
+
+        append_multiline_output() {
+          local NAME="$1"
+          local VALUE="$2"
+          local DELIMITER="EOF_${RANDOM}_${RANDOM}_$(date +%s)"
+
+          {
+            echo "${NAME}<<${DELIMITER}"
+            printf '%s\n' "$VALUE"
+            echo "${DELIMITER}"
+          } >> "$GITHUB_OUTPUT"
+        }
 
         if [[ -z "${DB_CONNECTION:-}" ]]; then
           echo "❌ La connection string está vacía"
@@ -102,7 +118,12 @@ runs:
         echo "::add-mask::$NORMALIZED"
 
         WORKDIR="$(mktemp -d)"
-        trap 'rm -rf "$WORKDIR"' EXIT
+
+        cleanup() {
+          rm -rf "$WORKDIR"
+        }
+
+        trap cleanup EXIT SIGINT SIGTERM
 
         cd "$WORKDIR"
 
@@ -272,12 +293,38 @@ runs:
         }
         EOF
 
-        DB_CONNECTION="$NORMALIZED" dotnet run --configuration Release
+        echo "Ejecutando validación SQL Server..."
+
+        set +e
+        VALIDATION_OUTPUT="$(DB_CONNECTION="$NORMALIZED" dotnet run --configuration Release 2>&1)"
+        VALIDATION_EXIT_CODE=$?
+        set -e
+
+        echo "$VALIDATION_OUTPUT"
+
+        DATA_SOURCE="$(printf '%s\n' "$VALIDATION_OUTPUT" | sed -n 's/^DataSource: //p' | head -n 1)"
+        DATABASE="$(printf '%s\n' "$VALIDATION_OUTPUT" | sed -n 's/^Database: //p' | head -n 1)"
+
+        append_multiline_output "normalized_connection_string" "$NORMALIZED"
 
         {
-          echo "normalized_connection_string<<EOF"
-          echo "$NORMALIZED"
-          echo "EOF"
+          echo "data_source=${DATA_SOURCE}"
+          echo "database=${DATABASE}"
         } >> "$GITHUB_OUTPUT"
 
+        {
+          echo "### SQL Server"
+          echo ""
+          echo "| Campo | Valor |"
+          echo "|---|---|"
+          printf '| DataSource | `%s` |\n' "${DATA_SOURCE:-No detectado}"
+          printf '| Database | `%s` |\n' "${DATABASE:-No detectada}"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        if [[ "$VALIDATION_EXIT_CODE" -ne 0 ]]; then
+          echo "❌ Falló la validación SQL Server"
+          exit "$VALIDATION_EXIT_CODE"
+        fi
+
         echo "✅ Connection string validada correctamente"
+
