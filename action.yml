@@ -192,9 +192,29 @@ runs:
         esac
 
         if [[ "${SECRET_FOUND:-}" != "true" ]]; then
-          echo "❌ No se obtuvo el secret de Key Vault para aplicar migraciones."
-          exit 1
+          echo "⚠️ No existe el secret de Key Vault para aplicar migraciones."
+          echo "Se saltea la aplicación de migraciones para este ambiente."
+
+          echo "skipped=true" >> "$GITHUB_OUTPUT"
+          echo "applied=false" >> "$GITHUB_OUTPUT"
+          echo "had_pending_migrations=false" >> "$GITHUB_OUTPUT"
+          echo "analysis_dir=" >> "$GITHUB_OUTPUT"
+          append_multiline_output "sql_files" ""
+
+          {
+            echo "### Apply DB Migrations"
+            echo ""
+            echo "| Campo | Valor |"
+            echo "|---|---|"
+            printf '| Ambiente | `%s` |\n' "$ENVIRONMENT_NAME"
+            printf '| Resultado | `%s` |\n' "Skipped"
+            printf '| Motivo | `%s` |\n' "SecretNotFound"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit 0
         fi
+
+
 
         if [[ -n "${DB_CONNECTION:-}" ]]; then
           echo "::add-mask::$DB_CONNECTION"
