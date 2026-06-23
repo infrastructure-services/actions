@@ -27,11 +27,6 @@ inputs:
     required: false
     default: "2025-07-01"
 
-  fail-on-not-found:
-    description: Indica si debe fallar cuando el secret no existe
-    required: false
-    default: "true"
-
 outputs:
   secret-value:
     description: Valor del secret obtenido desde Key Vault
@@ -58,13 +53,9 @@ runs:
         AZURE_CLIENT_SECRET: ${{ inputs.client-secret }}
         AZURE_TENANT_ID: ${{ inputs.tenant-id }}
         KEYVAULT_API_VERSION: ${{ inputs.keyvault-api-version }}
-        FAIL_ON_NOT_FOUND: ${{ inputs.fail-on-not-found }}
       run: |
         set -euo pipefail
 
-        # Archivos temporales privados del proceso.
-        # Se usa RUNNER_TEMP si existe; si no, /tmp.
-        # umask 077 hace que los archivos queden solo accesibles por el usuario del runner.
         umask 077
 
         TEMP_BASE="${RUNNER_TEMP:-/tmp}"
@@ -126,9 +117,20 @@ runs:
           fi
         }
 
-        normalize_bool() {
-          local VALUE="$1"
-          echo "$VALUE" | tr '[:upper:]' '[:lower:]'
+        write_summary() {
+          local SECRET_FOUND="$1"
+          local ERROR_CODE="$2"
+
+          {
+            echo "### Azure Key Vault Secret"
+            echo ""
+            echo "| Campo | Valor |"
+            echo "|---|---|"
+            printf '| Key Vault | `%s` |\n' "$KEYVAULT_NAME"
+            printf '| Secret name | `%s` |\n' "$SECRET_NAME"
+            printf '| Secret found | `%s` |\n' "$SECRET_FOUND"
+            printf '| Error code | `%s` |\n' "${ERROR_CODE:-none}"
+          } >> "$GITHUB_STEP_SUMMARY"
         }
 
         if [[ -z "${KEYVAULT_NAME:-}" ]]; then
@@ -160,18 +162,6 @@ runs:
           echo "❌ keyvault-api-version no informado"
           exit 1
         fi
-
-        FAIL_ON_NOT_FOUND="$(normalize_bool "${FAIL_ON_NOT_FOUND:-true}")"
-
-        case "$FAIL_ON_NOT_FOUND" in
-          true|false)
-            ;;
-          *)
-            echo "❌ fail-on-not-found inválido: $FAIL_ON_NOT_FOUND"
-            echo "Valores permitidos: true o false"
-            exit 1
-            ;;
-        esac
 
         if ! command -v curl >/dev/null 2>&1; then
           echo "❌ curl no está instalado en el runner"
@@ -273,26 +263,11 @@ runs:
           echo "No existe el secret ${SECRET_NAME} en el Key Vault ${KEYVAULT_NAME}."
           print_response_error "$RESPONSE_FILE"
 
-          if [[ "$FAIL_ON_NOT_FOUND" == "false" ]]; then
-            echo "Se continúa sin secret porque fail-on-not-found=false."
-            write_outputs_not_found "SecretNotFound"
+          write_outputs_not_found "SecretNotFound"
+          write_summary "false" "SecretNotFound"
 
-            {
-              echo "### Azure Key Vault Secret"
-              echo ""
-              echo "| Campo | Valor |"
-              echo "|---|---|"
-              echo "| Key Vault | \`${KEYVAULT_NAME}\` |"
-              echo "| Secret name | \`${SECRET_NAME}\` |"
-              echo "| Secret found | \`false\` |"
-              echo "| Error code | \`SecretNotFound\` |"
-            } >> "$GITHUB_STEP_SUMMARY"
-
-            exit 0
-          fi
-
-          echo "fail-on-not-found=true. Se corta el proceso."
-          exit 1
+          echo "Se continúa sin secret. La lógica consumidora deberá saltear migraciones."
+          exit 0
         fi
 
         if [[ "$HTTP_CODE" -lt 200 || "$HTTP_CODE" -ge 300 ]]; then
@@ -312,12 +287,14 @@ runs:
 
         if [[ -z "$SECRET_VALUE" ]]; then
           echo "❌ El secret fue encontrado pero no tiene value"
+
           {
             echo "secret_found=false"
             echo "error_code=EmptySecretValue"
           } >> "$GITHUB_OUTPUT"
 
           append_multiline_output "secret_value" ""
+          write_summary "false" "EmptySecretValue"
 
           exit 1
         fi
@@ -325,17 +302,7 @@ runs:
         echo "::add-mask::$SECRET_VALUE"
 
         write_outputs_success "$SECRET_VALUE"
+        write_summary "true" "none"
 
         echo "✅ Secret obtenido correctamente desde Key Vault"
-
-        {
-          echo "### Azure Key Vault Secret"
-          echo ""
-          echo "| Campo | Valor |"
-          echo "|---|---|"
-          echo "| Key Vault | \`${KEYVAULT_NAME}\` |"
-          echo "| Secret name | \`${SECRET_NAME}\` |"
-          echo "| Secret found | \`true\` |"
-          echo "| Error code | \`none\` |"
-        } >> "$GITHUB_STEP_SUMMARY"
 
