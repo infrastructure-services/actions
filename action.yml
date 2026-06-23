@@ -128,7 +128,6 @@ runs:
         client-id: ${{ inputs.client-id }}
         client-secret: ${{ inputs.client-secret }}
         tenant-id: ${{ inputs.tenant-id }}
-        fail-on-not-found: "true"
 
     - name: Apply Migrations
       id: apply
@@ -192,10 +191,14 @@ runs:
         esac
 
         if [[ "${SECRET_FOUND:-}" != "true" ]]; then
-          echo "⚠️ No existe el secret de Key Vault para aplicar migraciones."
-          echo "Se saltea la aplicación de migraciones para este ambiente."
+          echo "❌ No existe el secret de Key Vault para aplicar migraciones."
+          echo "Migration Risk: ${MIGRATION_RISK}"
+          echo "Secret requerido: ${SECRET_NAME:-No informado}"
+          echo ""
+          echo "Como migration-risk es distinto de NONE, no se puede desplegar sin aplicar o validar migraciones."
+          echo "Se corta el proceso."
 
-          echo "skipped=true" >> "$GITHUB_OUTPUT"
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
           echo "applied=false" >> "$GITHUB_OUTPUT"
           echo "had_pending_migrations=false" >> "$GITHUB_OUTPUT"
           echo "analysis_dir=" >> "$GITHUB_OUTPUT"
@@ -207,14 +210,14 @@ runs:
             echo "| Campo | Valor |"
             echo "|---|---|"
             printf '| Ambiente | `%s` |\n' "$ENVIRONMENT_NAME"
-            printf '| Resultado | `%s` |\n' "Skipped"
+            printf '| Migration Risk | `%s` |\n' "$MIGRATION_RISK"
+            printf '| Resultado | `%s` |\n' "FAILED"
             printf '| Motivo | `%s` |\n' "SecretNotFound"
+            printf '| Secret requerido | `%s` |\n' "${SECRET_NAME:-No informado}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          exit 0
+          exit 1
         fi
-
-
 
         if [[ -n "${DB_CONNECTION:-}" ]]; then
           echo "::add-mask::$DB_CONNECTION"
