@@ -1,0 +1,189 @@
+name: Resolve DB Migration Risk
+description: Resuelve el riesgo final de migraciones EF Core según Key Vault, SQL y validación EF
+
+inputs:
+  environment-name:
+    description: Nombre del ambiente, por ejemplo TEST, QA o PROD
+    required: true
+
+  secret-name:
+    description: Nombre del secret consultado en Key Vault
+    required: true
+
+  keyvault-outcome:
+    description: Outcome del step get-keyvault-secret
+    required: true
+
+  secret-found:
+    description: Indica si el secret existe en Key Vault
+    required: false
+    default: "false"
+
+  keyvault-error-code:
+    description: Código de error devuelto por get-keyvault-secret
+    required: false
+    default: ""
+
+  sql-outcome:
+    description: Outcome del step validate-sqlserver-connection
+    required: false
+    default: "skipped"
+
+  ef-outcome:
+    description: Outcome del step validate-efcore-migrations
+    required: false
+    default: "skipped"
+
+  has-pending-db-migrations:
+    description: Output has-pending-db-migrations del action validate-efcore-migrations
+    required: false
+    default: "false"
+
+  detected-migration-risk:
+    description: Output migration-risk del action validate-efcore-migrations
+    required: false
+    default: "NONE"
+
+outputs:
+  has-migrations:
+    description: Indica si hay migraciones pendientes
+    value: ${{ steps.resolve.outputs.has_migrations }}
+
+  migration-risk:
+    description: Riesgo final de migración
+    value: ${{ steps.resolve.outputs.migration_risk }}
+
+  requires-dba:
+    description: Indica si requiere aprobación DBA
+    value: ${{ steps.resolve.outputs.requires_dba }}
+
+  should-apply-migrations:
+    description: Indica si corresponde ejecutar apply-db-migrations
+    value: ${{ steps.resolve.outputs.should_apply_migrations }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve DB migration risk
+      id: resolve
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment-name }}
+        SECRET_NAME: ${{ inputs.secret-name }}
+        KV_OUTCOME: ${{ inputs.keyvault-outcome }}
+        SECRET_FOUND: ${{ inputs.secret-found }}
+        KV_ERROR_CODE: ${{ inputs.keyvault-error-code }}
+        SQL_OUTCOME: ${{ inputs.sql-outcome }}
+        EF_OUTCOME: ${{ inputs.ef-outcome }}
+        HAS_MIG: ${{ inputs.has-pending-db-migrations }}
+        RISK: ${{ inputs.detected-migration-risk }}
+      run: |
+        set -euo pipefail
+
+        echo "Environment: $ENVIRONMENT_NAME"
+        echo "Secret name: $SECRET_NAME"
+        echo "KV outcome: $KV_OUTCOME"
+        echo "Secret found: $SECRET_FOUND"
+        echo "KV error code: ${KV_ERROR_CODE:-none}"
+        echo "SQL outcome: $SQL_OUTCOME"
+        echo "EF outcome: $EF_OUTCOME"
+
+        write_outputs() {
+          local HAS_MIGRATIONS="$1"
+          local MIGRATION_RISK="$2"
+          local REQUIRES_DBA="$3"
+          local SHOULD_APPLY_MIGRATIONS="$4"
+
+          {
+            echo "has_migrations=$HAS_MIGRATIONS"
+            echo "migration_risk=$MIGRATION_RISK"
+            echo "requires_dba=$REQUIRES_DBA"
+            echo "should_apply_migrations=$SHOULD_APPLY_MIGRATIONS"
+          } >> "$GITHUB_OUTPUT"
+        }
+
+        write_summary() {
+          local HAS_MIGRATIONS="$1"
+          local MIGRATION_RISK="$2"
+          local REQUIRES_DBA="$3"
+          local SHOULD_APPLY_MIGRATIONS="$4"
+          local RESULT="$5"
+
+          {
+            echo "### Validación migración ${ENVIRONMENT_NAME}"
+            echo ""
+            echo "| Campo | Valor |"
+            echo "|---|---|"
+            printf '| Ambiente | `%s` |\n' "$ENVIRONMENT_NAME"
+            printf '| Secret | `%s` |\n' "$SECRET_NAME"
+            printf '| Key Vault outcome | `%s` |\n' "$KV_OUTCOME"
+            printf '| Secret encontrado | `%s` |\n' "$SECRET_FOUND"
+            printf '| Error Key Vault | `%s` |\n' "${KV_ERROR_CODE:-none}"
+            printf '| SQL connection | `%s` |\n' "$SQL_OUTCOME"
+            printf '| EF validation | `%s` |\n' "$EF_OUTCOME"
+            printf '| Tiene migraciones | `%s` |\n' "$HAS_MIGRATIONS"
+            printf '| Riesgo | `%s` |\n' "$MIGRATION_RISK"
+            printf '| Requiere DBA | `%s` |\n' "$REQUIRES_DBA"
+            printf '| Aplica migraciones | `%s` |\n' "$SHOULD_APPLY_MIGRATIONS"
+            printf '| Resultado | `%s` |\n' "$RESULT"
+          } >> "$GITHUB_STEP_SUMMARY"
+        }
+
+        if [[ "$KV_OUTCOME" != "success" ]]; then
+          echo "❌ Falló Key Vault por un error real."
+          echo "No se continúa porque no se pudo determinar el estado del secret."
+          exit 1
+        fi
+
+        if [[ "$SECRET_FOUND" != "true" ]]; then
+          echo "⚠️ El secret no existe en Key Vault."
+          echo "Se continúa sin validar ni aplicar migraciones para ${ENVIRONMENT_NAME}."
+
+          write_outputs "false" "NONE" "false" "false"
+          write_summary "false" "NONE" "false" "false" "SKIPPED_SECRET_NOT_FOUND"
+          exit 0
+        fi
+
+        if [[ "$SQL_OUTCOME" != "success" ]]; then
+          echo "❌ El secret existe, pero no se pudo validar la conexión SQL."
+          echo "Se corta el proceso para evitar desplegar sin validar correctamente."
+          exit 1
+        fi
+
+        if [[ "$EF_OUTCOME" != "success" ]]; then
+          echo "❌ El secret existe y SQL conectó, pero falló la validación EF Core."
+          echo "Se corta el proceso para evitar desplegar sin validar correctamente."
+          exit 1
+        fi
+
+        [[ "$HAS_MIG" != "true" ]] && HAS_MIG="false"
+        [[ -z "${RISK:-}" || "$HAS_MIG" == "false" ]] && RISK="NONE"
+
+        case "$RISK" in
+          NONE|LOW|MEDIUM|HIGH)
+            ;;
+          *)
+            echo "❌ Riesgo inválido detectado: $RISK"
+            exit 1
+            ;;
+        esac
+
+        REQUIRES_DBA="false"
+        SHOULD_APPLY_MIGRATIONS="false"
+
+        if [[ "$RISK" != "NONE" ]]; then
+          SHOULD_APPLY_MIGRATIONS="true"
+        fi
+
+        if [[ "$RISK" == "MEDIUM" || "$RISK" == "HIGH" ]]; then
+          REQUIRES_DBA="true"
+        fi
+
+        write_outputs "$HAS_MIG" "$RISK" "$REQUIRES_DBA" "$SHOULD_APPLY_MIGRATIONS"
+        write_summary "$HAS_MIG" "$RISK" "$REQUIRES_DBA" "$SHOULD_APPLY_MIGRATIONS" "OK"
+
+        echo "✅ Riesgo resuelto correctamente"
+        echo "Tiene migraciones: $HAS_MIG"
+        echo "Riesgo: $RISK"
+        echo "Requiere DBA: $REQUIRES_DBA"
+        echo "Aplica migraciones: $SHOULD_APPLY_MIGRATIONS"
