@@ -3,7 +3,7 @@ description: Obtiene connection string desde Key Vault de forma segura, genera a
 
 inputs:
   migration-risk:
-    description: Riesgo de migración recibido desde Continuous Delivery
+    description: Riesgo de migración recibido desde la validación de migraciones
     required: false
     default: "NONE"
 
@@ -136,6 +136,7 @@ runs:
         MIGRATION_RISK: ${{ inputs.migration-risk }}
         DB_CONNECTION: ${{ steps.fetch_conn.outputs['secret-value'] }}
         SECRET_FOUND: ${{ steps.fetch_conn.outputs['secret-found'] }}
+        SECRET_NAME: ${{ inputs.secret-name }}
         PROJECT: ${{ inputs.project }}
         STARTUP_PROJECT: ${{ inputs.startup-project }}
         DB_CONTEXT: ${{ inputs.db-context }}
@@ -155,6 +156,7 @@ runs:
         echo "Startup project: ${STARTUP_PROJECT}"
         echo "Project input: ${PROJECT}"
         echo "Configuration: ${CONFIGURATION}"
+        echo "Secret name: ${SECRET_NAME}"
         echo "=========================================="
 
         append_multiline_output() {
@@ -171,11 +173,25 @@ runs:
 
         if [[ "$MIGRATION_RISK" == "NONE" ]]; then
           echo "migration-risk=NONE. No se aplican migraciones."
+
           echo "skipped=true" >> "$GITHUB_OUTPUT"
           echo "applied=false" >> "$GITHUB_OUTPUT"
           echo "had_pending_migrations=false" >> "$GITHUB_OUTPUT"
           echo "analysis_dir=" >> "$GITHUB_OUTPUT"
           append_multiline_output "sql_files" ""
+
+          {
+            echo "### Apply DB Migrations"
+            echo ""
+            echo "| Campo | Valor |"
+            echo "|---|---|"
+            printf '| Ambiente | `%s` |\n' "$ENVIRONMENT_NAME"
+            printf '| Migration Risk | `%s` |\n' "$MIGRATION_RISK"
+            printf '| Resultado | `%s` |\n' "SKIPPED"
+            printf '| Motivo | `%s` |\n' "MigrationRiskNone"
+            printf '| Secret requerido | `%s` |\n' "$SECRET_NAME"
+          } >> "$GITHUB_STEP_SUMMARY"
+
           exit 0
         fi
 
@@ -443,11 +459,25 @@ runs:
 
         if [[ -z "${MIGRATION_PROJECTS:-}" ]]; then
           echo "⚠️ No se encontraron proyectos con migraciones para procesar."
+
           echo "skipped=true" >> "$GITHUB_OUTPUT"
           echo "applied=false" >> "$GITHUB_OUTPUT"
           echo "had_pending_migrations=false" >> "$GITHUB_OUTPUT"
           echo "analysis_dir=" >> "$GITHUB_OUTPUT"
           append_multiline_output "sql_files" ""
+
+          {
+            echo "### Apply DB Migrations"
+            echo ""
+            echo "| Campo | Valor |"
+            echo "|---|---|"
+            printf '| Ambiente | `%s` |\n' "$ENVIRONMENT_NAME"
+            printf '| Migration Risk | `%s` |\n' "$MIGRATION_RISK"
+            printf '| Resultado | `%s` |\n' "SKIPPED"
+            printf '| Motivo | `%s` |\n' "NoMigrationProjectsFound"
+            printf '| Secret requerido | `%s` |\n' "$SECRET_NAME"
+          } >> "$GITHUB_STEP_SUMMARY"
+
           exit 0
         fi
 
