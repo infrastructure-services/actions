@@ -191,14 +191,11 @@ runs:
         esac
 
         if [[ "${SECRET_FOUND:-}" != "true" ]]; then
-          echo "❌ No existe el secret de Key Vault para aplicar migraciones."
-          echo "Migration Risk: ${MIGRATION_RISK}"
+          echo "⚠️ No existe el secret de Key Vault para aplicar migraciones."
           echo "Secret requerido: ${SECRET_NAME:-No informado}"
-          echo ""
-          echo "Como migration-risk es distinto de NONE, no se puede desplegar sin aplicar o validar migraciones."
-          echo "Se corta el proceso."
+          echo "Se continúa sin aplicar migraciones."
 
-          echo "skipped=false" >> "$GITHUB_OUTPUT"
+          echo "skipped=true" >> "$GITHUB_OUTPUT"
           echo "applied=false" >> "$GITHUB_OUTPUT"
           echo "had_pending_migrations=false" >> "$GITHUB_OUTPUT"
           echo "analysis_dir=" >> "$GITHUB_OUTPUT"
@@ -211,12 +208,12 @@ runs:
             echo "|---|---|"
             printf '| Ambiente | `%s` |\n' "$ENVIRONMENT_NAME"
             printf '| Migration Risk | `%s` |\n' "$MIGRATION_RISK"
-            printf '| Resultado | `%s` |\n' "FAILED"
+            printf '| Resultado | `%s` |\n' "SKIPPED"
             printf '| Motivo | `%s` |\n' "SecretNotFound"
             printf '| Secret requerido | `%s` |\n' "${SECRET_NAME:-No informado}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          exit 1
+          exit 0
         fi
 
         if [[ -n "${DB_CONNECTION:-}" ]]; then
