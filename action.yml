@@ -264,6 +264,8 @@ runs:
     - name: Build and push Andreani
       if: ${{ inputs.WORKFLOW_CD == 'standard' || inputs.WORKFLOW_CD == 'multiorg' || inputs.WORKFLOW_CD == 'dms' }}
       uses: docker/build-push-action@v7
+      env: 
+        DOCKER_BUILD_RECORD_UPLOAD: "false"
       with:
         context: . 
         file: Dockerfile 
@@ -283,6 +285,8 @@ runs:
     - name: Build and push Witwot
       if: ${{ inputs.WORKFLOW_CD == 'witwot' }}
       uses: docker/build-push-action@v7
+      env: 
+        DOCKER_BUILD_RECORD_UPLOAD: "false"
       with:
         context: . 
         file: Dockerfile 
@@ -323,6 +327,8 @@ runs:
     - name: Build and push hop
       if: ${{ inputs.WORKFLOW_CD == 'hop' }}
       uses: docker/build-push-action@v7
+      env: 
+        DOCKER_BUILD_RECORD_UPLOAD: "false"
       with:
         context: . 
         file: Dockerfile 
