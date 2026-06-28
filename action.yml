@@ -216,7 +216,7 @@ runs:
         MATRIX_DEPLOY: ${{ inputs.matrix_deploy }}
       with:
         script: |
-          REPOSITORY_URI=public.ecr.aws/hopenvios-sbx/${{env.CHART_NAME}}
+          REPOSITORY_URI="public.ecr.aws/hopenvios-sbx/${{env.CHART_NAME}}"
           let tags = [];
           const matrix_deploy = JSON.parse(process.env.MATRIX_DEPLOY || '[]');
           if (matrix_deploy.length > 0) {
