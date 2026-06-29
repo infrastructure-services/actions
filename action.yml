@@ -324,7 +324,21 @@ runs:
           MIGRATIONS_EXIT_CODE=$?
           set -e
 
-          if [[ "$MIGRATIONS_EXIT_CODE" -ne 0 ]]; then exit "$MIGRATIONS_EXIT_CODE"; fi
+          echo "Ejecutando dotnet ef migrations list..."
+          echo "Proyecto migraciones: $MIGRATION_PROJECT"
+          echo "Startup project: $STARTUP_PROJECT"
+
+          set +e
+          MIGRATIONS_OUTPUT="$("${EF_CMD[@]}" migrations list "${EF_ARGS[@]}" --connection "$DB_CONNECTION" --verbose 2>&1)"
+          MIGRATIONS_EXIT_CODE=$?
+          set -e
+
+          echo "$MIGRATIONS_OUTPUT"
+
+          if [[ "$MIGRATIONS_EXIT_CODE" -ne 0 ]]; then
+            echo "❌ Falló dotnet ef migrations list para el proyecto: $MIGRATION_PROJECT"
+            exit "$MIGRATIONS_EXIT_CODE"
+          fi
 
           PENDING_MIGRATIONS="$(echo "$MIGRATIONS_OUTPUT" | sed -nE 's/^[[:space:]]*([0-9]{14}_[A-Za-z0-9_]+)[[:space:]]+\(Pending\).*$/\1/p' | awk '!seen[$0]++')"
           APPLIED_MIGRATIONS="$(echo "$MIGRATIONS_OUTPUT" | grep -Ev '\(Pending\)' | sed -nE 's/^[[:space:]]*([0-9]{14}_[A-Za-z0-9_]+).*$/\1/p' | awk '!seen[$0]++' || true)"
