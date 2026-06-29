@@ -15,6 +15,9 @@ inputs:
   credentialsJson:
     description: "Credenciales para el backup"
     required: true 
+  appdataJson:
+    description: "Datos de la app"
+    required: true 
 
 runs:
   using: composite
@@ -23,22 +26,36 @@ runs:
       uses: actions/checkout@v6
       with:
         fetch-depth: 0
+    - name: Obtengo datos de la aplicación
+      id: setOutputs
+      shell: bash
+      env:
+        APPDATA_JSON: ${{ inputs.appdataJson }}
+      run: |
+        APP_NAME=$(echo "$APPDATA_JSON" | jq -r '.appdata.appname')
+        PROJECT_NAME=$(echo "$APPDATA_JSON" | jq -r '.appdata.projectName')
+        echo "Obtenido nombre de app: ${APP_NAME}"
+        echo "Obtenido proyecto: ${PROJECT_NAME}"
+        echo "APP_NAME=$APP_NAME" >> $GITHUB_ENV
+        echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_ENV
     - name: "Backup Code"
       shell: bash
+      env:
+        APPDATA_JSON: ${{ inputs.appdataJson }}
       run: |
         echo "Backup del repo con el código productivo"
-        sudo mkdir -p /backup/${{ vars.PROJECT }}/${{ vars.APPNAME }}
+        sudo mkdir -p /backup/${{ env.PROJECT_NAME }}/${{ env.APP_NAME }}
         ls -la
 
         #Backupear las variables del repo.
-        echo "${{ toJSON(vars) }}" > RepoVars.json
+        echo "$APPDATA_JSON" > appdata.json
         
         #Mover a la ruta de backup el repo
-        sudo cp -r -f . /backup/${{ vars.PROJECT }}/${{ vars.APPNAME }}/
+        sudo cp -r -f . /backup/${{ env.PROJECT_NAME }}/${{ env.APP_NAME }}/
         echo "Archivos copiados"
-        cd /backup/${{ vars.PROJECT }}/${{ vars.APPNAME }}
+        cd /backup/${{ env.PROJECT_NAME }}/${{ env.APP_NAME }}
         ls -la
-        cat ./RepoVars.json
+        cat ./appdata.json
 #    - name: Crear repo en GitLab si no existe
 #      shell: bash
 #      run: |
