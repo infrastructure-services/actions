@@ -6,407 +6,163 @@ inputs:
     description: "Variable que define el tipo de pipeline que es (Standard -> Normal Andreani 2 registries)"
     required: false
     default: "standard"
-  rama:
-    description: "tag para subir imagen"
-    required: true
   ## App Datas
   appdataJson:
     description: "Json de datos de la aplicación"
     required: true
 
+outputs:
+  dev:
+    description: Activa Ambiente Dev
+    value: ${{ steps.generator.outputs.dev }}
+  test:
+    description: Activa Ambiente Test o Sandbox
+    value: ${{ steps.generator.outputs.test }}
+  qa:
+    description: Activa Ambiente QA
+    value: ${{ steps.generator.outputs.qa }}
+  preprod:
+    description: Activa Ambiente preprod
+    value: ${{ steps.generator.outputs.preprod }}    
+  prod:
+    description: Activa Ambiente Prod
+    value: ${{ steps.generator.outputs.prod }}   
+  hopprod:
+    description: Activa Ambiente Prod de Hop para Multiorg
+    value: ${{ steps.generator.outputs.hopprod }}   
+  wwprod:
+    description: Activa Ambiente Prod de Witwot para Multiorg
+    value: ${{ steps.generator.outputs.wwprod }}   
 
-## Es medio monolítico para aprovechar una misma acción de build y luego hacer los pushes necesarios
+## La funcionalidad se puede extender conforme se agregan workflows y para incluir extracción de workflow de appdata
 
 runs:
   using: "composite"
   steps:
-    - name: Extract variables to use 
+    - name: Extract outputs to use 
       shell: bash
+      id: generator
       env:
-        REGISTRY_DATA: ${{ inputs.REGISTRY_DATA }}
-        REGISTRY_DATA2: ${{ inputs.REGISTRY_DATA2 }}
-        REGISTRY_DATA3: ${{ inputs.REGISTRY_DATA3 }}
-        REGISTRY_DATA4: ${{ inputs.REGISTRY_DATA4 }}
-        REGISTRY_SELECTOR: ${{ inputs.REGISTRY_SELECTOR }}
+        APPDATA: ${{ inputs.appdataJson }}
         WORKFLOW: ${{ inputs.WORKFLOW_CD }}
+        RAMA: ${{ github.ref_name }}
       run: |-
-        #Conformamos las variables para cada caso de WORKFLOW_CD
-        if [[ "$WORKFLOW" == "standard" || "$WORKFLOW" == "dms" ]]; then
-          printf '%s' "$REGISTRY_DATA" > reg_content.txt
-          ACR_USERNAME=$(jq -r '.ACR_USERNAME' reg_content.txt)
-          ACR_PASSWORD=$(jq -r '.ACR_PASSWORD' reg_content.txt)
-          REGISTRY_PASS=$(jq -r '.REGISTRY_PASS' reg_content.txt)
-          ACR_FULL_NAME=$(jq -r '.ACR_FULL_NAME' reg_content.txt)
-          ACR_NAME=$(jq -r '.ACR_NAME' reg_content.txt)
+        #Conformamos las de output para cada branch y caso de WORKFLOW_CD
+        dev=false
+        test=false
+        qa=false
+        preprod=false
+        prod=false
+        hopprod=false
+        wwprod=false
+        
+        if [[ "$WORKFLOW" == "standard" ]]; then
 
-          echo "ACR_USERNAME=$ACR_USERNAME" >> "$GITHUB_ENV"
-          echo "ACR_PASSWORD=$ACR_PASSWORD" >> "$GITHUB_ENV"
-          echo "REGISTRY_PASS=$REGISTRY_PASS" >> "$GITHUB_ENV"
-          echo "ACR_FULL_NAME=$ACR_FULL_NAME" >> "$GITHUB_ENV"
-          echo "ACR_NAME=$ACR_NAME" >> "$GITHUB_ENV"
-          rm -f reg_content.txt
+            if [[ "$RAMA" == "main" || "$RAMA" == "develop" ]]; then
+              test=true
+            else
+              test=false
+            fi
 
-          printf '%s' "$REGISTRY_DATA2" > reg_content.txt
-          ECR_ID=$(jq -r '.ECR_ID' reg_content.txt)
-          ECR_PASSWORD=$(jq -r '.ECR_PASSWORD' reg_content.txt)
-          ECR_FULLNAME=$(jq -r '.ECR_FULLNAME' reg_content.txt)
-          echo "ECR_ID=$ECR_ID" >> "$GITHUB_ENV"
-          echo "ECR_PASSWORD=$ECR_PASSWORD" >> "$GITHUB_ENV"
-          echo "ECR_FULLNAME=$ECR_FULLNAME" >> "$GITHUB_ENV"     
-          rm -f reg_content.txt
+            if [[ "$RAMA" == "main" ]]; then
+              qa=true
+            else
+              qa=false
+            fi
+
+            if [[ "$RAMA" == "main" || "$RAMA" == "hotfix" ]]; then
+              preprod=true
+              prod=true
+            else
+              preprod=false
+              prod=false
+            fi
+
         elif [[ "$WORKFLOW" == "hop" ]]; then
-          printf '%s' "$REGISTRY_DATA" > reg_content.txt
-          ECR_IDHOP=$(jq -r '.ECR_ID' reg_content.txt)
-          ECR_PASSWORDHOP=$(jq -r '.ECR_PASSWORD' reg_content.txt)
-          ECR_FULLNAMEHOP=$(jq -r '.ECR_FULLNAME' reg_content.txt)
-          echo "ECR_IDHOP=$ECR_IDHOP" >> "$GITHUB_ENV"
-          echo "ECR_PASSWORDHOP=$ECR_PASSWORDHOP" >> "$GITHUB_ENV"
-          echo "ECR_FULLNAMEHOP=$ECR_FULLNAMEHOP" >> "$GITHUB_ENV"
-          rm -f reg_content.txt
+
+            if [[ "$RAMA" == "main" || "$RAMA" == "develop" ]]; then
+              test=true
+            else
+              test=false
+            fi
+            if [[ "$RAMA" == "main" || "$RAMA" == "hotfix" ]]; then
+              prod=true
+            else
+              prod=false
+            fi
+
         elif [[ "$WORKFLOW" == "witwot" ]]; then
-          printf '%s' "$REGISTRY_DATA" > reg_content.txt
-          ACR_USERNAMEWW=$(jq -r '.ACR_USERNAME' reg_content.txt)
-          ACR_PASSWORDWW=$(jq -r '.ACR_PASSWORD' reg_content.txt)
-          REGISTRY_PASSWW=$(jq -r '.REGISTRY_PASS' reg_content.txt)
-          ACR_FULL_NAMEWW=$(jq -r '.ACR_FULL_NAME' reg_content.txt)
-          ACR_NAME=$(jq -r '.ACR_NAME' reg_content.txt)
-          echo "ACR_USERNAMEWW=$ACR_USERNAMEWW" >> "$GITHUB_ENV"
-          echo "ACR_PASSWORDWW=$ACR_PASSWORDWW" >> "$GITHUB_ENV"
-          echo "REGISTRY_PASSWW=$REGISTRY_PASSWW" >> "$GITHUB_ENV"
-          echo "ACR_FULL_NAMEWW=$ACR_FULL_NAMEWW" >> "$GITHUB_ENV"
-          echo "ACR_NAMEWW=$ACR_NAMEWW" >> "$GITHUB_ENV"
-          rm -f reg_content.txt
+            if [[ "$RAMA" == "main" || "$RAMA" == "develop" ]]; then
+              test=true
+              dev=true
+            else
+              dev=false
+              test=false
+            fi
+
+            if [[ "$RAMA" == "main" ]]; then
+              preprod=true
+            else
+              preprod=false
+            fi
+
+            if [[ "$RAMA" == "main" || "$RAMA" == "hotfix" ]]; then
+              prod=true
+            else
+              prod=false
+            fi
+
         elif [[ "$WORKFLOW" == "multiorg" ]]; then
-          printf '%s' "$REGISTRY_DATA" > reg_content.txt
-          ACR_USERNAME=$(jq -r '.ACR_USERNAME' reg_content.txt)
-          ACR_PASSWORD=$(jq -r '.ACR_PASSWORD' reg_content.txt)
-          REGISTRY_PASS=$(jq -r '.REGISTRY_PASS' reg_content.txt)
-          ACR_FULL_NAME=$(jq -r '.ACR_FULL_NAME' reg_content.txt)
-          ACR_NAME=$(jq -r '.ACR_NAME' reg_content.txt)
+            if [[ "$RAMA" == "main" || "$RAMA" == "develop" ]]; then
+              test=true
+            else
+              test=false
+            fi
 
-          echo "ACR_USERNAME=$ACR_USERNAME" >> "$GITHUB_ENV"
-          echo "ACR_PASSWORD=$ACR_PASSWORD" >> "$GITHUB_ENV"
-          echo "REGISTRY_PASS=$REGISTRY_PASS" >> "$GITHUB_ENV"
-          echo "ACR_FULL_NAME=$ACR_FULL_NAME" >> "$GITHUB_ENV"
-          echo "ACR_NAME=$ACR_NAME" >> "$GITHUB_ENV"
-          rm -f reg_content.txt
+            if [[ "$RAMA" == "main" ]]; then
+              qa=true
+            else
+              qa=false
+            fi
+            if [[ "$RAMA" == "main" || "$RAMA" == "hotfix" ]]; then
+              preprod=true
+              prod=true
+              hopprod=true
+              wwprod=true
+            else
+              preprod=false
+              prod=false
+              hopprod=false
+              wwprod=false
+            fi
+        elif [[ "$WORKFLOW" == "dms" ]]; then
+            if [[ "$RAMA" == "develop" ]]; then
+              test=true
+              qa=true
+            else
+              test=false
+            fi
 
-          printf '%s' "$REGISTRY_DATA2" > reg_content.txt
-          ECR_ID=$(jq -r '.ECR_ID' reg_content.txt)
-          ECR_PASSWORD=$(jq -r '.ECR_PASSWORD' reg_content.txt)
-          ECR_FULLNAME=$(jq -r '.ECR_FULLNAME' reg_content.txt)
-          echo "ECR_ID=$ECR_ID" >> "$GITHUB_ENV"
-          echo "ECR_PASSWORD=$ECR_PASSWORD" >> "$GITHUB_ENV"
-          echo "ECR_FULLNAME=$ECR_FULLNAME" >> "$GITHUB_ENV"     
-          rm -f reg_content.txt
+            if [[ "$RAMA" == "main" ]]; then
+              qa=true
+            fi
 
-          printf '%s' "$REGISTRY_DATA3" > reg_content.txt
-          ACR_USERNAMEWW=$(jq -r '.ACR_USERNAME' reg_content.txt)
-          ACR_PASSWORDWW=$(jq -r '.ACR_PASSWORD' reg_content.txt)
-          REGISTRY_PASSWW=$(jq -r '.REGISTRY_PASS' reg_content.txt)
-          ACR_FULL_NAMEWW=$(jq -r '.ACR_FULL_NAME' reg_content.txt)
-          ACR_NAMEWW=$(jq -r '.ACR_NAME' reg_content.txt)
-          echo "ACR_USERNAMEWW=$ACR_USERNAMEWW" >> "$GITHUB_ENV"
-          echo "ACR_PASSWORDWW=$ACR_PASSWORDWW" >> "$GITHUB_ENV"
-          echo "REGISTRY_PASSWW=$REGISTRY_PASSWW" >> "$GITHUB_ENV"
-          echo "ACR_FULL_NAMEWW=$ACR_FULL_NAMEWW" >> "$GITHUB_ENV"
-          echo "ACR_NAMEWW=$ACR_NAMEWW" >> "$GITHUB_ENV"
-          rm -f reg_content.txt
-
-          printf '%s' "$REGISTRY_DATA4" > reg_content.txt
-          ECR_IDHOP=$(jq -r '.ECR_ID' reg_content.txt)
-          ECR_PASSWORDHOP=$(jq -r '.ECR_PASSWORD' reg_content.txt)
-          ECR_FULLNAMEHOP=$(jq -r '.ECR_FULLNAME' reg_content.txt)
-          echo "ECR_IDHOP=$ECR_IDHOP" >> "$GITHUB_ENV"
-          echo "ECR_PASSWORDHOP=$ECR_PASSWORDHOP" >> "$GITHUB_ENV"
-          echo "ECR_FULLNAMEHOP=$ECR_FULLNAMEHOP" >> "$GITHUB_ENV"
-          rm -f reg_content.txt
+            if [[ "$RAMA" == "main" || "$RAMA" == "hotfix" ]]; then
+              preprod=true
+              prod=true
+            else
+              preprod=false
+              prod=false
+            fi
         else
-          echo "::error::Tipo de workflow desconocido: $WORKFLOW"
-          exit 1
+          echo "::warning::Se ejecutó el delivery desde una rama no soportada: $RAMA. Utilizar main, develop o hotfix"
         fi
-    - name: Obtengo datos de la aplicación
-      id: setOutputs
-      shell: bash
-      env:
-        APPDATA_JSON: ${{ inputs.appdataJson }}
-      run: |
-        APP_NAME=$(echo "$APPDATA_JSON" | jq -r '.appdata.appname')
-        PROJECT_NAME=$(echo "$APPDATA_JSON" | jq -r '.appdata.projectName')
-        CHART_NAME="${PROJECT_NAME}-${APP_NAME}"
-        echo "Obtenido nombre de app: ${APP_NAME}"
-        echo "Obtenido proyecto: ${PROJECT_NAME}"
-        echo "Obtenido chart-name: ${CHART_NAME}"
-        echo "APP_NAME=$APP_NAME" >> $GITHUB_ENV
-        echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_ENV
-        echo "CHART_NAME=$CHART_NAME" >> $GITHUB_ENV
-    #Genero los tags a pushear a ACR
-    - name: Generate ACR Andreani Tags 
-      if: ${{ inputs.WORKFLOW_CD == 'standard' || inputs.WORKFLOW_CD == 'multiorg' || inputs.WORKFLOW_CD == 'dms' }}
-      id: acrAndreaniTags
-      uses: actions/github-script@v8
-      env:
-        MATRIX_DEPLOY: ${{ inputs.matrix_deploy }}
-      with:
-        script: |
-          let tags = [];
-          const matrix_deploy = JSON.parse(process.env.MATRIX_DEPLOY || '[]');
-          if (matrix_deploy.length > 0) {
-            matrix_deploy.forEach(deploy => {
-              let tag = `${{ env.ACR_FULL_NAME }}/${{env.CHART_NAME}}-${deploy}:${{ inputs.appVersion}}`
-              tags.push(tag);
-            });
-          } else {
-            tags.push(`${{ env.ACR_FULL_NAME }}/${{env.CHART_NAME}}:${{ inputs.appVersion}}`);
-          }
-          tags.push(`${{ env.ACR_FULL_NAME }}/${{env.CHART_NAME}}:ultima`);
-          return tags.join('\n');
-        result-encoding: string
-
-    - name: Generate ACR Witwot Tags #TODO Usar estos tags para pushear a la registry de witwot en MultiOrg y hacerlo compatible con matrix_deploy
-      if: ${{ inputs.WORKFLOW_CD == 'witwot' || inputs.WORKFLOW_CD == 'multiorg' }}
-      id: acrWitwotTags
-      uses: actions/github-script@v8
-      env:
-        MATRIX_DEPLOY: ${{ inputs.matrix_deploy }}
-      with:
-        script: |
-          let tags = [];
-          const matrix_deploy = JSON.parse(process.env.MATRIX_DEPLOY || '[]');
-          if (matrix_deploy.length > 0) {
-            matrix_deploy.forEach(deploy => {
-              let tag = `${{ env.ACR_FULL_NAMEWW }}/${{env.CHART_NAME}}-${deploy}:${{ inputs.appVersion}}`
-              tags.push(tag);
-            });
-          } else {
-            tags.push(`${{ env.ACR_FULL_NAMEWW }}/${{env.CHART_NAME}}:${{ inputs.appVersion}}`);
-          }
-          return tags.join('\n');
-        result-encoding: string
-
-    - name: Generate ECR hop Tags #TODO Usar estos tags para pushear a la registry de hop en MultiOrg y hacerlo compatible con matrix_deploy
-      if: ${{ inputs.WORKFLOW_CD == 'hop' || inputs.WORKFLOW_CD == 'multiorg' }}
-      id: ecrHopTags
-      uses: actions/github-script@v8
-      env:
-        MATRIX_DEPLOY: ${{ inputs.matrix_deploy }}
-      with:
-        script: |
-          REPOSITORY_URI="public.ecr.aws/hopenvios-sbx/${{env.CHART_NAME}}"
-          let tags = [];
-          const matrix_deploy = JSON.parse(process.env.MATRIX_DEPLOY || '[]');
-          if (matrix_deploy.length > 0) {
-            matrix_deploy.forEach(deploy => {
-              let tag = `${REPOSITORY_URI}-${deploy}:${{ inputs.appVersion}}`
-              tags.push(tag);
-            });
-          } else {
-            tags.push(`${REPOSITORY_URI}:${{ inputs.appVersion}}`);
-          }
-          tags.push(`${REPOSITORY_URI}:ultima`);
-          return tags.join('\n');
-        result-encoding: string
-
-    - name: "Debug echos"
-      id: showtags
-      shell: bash
-      run: |
-            echo "Tags ACR Andreani Creados"
-            echo "${{ steps.acrAndreaniTags.outputs.result }}"
-            echo "Tags ACR Witwot Creados"
-            echo "${{ steps.acrWitwotTags.outputs.result }}"
-            echo "Tags ECR Hop Creados"
-            echo "${{ steps.ecrHopTags.outputs.result }}"
-
-    - name: checkout
-      uses: actions/checkout@v6
-      with:
-        fetch-depth: 0
-
-    - name: Configurar BuildX para manejar multiples imagenes
-      uses: docker/setup-buildx-action@v4
-      with:
-        install: true
-
-# Build y push para casos de Andreani       
-    - name: Login to Azure Container Registry Andreani
-      if: ${{ inputs.WORKFLOW_CD == 'standard' || inputs.WORKFLOW_CD == 'multiorg' || inputs.WORKFLOW_CD == 'dms' }}
-      uses: azure/docker-login@v2
-      with:
-        login-server: ${{ env.ACR_FULL_NAME }}
-        username: ${{ env.ACR_USERNAME }}
-        password: ${{ env.ACR_PASSWORD }}
-
-    - name: Build and push Andreani
-      if: ${{ inputs.WORKFLOW_CD == 'standard' || inputs.WORKFLOW_CD == 'multiorg' || inputs.WORKFLOW_CD == 'dms' }}
-      uses: docker/build-push-action@v7
-      env: 
-        DOCKER_BUILD_RECORD_UPLOAD: "false"
-      with:
-        context: . 
-        file: Dockerfile 
-        push: true
-        tags: |
-          ${{ steps.acrAndreaniTags.outputs.result }}
-
-# Build y push para casos de Witwot 
-    - name: Login to Azure Container Registry Witwot
-      if: ${{ inputs.WORKFLOW_CD == 'witwot' || inputs.WORKFLOW_CD == 'multiorg' }}
-      uses: azure/docker-login@v2
-      with:
-        login-server: ${{ env.ACR_FULL_NAMEWW }}
-        username: ${{ env.ACR_USERNAMEWW }}
-        password: ${{ env.ACR_PASSWORDWW }}
-
-    - name: Build and push Witwot
-      if: ${{ inputs.WORKFLOW_CD == 'witwot' }}
-      uses: docker/build-push-action@v7
-      env: 
-        DOCKER_BUILD_RECORD_UPLOAD: "false"
-      with:
-        context: . 
-        file: Dockerfile 
-        push: true
-        tags: |
-          ${{ steps.acrWitwotTags.outputs.result }}
-
-    - name: Push image to extra-registry multiorg para Witwot #TBD - Por ahora multiorg No es compatible con multi-instancias (matrix-deploy)
-      if: ${{ inputs.WORKFLOW_CD == 'multiorg' }}
-      shell: bash
-      run: |
-        docker buildx imagetools create \
-          --tag ${{ env.ACR_FULL_NAMEWW }}/${{ env.CHART_NAME }}:${{ inputs.appVersion}} \
-          ${{ env.ACR_FULL_NAME }}/${{ env.CHART_NAME }}:ultima
-
-# Build y push para casos de HOP
-    - name: AWS Login to ECR
-      if: ${{ inputs.WORKFLOW_CD == 'hop' || inputs.WORKFLOW_CD == 'multiorg' }}
-      shell: bash
-      run: |
-        aws configure set aws_access_key_id ${{ env.ECR_IDHOP }}
-        aws configure set aws_secret_access_key ${{ env.ECR_PASSWORDHOP }}
-        aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws
-    
-    - name: Ensure ECR Repository Exists
-      if: ${{ inputs.WORKFLOW_CD == 'hop' || inputs.WORKFLOW_CD == 'multiorg' }}
-      shell: bash
-      env:
-        AWS_REGION: us-east-1
-      run: |
-        REPOSITORY_NAME="${{ env.CHART_NAME }}"
-        aws ecr-public describe-repositories --repository-names "$REPOSITORY_NAME" --region $AWS_REGION || \
-        aws ecr-public create-repository --repository-name "$REPOSITORY_NAME" --region $AWS_REGION
-        # Obtener el URI completo del repositorio público real
-        URI=$(aws ecr-public describe-repositories --repository-names "$REPOSITORY_NAME" --region $AWS_REGION --query 'repositories[0].repositoryUri' --output text)
-        echo "URI=$URI" >> $GITHUB_ENV
-
-    - name: Build and push hop
-      if: ${{ inputs.WORKFLOW_CD == 'hop' }}
-      uses: docker/build-push-action@v7
-      env: 
-        DOCKER_BUILD_RECORD_UPLOAD: "false"
-      with:
-        context: . 
-        file: Dockerfile 
-        push: true
-        tags: |
-          ${{ steps.ecrHopTags.outputs.result }}
-
-    - name: Push image to extra-registry multiorg para hop #TBD - Por ahora multiorg No es compatible con multi-instancias (matrix-deploy)
-      if: ${{ inputs.WORKFLOW_CD == 'multiorg' }}
-      shell: bash
-      run: |
-        docker buildx imagetools create \
-          --tag ${{ env.URI }}:${{ inputs.appVersion}} \
-          ${{ env.ACR_FULL_NAME }}/${{ env.CHART_NAME }}:ultima
-
-# Push a registry de backup para andreani (Todavía no compatible con Multi-instancias)
-    #########################################################
-    # AWS CREDENTIALS
-    #########################################################
-    - name: Configure AWS Credentials
-      if: ${{ inputs.WORKFLOW_CD == 'standard' || inputs.WORKFLOW_CD == 'multiorg' || inputs.WORKFLOW_CD == 'dms' }}
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ env.ECR_ID }}
-        aws-secret-access-key: ${{ env.ECR_PASSWORD }}
-        aws-region: us-east-1
-    #########################################################
-    # LOGIN ECR
-    #########################################################
-    - name: Login ECR Privado
-      if: ${{ inputs.WORKFLOW_CD == 'standard' || inputs.WORKFLOW_CD == 'multiorg' || inputs.WORKFLOW_CD == 'dms' }}
-      shell: bash
-      run: |
-        set -euo pipefail
-
-        aws ecr get-login-password --region us-east-1 \
-          | docker login \
-              --username AWS \
-              --password-stdin ${{ env.ECR_FULLNAME }}
-
-    #########################################################
-    # CREATE ECR REPO
-    #########################################################
-
-    - name: Ensure ECR Repository Exists
-      if: ${{ inputs.WORKFLOW_CD == 'standard' || inputs.WORKFLOW_CD == 'multiorg' || inputs.WORKFLOW_CD == 'dms' }}
-      shell: bash
-      run: |
-        set -euo pipefail
-
-        REPOSITORY_NAME="${{ env.CHART_NAME }}"
-
-        aws ecr describe-repositories \
-          --repository-names "$REPOSITORY_NAME" \
-          --region us-east-1 >/dev/null 2>&1 || \
-        aws ecr create-repository \
-          --repository-name "$REPOSITORY_NAME" \
-          --region us-east-1
-
-        ALTREPOSITORY_URI=$(aws ecr describe-repositories \
-          --repository-names "$REPOSITORY_NAME" \
-          --region us-east-1 \
-          --query 'repositories[0].repositoryUri' \
-          --output text)
-
-        echo "ALTREPOSITORY_URI=$ALTREPOSITORY_URI" >> $GITHUB_ENV
-
-    #########################################################
-    # PUSH ECR
-    #########################################################
-
-    - name: Push to ECR
-      if: ${{ inputs.WORKFLOW_CD == 'standard' || inputs.WORKFLOW_CD == 'multiorg' || inputs.WORKFLOW_CD == 'dms' }}
-      shell: bash
-      run: |
-        set -euo pipefail
-
-        SOURCE_IMAGE="${{ env.ACR_FULL_NAME }}/${{ env.CHART_NAME }}:${{ inputs.appVersion }}"
-
-        TARGET_IMAGE="${ALTREPOSITORY_URI}:${{ inputs.appVersion }}"
-
-        echo "Pulling image desde ACR..."
-        docker pull "$SOURCE_IMAGE"
-
-        echo "Tagging image..."
-        docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
-
-        echo "Pushing image a ECR..."
-        docker push "$TARGET_IMAGE"
-
-
-#TODO SWR Otro backup opcional
-#    - name: Login to Huawei SWR
-#      uses: docker/login-action@v3
-#      with:
-#        registry: ${{ inputs.SWR_URL }}
-#        username: ${{ inputs.SWR_USERNAME }}
-#        password: ${{ inputs.SWR_PASSWORD }}
-#
-#    - name: Push image to Huawei SWR
-#      shell: bash
-#      run: |
-#        docker buildx imagetools create \
-#          --tag ${{ inputs.SWR_URL }}/${{ inputs.SWR_NAME }}/${{ inputs.teamProject }}-${{ inputs.appName }}:${{ inputs.appVersion }} \
-#          ${{ inputs.ACR_FULL_NAME }}/${{ inputs.teamProject }}-${{ inputs.appName }}:ultima
+        {
+          echo "dev=$dev"
+          echo "test=$test"
+          echo "qa=$qa"
+          echo "preprod=$preprod"
+          echo "prod=$prod"
+          echo "hopprod=$hopprod"
+          echo "wwprod=$wwprod"
+        } >> "$GITHUB_OUTPUT"
