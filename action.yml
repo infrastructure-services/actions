@@ -1,43 +1,19 @@
-name: 'Build and Push Multi Organización'
-description: 'Selecciona la mejor estrategia de build and push según los datos proporcionados'
+name: 'Genera los outputs para activar los despliegues correspondientes al Workflow'
+description: 'Selecciona la mejor estrategia de activación de despliegue según los datos proporcionados'
 inputs:
-# ACR Datas
-  REGISTRY_DATA:
-    description: "Json de datos de registry principal"
-    required: true
-  REGISTRY_DATA2:
-    description: "Json de datos de registry 2"
-    required: false
-    default: "[]"
-  REGISTRY_DATA3:
-    description: "Json de datos de registry 3"
-    required: false
-    default: "[]"
-  REGISTRY_DATA4:
-    description: "Json de datos de registry 4"
-    required: false
-    default: "[]"
-  REGISTRY_SELECTOR:
-    description: "Tipo de registry seleccionada"
-    required: false
-    default: "acr"
+# Workflow Data
   WORKFLOW_CD:
     description: "Variable que define el tipo de pipeline que es (Standard -> Normal Andreani 2 registries)"
     required: false
-    default: "standard" 
-
-
+    default: "standard"
+  rama:
+    description: "tag para subir imagen"
+    required: true
   ## App Datas
   appdataJson:
     description: "Json de datos de la aplicación"
     required: true
-  appVersion:
-    description: "tag para subir imagen"
-    required: true
-  matrix_deploy:
-    description: "Listado de sufijos para generación de multiples instancias"
-    required: false
-    default: "[]"
+
 
 ## Es medio monolítico para aprovechar una misma acción de build y luego hacer los pushes necesarios
 
