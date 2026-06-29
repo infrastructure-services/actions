@@ -1,109 +1,134 @@
-name: Mirror to GitLab
-description: Crea el repo en GitLab si no existe y hace mirror de todas las branches y tags
+name: Backup de Código
+description: Hace el backup del código en el recurso habilitado para tal fin
 
 inputs:
-  gitlab_token:
-    description: "Personal o Group Access Token de GitLab (scope: api)"
-    required: true
-  gitlab_url:
-    description: "Host de GitLab sin protocolo (ej: gitlab.apps.andreani.com.ar)"
-    required: true
+#  gitlab_token:
+#    description: "Personal o Group Access Token de GitLab (scope: api)"
+#    required: true
+#  gitlab_url:
+#    description: "Host de GitLab sin protocolo (ej: gitlab.apps.andreani.com.ar)"
+#    required: true
   repository:
     description: "Repositorio en formato owner/repo (ej: infrastructure-services/devops-luana-api)"
     required: true
+#El paso de backup será actualizado para tomar la data desde aquí
+  credentialsJson:
+    description: "Credenciales para el backup"
+    required: true 
 
 runs:
   using: composite
   steps:
-    - name: Crear repo en GitLab si no existe
+    - name: Checkout
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+    - name: "Backup Code"
       shell: bash
       run: |
-        GITLAB_NAMESPACE=$(echo "${{ inputs.repository }}" | cut -d'/' -f1)
-        REPO_NAME=$(echo "${{ inputs.repository }}" | cut -d'/' -f2)
+        echo "Backup del repo con el código productivo"
+        sudo mkdir -p /backup/${{ vars.PROJECT }}/${{ vars.APPNAME }}
+        ls -la
 
-        echo "GITLAB_NAMESPACE= $GITLAB_NAMESPACE"
-        echo "REPO_NAME= $REPO_NAME"
-
+        #Backupear las variables del repo.
+        echo "${{ toJSON(vars) }}" > RepoVars.json
+        
+        #Mover a la ruta de backup el repo
+        sudo cp -r -f . /backup/${{ vars.PROJECT }}/${{ vars.APPNAME }}/
+        echo "Archivos copiados"
+        cd /backup/${{ vars.PROJECT }}/${{ vars.APPNAME }}
+        ls -la
+        cat ./RepoVars.json
+#    - name: Crear repo en GitLab si no existe
+#      shell: bash
+#      run: |
+#        GITLAB_NAMESPACE=$(echo "${{ inputs.repository }}" | cut -d'/' -f1)
+#        REPO_NAME=$(echo "${{ inputs.repository }}" | cut -d'/' -f2)
+#
+#        echo "GITLAB_NAMESPACE= $GITLAB_NAMESPACE"
+#        echo "REPO_NAME= $REPO_NAME"
+#
         # Verificar si el repo ya existe (con -L para seguir redirects)
-        HTTP_STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" \
-          -L \
-          --header "PRIVATE-TOKEN: ${{ inputs.gitlab_token }}" \
-          "https://${{ inputs.gitlab_url }}/api/v4/projects/$GITLAB_NAMESPACE%2F$REPO_NAME")
+#        HTTP_STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" \
+#          -L \
+#          --header "PRIVATE-TOKEN: ${{ inputs.gitlab_token }}" \
+#          "https://${{ inputs.gitlab_url }}/api/v4/projects/$GITLAB_NAMESPACE%2F$REPO_NAME")
 
-        echo "HTTP_STATUS= $HTTP_STATUS"
-
-        if [ "$HTTP_STATUS" == "404" ]; then
-          echo "📁 Repo no existe, creando..."
-
-          NAMESPACE_ID=$(curl --silent -L \
-            --header "PRIVATE-TOKEN: ${{ inputs.gitlab_token }}" \
-            "https://${{ inputs.gitlab_url }}/api/v4/namespaces?search=$GITLAB_NAMESPACE" \
-            | jq -r --arg ns "$GITLAB_NAMESPACE" '.[] | select(.full_path == $ns) | .id')
-
-          echo "NAMESPACE_ID= $NAMESPACE_ID"
-
-          if [ -z "$NAMESPACE_ID" ]; then
-            echo "❌ Namespace $GITLAB_NAMESPACE no encontrado en GitLab"
-            exit 1
-          fi
-
-          CREATE_RESPONSE=$(curl --silent -L \
-            --write-out "\nHTTP_CODE:%{http_code}" \
-            --request POST \
-            --header "PRIVATE-TOKEN: ${{ inputs.gitlab_token }}" \
-            --header "Content-Type: application/json" \
-            --data "{
-              \"name\": \"$REPO_NAME\",
-              \"path\": \"$REPO_NAME\",
-              \"namespace_id\": $NAMESPACE_ID,
-              \"visibility\": \"private\",
-              \"initialize_with_readme\": false
-            }" \
-            "https://${{ inputs.gitlab_url }}/api/v4/projects")
-
-          HTTP_CODE=$(echo "$CREATE_RESPONSE" | grep "HTTP_CODE:" | cut -d':' -f2)
-          echo "CREATE_RESPONSE= $CREATE_RESPONSE"
-
-          if [ "$HTTP_CODE" != "201" ]; then
-            echo "❌ Error al crear el repo (HTTP $HTTP_CODE)"
-            exit 1
-          fi
-
-          echo "✅ Repo creado exitosamente"
-          sleep 3
-        else
-          echo "✅ Repo ya existe, continuando..."
-        fi
-
-    - name: Mirror a GitLab
-      shell: bash
-      run: |
-        GITLAB_REMOTE_URL="https://oauth2:${{ inputs.gitlab_token }}@${{ inputs.gitlab_url }}/${{ inputs.repository }}.git"
-
-        # Forzar fetch explícito de TODAS las ramas y tags
-        git fetch origin '+refs/heads/*:refs/remotes/origin/*' --force
-        git fetch origin '+refs/tags/*:refs/tags/*' --force
-
-        echo "🔍 Ramas fetcheadas: $(git for-each-ref --format='%(refname)' refs/remotes/origin/ | grep -v 'HEAD' | wc -l)"
-
-        # Configurar remote gitlab
-        if git remote get-url gitlab &>/dev/null; then
-          echo "🔄 Remote gitlab ya existe, actualizando URL..."
-          git remote set-url gitlab "$GITLAB_REMOTE_URL"
-        else
-          echo "➕ Agregando remote gitlab..."
-          git remote add gitlab "$GITLAB_REMOTE_URL"
-        fi
-
-        # Construir refspecs dinámicamente para soportar ramas con '/' en el nombre
-        REFSPECS=$(git for-each-ref --format='+%(refname):refs/heads/%(refname:lstrip=3)' refs/remotes/origin/ | grep -v 'HEAD')
-
-        echo "🔍 Ramas a pushear: $(echo "$REFSPECS" | wc -l)"
-
-        # Push de todas las ramas con refspecs explícitos
-        echo "$REFSPECS" | xargs git push gitlab --force
-
-        # Push de todos los tags
-        git push gitlab '+refs/tags/*:refs/tags/*' --force
-
-        echo "✅ Mirror completado: ${{ inputs.repository }}"
+#        echo "HTTP_STATUS= $HTTP_STATUS"
+#
+        #if [ "$HTTP_STATUS" == "404" ]; then
+          #echo "📁 Repo no existe, creando..."
+#
+          #NAMESPACE_ID=$(curl --silent -L \
+            #--header "PRIVATE-TOKEN: ${{ inputs.gitlab_token }}" \
+            #"https://${{ inputs.gitlab_url }}/api/v4/namespaces?search=$GITLAB_NAMESPACE" \
+            #| jq -r --arg ns "$GITLAB_NAMESPACE" '.[] | select(.full_path == $ns) | .id')
+#
+          #echo "NAMESPACE_ID= $NAMESPACE_ID"
+#
+          #if [ -z "$NAMESPACE_ID" ]; then
+            #echo "❌ Namespace $GITLAB_NAMESPACE no encontrado en GitLab"
+            #exit 1
+          #fi
+#
+#          CREATE_RESPONSE=$(curl --silent -L \
+#            --write-out "\nHTTP_CODE:%{http_code}" \
+            #--request POST \
+            #--header "PRIVATE-TOKEN: ${{ inputs.gitlab_token }}" \
+            #--header "Content-Type: application/json" \
+            #--data "{
+              #\"name\": \"$REPO_NAME\",
+              #\"path\": \"$REPO_NAME\",
+              #\"namespace_id\": $NAMESPACE_ID,
+              #\"visibility\": \"private\",
+              #\"initialize_with_readme\": false
+            #}" \
+            #"https://${{ inputs.gitlab_url }}/api/v4/projects")
+#
+          #HTTP_CODE=$(echo "$CREATE_RESPONSE" | grep "HTTP_CODE:" | cut -d':' -f2)
+          #echo "CREATE_RESPONSE= $CREATE_RESPONSE"
+#
+          #if [ "$HTTP_CODE" != "201" ]; then
+            #echo "❌ Error al crear el repo (HTTP $HTTP_CODE)"
+            #exit 1
+          #fi
+#
+          #echo "✅ Repo creado exitosamente"
+          #sleep 3
+        #else
+          #echo "✅ Repo ya existe, continuando..."
+        #fi
+#
+    #- name: Mirror a GitLab
+      #shell: bash
+      #run: |
+      #  GITLAB_REMOTE_URL="https://oauth2:${{ inputs.gitlab_token }}@${{ inputs.gitlab_url }}/${{ inputs.repository }}.git"
+#
+        ## Forzar fetch explícito de TODAS las ramas y tags
+        #git fetch origin '+refs/heads/*:refs/remotes/origin/*' --force
+        #git fetch origin '+refs/tags/*:refs/tags/*' --force
+#
+        #echo "🔍 Ramas fetcheadas: $(git for-each-ref --format='%(refname)' refs/remotes/origin/ | grep -v 'HEAD' | wc -l)"
+#
+#        # Configurar remote gitlab
+        #if git remote get-url gitlab &>/dev/null; then
+          #echo "🔄 Remote gitlab ya existe, actualizando URL..."
+          #git remote set-url gitlab "$GITLAB_REMOTE_URL"
+        #else
+          #echo "➕ Agregando remote gitlab..."
+          #git remote add gitlab "$GITLAB_REMOTE_URL"
+        #fi
+#
+        ## Construir refspecs dinámicamente para soportar ramas con '/' en el nombre
+        #REFSPECS=$(git for-each-ref --format='+%(refname):refs/heads/%(refname:lstrip=3)' refs/remotes/origin/ | grep -v 'HEAD')
+#
+        #echo "🔍 Ramas a pushear: $(echo "$REFSPECS" | wc -l)"
+#
+#        # Push de todas las ramas con refspecs explícitos
+#        echo "$REFSPECS" | xargs git push gitlab --force
+#
+        ## Push de todos los tags
+        #git push gitlab '+refs/tags/*:refs/tags/*' --force
+#
+        #echo "✅ Mirror completado: ${{ inputs.repository }}"
+#
