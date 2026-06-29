@@ -344,30 +344,81 @@ runs:
           --tag ${{ env.URI }}:${{ inputs.appVersion}} \
           ${{ env.ACR_FULL_NAME }}/${{ env.CHART_NAME }}:ultima
 
-# Push a registry de backup para andreani (TBD)
-#    - name: AWS Login to ECR
-#     run: |
-#       aws configure set aws_access_key_id ${{ env.ECR_ID }}
-#       aws configure set aws_secret_access_key ${{ env.ECR_PASSWORD }}
-#        aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws
-#   
-#   - name: Ensure ECR Repository Exists
-#      env:
-#        AWS_REGION: us-east-1
-#      run: |
-#        REPOSITORY_NAME="${{ env.CHART_NAME }}"
-#        aws ecr-public describe-repositories --repository-names "$REPOSITORY_NAME" --region $AWS_REGION || \
-#        aws ecr-public create-repository --repository-name "$REPOSITORY_NAME" --region $AWS_REGION
-#        # Obtener el URI completo del repositorio público real
-#        URI=$(aws ecr-public describe-repositories --repository-names "$REPOSITORY_NAME" --region $AWS_REGION --query 'repositories[0].repositoryUri' --output text)
-#        echo "URI=$URI" >> $GITHUB_ENV
-#    - name: Push image to registry backup en ECR #TBD - Por ahora No es compatible con multi-instancias (matrix-deploy)
-#      if: ${{ inputs.WORKFLOW_CD == 'multiorg' }}
-#      shell: bash
-#      run: |
-#        docker buildx imagetools create \
-#          --tag ${{ env.URI }}:${{ inputs.appVersion}} \
-#          ${{ env.ACR_FULL_NAME }}/${{ env.CHART_NAME }}:ultima
+# Push a registry de backup para andreani (Todavía no compatible con Multi-instancias)
+    #########################################################
+    # AWS CREDENTIALS
+    #########################################################
+    - name: Configure AWS Credentials
+      if: ${{ inputs.WORKFLOW_CD == 'standard' || inputs.WORKFLOW_CD == 'multiorg' || inputs.WORKFLOW_CD == 'dms' }}
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ env.ECR_ID }}
+        aws-secret-access-key: ${{ env.ECR_PASSWORD }}
+        aws-region: us-east-1
+    #########################################################
+    # LOGIN ECR
+    #########################################################
+    - name: Login ECR Privado
+      if: ${{ inputs.WORKFLOW_CD == 'standard' || inputs.WORKFLOW_CD == 'multiorg' || inputs.WORKFLOW_CD == 'dms' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        aws ecr get-login-password --region us-east-1 \
+          | docker login \
+              --username AWS \
+              --password-stdin ${{ env.ECR_FULLNAME }}
+
+    #########################################################
+    # CREATE ECR REPO
+    #########################################################
+
+    - name: Ensure ECR Repository Exists
+      if: ${{ inputs.WORKFLOW_CD == 'standard' || inputs.WORKFLOW_CD == 'multiorg' || inputs.WORKFLOW_CD == 'dms' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        REPOSITORY_NAME="${{ env.CHART_NAME }}"
+
+        aws ecr describe-repositories \
+          --repository-names "$REPOSITORY_NAME" \
+          --region us-east-1 >/dev/null 2>&1 || \
+        aws ecr create-repository \
+          --repository-name "$REPOSITORY_NAME" \
+          --region us-east-1
+
+        ALTREPOSITORY_URI=$(aws ecr describe-repositories \
+          --repository-names "$REPOSITORY_NAME" \
+          --region us-east-1 \
+          --query 'repositories[0].repositoryUri' \
+          --output text)
+
+        echo "ALTREPOSITORY_URI=$ALTREPOSITORY_URI" >> $GITHUB_ENV
+
+    #########################################################
+    # PUSH ECR
+    #########################################################
+
+    - name: Push to ECR
+      if: ${{ inputs.WORKFLOW_CD == 'standard' || inputs.WORKFLOW_CD == 'multiorg' || inputs.WORKFLOW_CD == 'dms' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        SOURCE_IMAGE="${{ env.ACR_FULL_NAME }}/${{ env.CHART_NAME }}:${{ inputs.appVersion }}"
+
+        TARGET_IMAGE="${ALTREPOSITORY_URI}:${{ inputs.appVersion }}"
+
+        echo "Pulling image desde ACR..."
+        docker pull "$SOURCE_IMAGE"
+
+        echo "Tagging image..."
+        docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+
+        echo "Pushing image a ECR..."
+        docker push "$TARGET_IMAGE"
+
 
 #TODO SWR Otro backup opcional
 #    - name: Login to Huawei SWR
