@@ -574,76 +574,76 @@ runs:
           fi
 
           cat > "$IMPACT_QUERY_FILE" <<SQL_EOF
-SET NOCOUNT ON;
+          SET NOCOUNT ON;
 
-WITH affected(schema_name, table_name) AS (
-    SELECT *
-    FROM (VALUES ${VALUES_SQL}) v(schema_name, table_name)
-),
-base_tables AS (
-    SELECT
-        a.schema_name,
-        a.table_name,
-        t.object_id
-    FROM affected a
-    LEFT JOIN sys.schemas s
-        ON s.name = a.schema_name
-    LEFT JOIN sys.tables t
-        ON t.schema_id = s.schema_id
-       AND t.name = a.table_name
-),
-row_stats AS (
-    SELECT
-        object_id,
-        SUM(row_count) AS impacted_row_count,
-        CAST(SUM(reserved_page_count) * 8.0 / 1024 AS decimal(18,2)) AS reserved_mb
-    FROM sys.dm_db_partition_stats
-    WHERE index_id IN (0,1)
-    GROUP BY object_id
-),
-index_stats AS (
-    SELECT
-        object_id,
-        COUNT(*) AS index_count
-    FROM sys.indexes
-    WHERE index_id > 0
-      AND is_hypothetical = 0
-    GROUP BY object_id
-),
-fk_stats AS (
-    SELECT
-        parent_object_id AS object_id,
-        COUNT(*) AS foreign_key_count
-    FROM sys.foreign_keys
-    GROUP BY parent_object_id
-),
-trigger_stats AS (
-    SELECT
-        parent_id AS object_id,
-        COUNT(*) AS trigger_count
-    FROM sys.triggers
-    GROUP BY parent_id
-)
-SELECT
-    CONCAT(bt.schema_name, '.', bt.table_name) AS full_table_name,
-    ISNULL(rs.impacted_row_count, 0) AS impacted_row_count,
-    ISNULL(rs.reserved_mb, 0) AS reserved_mb,
-    ISNULL(ix.index_count, 0) AS index_count,
-    ISNULL(fk.foreign_key_count, 0) AS foreign_key_count,
-    ISNULL(tr.trigger_count, 0) AS trigger_count
-FROM base_tables bt
-LEFT JOIN row_stats rs
-    ON rs.object_id = bt.object_id
-LEFT JOIN index_stats ix
-    ON ix.object_id = bt.object_id
-LEFT JOIN fk_stats fk
-    ON fk.object_id = bt.object_id
-LEFT JOIN trigger_stats tr
-    ON tr.object_id = bt.object_id
-ORDER BY
-    impacted_row_count DESC,
-    reserved_mb DESC;
-SQL_EOF
+          WITH affected(schema_name, table_name) AS (
+              SELECT *
+              FROM (VALUES ${VALUES_SQL}) v(schema_name, table_name)
+          ),
+          base_tables AS (
+              SELECT
+                  a.schema_name,
+                  a.table_name,
+                  t.object_id
+              FROM affected a
+              LEFT JOIN sys.schemas s
+                  ON s.name = a.schema_name
+              LEFT JOIN sys.tables t
+                  ON t.schema_id = s.schema_id
+                AND t.name = a.table_name
+          ),
+          row_stats AS (
+              SELECT
+                  object_id,
+                  SUM(row_count) AS impacted_row_count,
+                  CAST(SUM(reserved_page_count) * 8.0 / 1024 AS decimal(18,2)) AS reserved_mb
+              FROM sys.dm_db_partition_stats
+              WHERE index_id IN (0,1)
+              GROUP BY object_id
+          ),
+          index_stats AS (
+              SELECT
+                  object_id,
+                  COUNT(*) AS index_count
+              FROM sys.indexes
+              WHERE index_id > 0
+                AND is_hypothetical = 0
+              GROUP BY object_id
+          ),
+          fk_stats AS (
+              SELECT
+                  parent_object_id AS object_id,
+                  COUNT(*) AS foreign_key_count
+              FROM sys.foreign_keys
+              GROUP BY parent_object_id
+          ),
+          trigger_stats AS (
+              SELECT
+                  parent_id AS object_id,
+                  COUNT(*) AS trigger_count
+              FROM sys.triggers
+              GROUP BY parent_id
+          )
+          SELECT
+              CONCAT(bt.schema_name, '.', bt.table_name) AS full_table_name,
+              ISNULL(rs.impacted_row_count, 0) AS impacted_row_count,
+              ISNULL(rs.reserved_mb, 0) AS reserved_mb,
+              ISNULL(ix.index_count, 0) AS index_count,
+              ISNULL(fk.foreign_key_count, 0) AS foreign_key_count,
+              ISNULL(tr.trigger_count, 0) AS trigger_count
+          FROM base_tables bt
+          LEFT JOIN row_stats rs
+              ON rs.object_id = bt.object_id
+          LEFT JOIN index_stats ix
+              ON ix.object_id = bt.object_id
+          LEFT JOIN fk_stats fk
+              ON fk.object_id = bt.object_id
+          LEFT JOIN trigger_stats tr
+              ON tr.object_id = bt.object_id
+          ORDER BY
+              impacted_row_count DESC,
+              reserved_mb DESC;
+          SQL_EOF
 
           set +e
           run_sqlcmd_with_connection_string "$IMPACT_QUERY_FILE" "$IMPACT_CSV_FILE"
