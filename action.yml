@@ -291,9 +291,6 @@ runs:
             return 0
           fi
 
-          echo "⚠️  sqlcmd no está disponible en el runner." >&2
-          echo "    En Linux (RHEL 8+) instalar: mssql-tools18 unixODBC-devel" >&2
-          echo "    El action buscará automáticamente en /opt/mssql-tools18/bin" >&2
           return 1
         }
 
@@ -315,25 +312,13 @@ runs:
           USER_ID="$(conn_value '^(user id|uid|user|username)$')" || true
           PASSWORD="$(conn_value '^(password|pwd)$')" || true
 
-          if [[ -n "${PASSWORD:-}" ]]; then
-            echo "::add-mask::$PASSWORD"
-          fi
-
           if [[ -z "${SERVER:-}" || -z "${DATABASE:-}" || -z "${USER_ID:-}" || -z "${PASSWORD:-}" ]]; then
-            echo "❌ No se pudo parsear la connection string para sqlcmd." >&2
-            echo "   Campos extraídos:" >&2
-            echo "   - SERVER: ${SERVER:-[VACIO]}" >&2
-            echo "   - DATABASE: ${DATABASE:-[VACIO]}" >&2
-            echo "   - USER_ID: ${USER_ID:-[VACIO]}" >&2
-            echo "   - PASSWORD: [ENMASCARADO]" >&2
             return 3
           fi
 
           local ATTEMPT
           for ATTEMPT in $(seq 1 "$SQLCMD_RETRY_COUNT"); do
             local SQLCMD_ERROR_FILE="$TEMP_FILES_DIR/sqlcmd_error_${ATTEMPT}.log"
-
-            echo "Intento $ATTEMPT de $SQLCMD_RETRY_COUNT ejecutando sqlcmd..."
 
             if SQLCMDPASSWORD="$PASSWORD" "$SQLCMD_BIN" \
               -S "$SERVER" \
@@ -347,26 +332,15 @@ runs:
               -i "$QUERY_FILE" \
               -o "$OUT_FILE" \
               2>"$SQLCMD_ERROR_FILE"; then
-              echo "✅ sqlcmd ejecutado exitosamente en intento $ATTEMPT"
+              rm -f "$SQLCMD_ERROR_FILE" || true
               return 0
             fi
 
-            if [[ -s "$SQLCMD_ERROR_FILE" ]]; then
-              echo "⚠️ Error sqlcmd intento $ATTEMPT:"
-              head -n 20 "$SQLCMD_ERROR_FILE"
-
-              if (( $(wc -l < "$SQLCMD_ERROR_FILE") > 20 )); then
-                echo "... (truncado, ver $SQLCMD_ERROR_FILE para detalles completos)"
-              fi
-            fi
-
             if [[ $ATTEMPT -lt "$SQLCMD_RETRY_COUNT" ]]; then
-              echo "⚠️  Fallo en intento $ATTEMPT. Reintentando en ${SQLCMD_RETRY_DELAY_SECONDS}s..."
               sleep "$SQLCMD_RETRY_DELAY_SECONDS"
             fi
           done
 
-          echo "❌ Falló sqlcmd después de $SQLCMD_RETRY_COUNT intentos" >&2
           return 5
         }
 
@@ -847,8 +821,6 @@ runs:
           echo "|---|---|"
           printf '| Ambiente | `%s` |\n' "${ENVIRONMENT_NAME:-UNKNOWN}"
           printf '| Startup project | `%s` |\n' "$STARTUP_PROJECT"
-          printf '| sqlcmd disponible | `%s` |\n' "$SQLCMD_AVAILABLE"
-          printf '| sqlcmd reintentos | `%s` |\n' "$SQLCMD_RETRY_COUNT"
         } > "$SUMMARY_FILE"
 
         while read -r MIGRATION_PROJECT; do
