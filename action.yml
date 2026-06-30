@@ -70,6 +70,41 @@ inputs:
     required: false
     default: "500"
 
+  impact-medium-row-threshold:
+    description: Registros potencialmente impactados desde los cuales una migración eleva riesgo a MEDIUM.
+    required: false
+    default: "1000000"
+
+  impact-high-row-threshold:
+    description: Registros potencialmente impactados desde los cuales una migración eleva riesgo a HIGH.
+    required: false
+    default: "10000000"
+
+  impact-medium-size-mb-threshold:
+    description: Tamaño reservado en MB desde el cual una tabla afectada eleva riesgo a MEDIUM.
+    required: false
+    default: "10240"
+
+  impact-high-size-mb-threshold:
+    description: Tamaño reservado en MB desde el cual una tabla afectada eleva riesgo a HIGH.
+    required: false
+    default: "51200"
+
+  skip-impact-analysis-on-sqlcmd-error:
+    description: Si true, salta análisis de impacto si sqlcmd no está disponible o falla. Si false, eleva riesgo a MEDIUM.
+    required: false
+    default: "false"
+
+  sqlcmd-retry-count:
+    description: Cantidad de reintentos al ejecutar sqlcmd. Mínimo 1.
+    required: false
+    default: "3"
+
+  sqlcmd-retry-delay-seconds:
+    description: Segundos de espera entre reintentos de sqlcmd.
+    required: false
+    default: "2"
+
 outputs:
   has-pending-db-migrations:
     description: Indica si la base tiene migraciones pendientes
@@ -94,6 +129,10 @@ outputs:
   sql-files:
     description: Archivos SQL generados
     value: ${{ steps.validate.outputs.sql_files }}
+
+  sqlcmd-available:
+    description: Indica si sqlcmd está disponible en el runner
+    value: ${{ steps.validate.outputs.sqlcmd_available }}
 
 runs:
   using: composite
@@ -121,17 +160,27 @@ runs:
         FAIL_ON_RISK_LEVEL: ${{ inputs.fail-on-risk-level }}
         SHOW_SQL_IN_LOGS: ${{ inputs.show-sql-in-logs }}
         SQL_LOG_MAX_LINES: ${{ inputs.sql-log-max-lines }}
+        IMPACT_MEDIUM_ROW_THRESHOLD: ${{ inputs.impact-medium-row-threshold }}
+        IMPACT_HIGH_ROW_THRESHOLD: ${{ inputs.impact-high-row-threshold }}
+        IMPACT_MEDIUM_SIZE_MB_THRESHOLD: ${{ inputs.impact-medium-size-mb-threshold }}
+        IMPACT_HIGH_SIZE_MB_THRESHOLD: ${{ inputs.impact-high-size-mb-threshold }}
+        SKIP_IMPACT_ANALYSIS_ON_SQLCMD_ERROR: ${{ inputs.skip-impact-analysis-on-sqlcmd-error }}
+        SQLCMD_RETRY_COUNT: ${{ inputs.sqlcmd-retry-count }}
+        SQLCMD_RETRY_DELAY_SECONDS: ${{ inputs.sqlcmd-retry-delay-seconds }}
       run: |
         set -euo pipefail
 
         TOOLS_DIR="${RUNNER_TEMP:-/tmp}/dotnet-ef-tools-${GITHUB_RUN_ID:-local}-${GITHUB_JOB:-job}"
+        SQLCMD_BIN=""
+        TEMP_FILES_DIR="${RUNNER_TEMP:-/tmp}/ef-migrations-temp-${GITHUB_RUN_ID:-local}"
 
         cleanup() {
-          echo "🧹 Limpiando dependencias de herramientas del runner..."
-          rm -rf "$TOOLS_DIR"
+          echo "🧹 Limpiando recursos..."
+          rm -rf "$TOOLS_DIR" || true
+          rm -rf "$TEMP_FILES_DIR" || true
         }
 
-        trap cleanup EXIT SIGINT SIGTERM
+        trap 'EXIT_CODE=$?; cleanup; exit $EXIT_CODE' EXIT
 
         if [[ -z "${DB_CONNECTION:-}" ]]; then
           echo "❌ connection-string no informada"
@@ -143,10 +192,28 @@ runs:
           exit 1
         fi
 
+        SQLCMD_RETRY_COUNT="${SQLCMD_RETRY_COUNT:-3}"
+        SQLCMD_RETRY_COUNT="${SQLCMD_RETRY_COUNT%%.*}"
+
+        if ! [[ "$SQLCMD_RETRY_COUNT" =~ ^[0-9]+$ ]]; then
+          echo "⚠️ sqlcmd-retry-count inválido. Usando 3."
+          SQLCMD_RETRY_COUNT=3
+        fi
+
+        if (( SQLCMD_RETRY_COUNT < 1 )); then
+          SQLCMD_RETRY_COUNT=1
+        fi
+
+        SQLCMD_RETRY_DELAY_SECONDS="${SQLCMD_RETRY_DELAY_SECONDS:-2}"
+        SQLCMD_RETRY_DELAY_SECONDS="${SQLCMD_RETRY_DELAY_SECONDS%%.*}"
+
+        if ! [[ "$SQLCMD_RETRY_DELAY_SECONDS" =~ ^[0-9]+$ ]]; then
+          echo "⚠️ sqlcmd-retry-delay-seconds inválido. Usando 2."
+          SQLCMD_RETRY_DELAY_SECONDS=2
+        fi
+
         echo "::add-mask::$DB_CONNECTION"
 
-        # Compatibilidad con DbContextFactory de las aplicaciones.
-        # Algunos proyectos no toman --connection de EF directamente y buscan estas variables.
         export DataAccessRegistry__TransactionalConnection="$DB_CONNECTION"
         export DataAccessRegistry__ReadOnlyConnection="$DB_CONNECTION"
 
@@ -180,6 +247,129 @@ runs:
           echo "${VALUE:-migration_project}"
         }
 
+        conn_value() {
+          local KEY_REGEX="$1"
+
+          awk -v key_regex="$KEY_REGEX" '
+            BEGIN {
+              IGNORECASE = 1
+              RS = ";"
+            }
+            {
+              raw = $0
+              key = raw
+              sub(/=.*/, "", key)
+              gsub(/^[ \t]+|[ \t]+$/, "", key)
+
+              if (key ~ key_regex) {
+                sub(/^[^=]*=/, "", raw)
+                gsub(/^[ \t]+|[ \t]+$/, "", raw)
+                gsub(/^"/, "", raw)
+                gsub(/"$/, "", raw)
+                gsub(/^'\''/, "", raw)
+                gsub(/'\''$/, "", raw)
+                print raw
+                exit
+              }
+            }
+          ' <<< "$DB_CONNECTION"
+        }
+
+        check_sqlcmd_availability() {
+          if [[ -n "$SQLCMD_BIN" ]]; then
+            return 0
+          fi
+
+          if command -v sqlcmd >/dev/null 2>&1; then
+            SQLCMD_BIN="$(command -v sqlcmd)"
+            return 0
+          fi
+
+          if [[ -x "/opt/mssql-tools18/bin/sqlcmd" ]]; then
+            export PATH="$PATH:/opt/mssql-tools18/bin"
+            SQLCMD_BIN="/opt/mssql-tools18/bin/sqlcmd"
+            return 0
+          fi
+
+          echo "⚠️  sqlcmd no está disponible en el runner." >&2
+          echo "    En Linux (RHEL 8+) instalar: mssql-tools18 unixODBC-devel" >&2
+          echo "    El action buscará automáticamente en /opt/mssql-tools18/bin" >&2
+          return 1
+        }
+
+        run_sqlcmd_with_connection_string() {
+          local QUERY_FILE="$1"
+          local OUT_FILE="$2"
+
+          if ! check_sqlcmd_availability; then
+            return 2
+          fi
+
+          local SERVER
+          local DATABASE
+          local USER_ID
+          local PASSWORD
+
+          SERVER="$(conn_value '^(server|data source|address|addr|network address)$')" || true
+          DATABASE="$(conn_value '^(database|initial catalog)$')" || true
+          USER_ID="$(conn_value '^(user id|uid|user|username)$')" || true
+          PASSWORD="$(conn_value '^(password|pwd)$')" || true
+
+          if [[ -n "${PASSWORD:-}" ]]; then
+            echo "::add-mask::$PASSWORD"
+          fi
+
+          if [[ -z "${SERVER:-}" || -z "${DATABASE:-}" || -z "${USER_ID:-}" || -z "${PASSWORD:-}" ]]; then
+            echo "❌ No se pudo parsear la connection string para sqlcmd." >&2
+            echo "   Campos extraídos:" >&2
+            echo "   - SERVER: ${SERVER:-[VACIO]}" >&2
+            echo "   - DATABASE: ${DATABASE:-[VACIO]}" >&2
+            echo "   - USER_ID: ${USER_ID:-[VACIO]}" >&2
+            echo "   - PASSWORD: [ENMASCARADO]" >&2
+            return 3
+          fi
+
+          local ATTEMPT
+          for ATTEMPT in $(seq 1 "$SQLCMD_RETRY_COUNT"); do
+            local SQLCMD_ERROR_FILE="$TEMP_FILES_DIR/sqlcmd_error_${ATTEMPT}.log"
+
+            echo "Intento $ATTEMPT de $SQLCMD_RETRY_COUNT ejecutando sqlcmd..."
+
+            if SQLCMDPASSWORD="$PASSWORD" "$SQLCMD_BIN" \
+              -S "$SERVER" \
+              -d "$DATABASE" \
+              -U "$USER_ID" \
+              -C \
+              -b \
+              -W \
+              -s "," \
+              -h -1 \
+              -i "$QUERY_FILE" \
+              -o "$OUT_FILE" \
+              2>"$SQLCMD_ERROR_FILE"; then
+              echo "✅ sqlcmd ejecutado exitosamente en intento $ATTEMPT"
+              return 0
+            fi
+
+            if [[ -s "$SQLCMD_ERROR_FILE" ]]; then
+              echo "⚠️ Error sqlcmd intento $ATTEMPT:"
+              head -n 20 "$SQLCMD_ERROR_FILE"
+
+              if (( $(wc -l < "$SQLCMD_ERROR_FILE") > 20 )); then
+                echo "... (truncado, ver $SQLCMD_ERROR_FILE para detalles completos)"
+              fi
+            fi
+
+            if [[ $ATTEMPT -lt "$SQLCMD_RETRY_COUNT" ]]; then
+              echo "⚠️  Fallo en intento $ATTEMPT. Reintentando en ${SQLCMD_RETRY_DELAY_SECONDS}s..."
+              sleep "$SQLCMD_RETRY_DELAY_SECONDS"
+            fi
+          done
+
+          echo "❌ Falló sqlcmd después de $SQLCMD_RETRY_COUNT intentos" >&2
+          return 5
+        }
+
         classify_sql_risk() {
           local SQL_FILE="$1"
           local FINDINGS_FILE="$2"
@@ -188,7 +378,7 @@ runs:
           : > "$FINDINGS_FILE"
 
           local SQL_WITHOUT_HISTORY
-          SQL_WITHOUT_HISTORY="$(mktemp)"
+          SQL_WITHOUT_HISTORY="$(mktemp -p "$TEMP_FILES_DIR")"
 
           sed -e 's/--.*$//g' "$SQL_FILE" \
             | awk 'BEGIN{OFS=FS} /[^@]\/\*/{sub(/\/\*.*\*\//,"");col=1;while(!/\*\//){getline;sub(/\/\*.*\*\//,"")}sub(/^.*\*\//,"")}1' \
@@ -301,6 +491,251 @@ runs:
           echo -e "=========================================="
         }
 
+        extract_affected_tables() {
+          local SQL_FILE="$1"
+          local OUT_FILE="$2"
+
+          : > "$OUT_FILE"
+
+          grep -Eio \
+            '(ALTER|CREATE|DROP|TRUNCATE)[[:space:]]+TABLE[[:space:]]+(\[[^]]+\]|[A-Za-z0-9_]+)([.](\[[^]]+\]|[A-Za-z0-9_]+))?|CREATE[[:space:]]+(UNIQUE[[:space:]]+)?INDEX[[:space:]]+(\[[^]]+\]|[A-Za-z0-9_]+)[[:space:]]+ON[[:space:]]+(\[[^]]+\]|[A-Za-z0-9_]+)([.](\[[^]]+\]|[A-Za-z0-9_]+))?|REFERENCES[[:space:]]+(\[[^]]+\]|[A-Za-z0-9_]+)([.](\[[^]]+\]|[A-Za-z0-9_]+))?|UPDATE[[:space:]]+(\[[^]]+\]|[A-Za-z0-9_]+)([.](\[[^]]+\]|[A-Za-z0-9_]+))?|DELETE[[:space:]]+FROM[[:space:]]+(\[[^]]+\]|[A-Za-z0-9_]+)([.](\[[^]]+\]|[A-Za-z0-9_]+))?' \
+            "$SQL_FILE" \
+            | sed -E 's/^(ALTER|CREATE|DROP|TRUNCATE)[[:space:]]+TABLE[[:space:]]+//I; s/^REFERENCES[[:space:]]+//I; s/^UPDATE[[:space:]]+//I; s/^DELETE[[:space:]]+FROM[[:space:]]+//I; s/^CREATE[[:space:]]+(UNIQUE[[:space:]]+)?INDEX[[:space:]]+(\[[^]]+\]|[A-Za-z0-9_]+)[[:space:]]+ON[[:space:]]+//I' \
+            | sed 's/\[//g; s/\]//g; s/"//g' \
+            | awk '
+                NF {
+                  if (index($0, ".") == 0) {
+                    print "dbo." $0
+                  } else {
+                    print $0
+                  }
+                }
+              ' \
+            | grep -vi "__EFMigrationsHistory" \
+            | sort -u > "$OUT_FILE" || true
+        }
+
+        build_values_sql_from_tables_file() {
+          local TABLES_FILE="$1"
+          local VALUES_SQL=""
+          local SEP=""
+
+          while IFS= read -r FULL_TABLE_NAME; do
+            [[ -n "$FULL_TABLE_NAME" ]] || continue
+
+            local SCHEMA_NAME="${FULL_TABLE_NAME%%.*}"
+            local TABLE_NAME="${FULL_TABLE_NAME#*.}"
+
+            SCHEMA_NAME="$(printf "%s" "$SCHEMA_NAME" | sed "s/'/''/g")"
+            TABLE_NAME="$(printf "%s" "$TABLE_NAME" | sed "s/'/''/g")"
+
+            VALUES_SQL="${VALUES_SQL}${SEP}(N'${SCHEMA_NAME}', N'${TABLE_NAME}')"
+            SEP=","
+          done < "$TABLES_FILE"
+
+          echo "$VALUES_SQL"
+        }
+
+        classify_table_impact() {
+          local SQL_FILE="$1"
+          local FINDINGS_FILE="$2"
+          local CURRENT_RISK="$3"
+          local SAFE_PROJECT="$4"
+
+          local IMPACT_RISK="$CURRENT_RISK"
+
+          local TABLES_FILE="$ANALYSIS_ROOT/${SAFE_PROJECT}_${ENVIRONMENT_NAME}_affected_tables.txt"
+          local IMPACT_QUERY_FILE="$ANALYSIS_ROOT/${SAFE_PROJECT}_${ENVIRONMENT_NAME}_impact_query.sql"
+          local IMPACT_CSV_FILE="$ANALYSIS_ROOT/${SAFE_PROJECT}_${ENVIRONMENT_NAME}_impact.csv"
+          local IMPACT_MD_FILE="$ANALYSIS_ROOT/${SAFE_PROJECT}_${ENVIRONMENT_NAME}_impact.md"
+
+          extract_affected_tables "$SQL_FILE" "$TABLES_FILE"
+
+          {
+            echo "# Impacto real sobre tablas afectadas"
+            echo ""
+            echo "| Tabla | Registros potencialmente impactados | Tamaño MB | Índices | FKs | Triggers | Riesgo impacto |"
+            echo "|---|---:|---:|---:|---:|---:|---|"
+          } > "$IMPACT_MD_FILE"
+
+          if [[ ! -s "$TABLES_FILE" ]]; then
+            echo "- **INFO**: No se pudieron extraer tablas afectadas para calcular registros impactados." >> "$FINDINGS_FILE"
+            echo "$CURRENT_RISK"
+            return
+          fi
+
+          local VALUES_SQL
+          VALUES_SQL="$(build_values_sql_from_tables_file "$TABLES_FILE")"
+
+          if [[ -z "$VALUES_SQL" ]]; then
+            echo "- **INFO**: No hay tablas válidas para consultar impacto." >> "$FINDINGS_FILE"
+            echo "$CURRENT_RISK"
+            return
+          fi
+
+          cat > "$IMPACT_QUERY_FILE" <<SQL_EOF
+SET NOCOUNT ON;
+
+WITH affected(schema_name, table_name) AS (
+    SELECT *
+    FROM (VALUES ${VALUES_SQL}) v(schema_name, table_name)
+),
+base_tables AS (
+    SELECT
+        a.schema_name,
+        a.table_name,
+        t.object_id
+    FROM affected a
+    LEFT JOIN sys.schemas s
+        ON s.name = a.schema_name
+    LEFT JOIN sys.tables t
+        ON t.schema_id = s.schema_id
+       AND t.name = a.table_name
+),
+row_stats AS (
+    SELECT
+        object_id,
+        SUM(row_count) AS impacted_row_count,
+        CAST(SUM(reserved_page_count) * 8.0 / 1024 AS decimal(18,2)) AS reserved_mb
+    FROM sys.dm_db_partition_stats
+    WHERE index_id IN (0,1)
+    GROUP BY object_id
+),
+index_stats AS (
+    SELECT
+        object_id,
+        COUNT(*) AS index_count
+    FROM sys.indexes
+    WHERE index_id > 0
+      AND is_hypothetical = 0
+    GROUP BY object_id
+),
+fk_stats AS (
+    SELECT
+        parent_object_id AS object_id,
+        COUNT(*) AS foreign_key_count
+    FROM sys.foreign_keys
+    GROUP BY parent_object_id
+),
+trigger_stats AS (
+    SELECT
+        parent_id AS object_id,
+        COUNT(*) AS trigger_count
+    FROM sys.triggers
+    GROUP BY parent_id
+)
+SELECT
+    CONCAT(bt.schema_name, '.', bt.table_name) AS full_table_name,
+    ISNULL(rs.impacted_row_count, 0) AS impacted_row_count,
+    ISNULL(rs.reserved_mb, 0) AS reserved_mb,
+    ISNULL(ix.index_count, 0) AS index_count,
+    ISNULL(fk.foreign_key_count, 0) AS foreign_key_count,
+    ISNULL(tr.trigger_count, 0) AS trigger_count
+FROM base_tables bt
+LEFT JOIN row_stats rs
+    ON rs.object_id = bt.object_id
+LEFT JOIN index_stats ix
+    ON ix.object_id = bt.object_id
+LEFT JOIN fk_stats fk
+    ON fk.object_id = bt.object_id
+LEFT JOIN trigger_stats tr
+    ON tr.object_id = bt.object_id
+ORDER BY
+    impacted_row_count DESC,
+    reserved_mb DESC;
+SQL_EOF
+
+          set +e
+          run_sqlcmd_with_connection_string "$IMPACT_QUERY_FILE" "$IMPACT_CSV_FILE"
+          SQLCMD_EXIT_CODE=$?
+          set -e
+
+          if [[ "$SQLCMD_EXIT_CODE" -eq 2 ]]; then
+            if [[ "$SKIP_IMPACT_ANALYSIS_ON_SQLCMD_ERROR" == "true" ]]; then
+              echo "- **INFO**: sqlcmd no disponible. Se saltó el análisis de impacto por configuración." >> "$FINDINGS_FILE"
+            else
+              echo "- **MEDIUM**: sqlcmd no está disponible en el runner. No se pudo calcular cantidad de registros impactados." >> "$FINDINGS_FILE"
+              IMPACT_RISK="$(max_risk "$IMPACT_RISK" "MEDIUM")"
+            fi
+
+            echo "$IMPACT_RISK"
+            return
+          fi
+
+          if [[ "$SQLCMD_EXIT_CODE" -eq 3 ]]; then
+            if [[ "$SKIP_IMPACT_ANALYSIS_ON_SQLCMD_ERROR" == "true" ]]; then
+              echo "- **INFO**: No se pudo parsear la connection string para sqlcmd. Se saltó el análisis de impacto por configuración." >> "$FINDINGS_FILE"
+            else
+              echo "- **MEDIUM**: No se pudo parsear la connection string para ejecutar sqlcmd. No se pudo calcular cantidad de registros impactados." >> "$FINDINGS_FILE"
+              IMPACT_RISK="$(max_risk "$IMPACT_RISK" "MEDIUM")"
+            fi
+
+            echo "$IMPACT_RISK"
+            return
+          fi
+
+          if [[ "$SQLCMD_EXIT_CODE" -ne 0 ]]; then
+            if [[ "$SKIP_IMPACT_ANALYSIS_ON_SQLCMD_ERROR" == "true" ]]; then
+              echo "- **INFO**: Falló la consulta de impacto contra SQL Server. Se saltó el análisis de impacto por configuración." >> "$FINDINGS_FILE"
+            else
+              echo "- **MEDIUM**: Falló la consulta de impacto contra SQL Server. No se pudo calcular cantidad de registros impactados. Código: $SQLCMD_EXIT_CODE." >> "$FINDINGS_FILE"
+              IMPACT_RISK="$(max_risk "$IMPACT_RISK" "MEDIUM")"
+            fi
+
+            echo "$IMPACT_RISK"
+            return
+          fi
+
+          if [[ ! -s "$IMPACT_CSV_FILE" ]]; then
+            echo "- **INFO**: El análisis de impacto no devolvió metadata para las tablas afectadas." >> "$FINDINGS_FILE"
+            echo "$IMPACT_RISK"
+            return
+          fi
+
+          while IFS=',' read -r FULL_TABLE_NAME IMPACTED_ROW_COUNT RESERVED_MB INDEX_COUNT FK_COUNT TRIGGER_COUNT; do
+            [[ -n "${FULL_TABLE_NAME:-}" ]] || continue
+
+            IMPACTED_ROW_COUNT="$(echo "${IMPACTED_ROW_COUNT:-0}" | tr -d '[:space:]')"
+            RESERVED_MB="$(echo "${RESERVED_MB:-0}" | tr -d '[:space:]')"
+            INDEX_COUNT="$(echo "${INDEX_COUNT:-0}" | tr -d '[:space:]')"
+            FK_COUNT="$(echo "${FK_COUNT:-0}" | tr -d '[:space:]')"
+            TRIGGER_COUNT="$(echo "${TRIGGER_COUNT:-0}" | tr -d '[:space:]')"
+
+            IMPACTED_ROW_COUNT="${IMPACTED_ROW_COUNT:-0}"
+            RESERVED_MB="${RESERVED_MB:-0}"
+            INDEX_COUNT="${INDEX_COUNT:-0}"
+            FK_COUNT="${FK_COUNT:-0}"
+            TRIGGER_COUNT="${TRIGGER_COUNT:-0}"
+
+            local RESERVED_MB_INT="${RESERVED_MB%.*}"
+            local TABLE_IMPACT_RISK="LOW"
+
+            if (( IMPACTED_ROW_COUNT >= IMPACT_HIGH_ROW_THRESHOLD || RESERVED_MB_INT >= IMPACT_HIGH_SIZE_MB_THRESHOLD )); then
+              TABLE_IMPACT_RISK="HIGH"
+              echo "- **HIGH**: La tabla ${FULL_TABLE_NAME} tiene ${IMPACTED_ROW_COUNT} registros potencialmente impactados y ${RESERVED_MB} MB reservados." >> "$FINDINGS_FILE"
+            elif (( IMPACTED_ROW_COUNT >= IMPACT_MEDIUM_ROW_THRESHOLD || RESERVED_MB_INT >= IMPACT_MEDIUM_SIZE_MB_THRESHOLD )); then
+              TABLE_IMPACT_RISK="MEDIUM"
+              echo "- **MEDIUM**: La tabla ${FULL_TABLE_NAME} tiene ${IMPACTED_ROW_COUNT} registros potencialmente impactados y ${RESERVED_MB} MB reservados." >> "$FINDINGS_FILE"
+            fi
+
+            if (( INDEX_COUNT >= 10 )); then
+              TABLE_IMPACT_RISK="$(max_risk "$TABLE_IMPACT_RISK" "MEDIUM")"
+              echo "- **MEDIUM**: La tabla ${FULL_TABLE_NAME} tiene ${INDEX_COUNT} índices." >> "$FINDINGS_FILE"
+            fi
+
+            if (( FK_COUNT > 0 || TRIGGER_COUNT > 0 )); then
+              TABLE_IMPACT_RISK="$(max_risk "$TABLE_IMPACT_RISK" "MEDIUM")"
+              echo "- **MEDIUM**: La tabla ${FULL_TABLE_NAME} tiene ${FK_COUNT} FKs y ${TRIGGER_COUNT} triggers." >> "$FINDINGS_FILE"
+            fi
+
+            IMPACT_RISK="$(max_risk "$IMPACT_RISK" "$TABLE_IMPACT_RISK")"
+
+            echo "| ${FULL_TABLE_NAME} | ${IMPACTED_ROW_COUNT} | ${RESERVED_MB} | ${INDEX_COUNT} | ${FK_COUNT} | ${TRIGGER_COUNT} | ${TABLE_IMPACT_RISK} |" >> "$IMPACT_MD_FILE"
+          done < "$IMPACT_CSV_FILE"
+
+          echo "$IMPACT_RISK"
+        }
+
         detect_migration_projects() {
           if [[ -n "${PROJECT:-}" ]]; then
             if [[ ! -f "$PROJECT" ]]; then
@@ -339,9 +774,17 @@ runs:
           fi
         }
 
+        mkdir -p "$TEMP_FILES_DIR"
+
         MIGRATION_PROJECTS="$(detect_migration_projects || true)"
         ANALYSIS_ROOT="${GITHUB_WORKSPACE:-$PWD}/artifacts/ef-migrations/$(safe_name "${ENVIRONMENT_NAME:-UNKNOWN}")"
         mkdir -p "$ANALYSIS_ROOT"
+
+        SQLCMD_AVAILABLE="false"
+
+        if check_sqlcmd_availability >/dev/null 2>&1; then
+          SQLCMD_AVAILABLE="true"
+        fi
 
         if [[ -z "$MIGRATION_PROJECTS" ]]; then
           {
@@ -351,6 +794,7 @@ runs:
             echo "analysis_dir=$ANALYSIS_ROOT"
             echo "sql_files="
             echo "pending_migrations="
+            echo "sqlcmd_available=$SQLCMD_AVAILABLE"
           } >> "$GITHUB_OUTPUT"
 
           if [[ "$FAIL_IF_NO_MIGRATIONS" == "true" ]]; then
@@ -358,11 +802,11 @@ runs:
             exit 1
           fi
 
-          echo "No se encontraron proyectos con migraciones."
+          echo "✅ No se encontraron proyectos con migraciones."
           exit 0
         fi
 
-        echo "Proyectos con migraciones detectados:"
+        echo "📦 Proyectos con migraciones detectados:"
         echo "$MIGRATION_PROJECTS"
 
         BUILD_TARGET="./"
@@ -374,16 +818,16 @@ runs:
           BUILD_TARGET="$STARTUP_PROJECT"
         fi
 
-        echo "Restaurando dependencias: $BUILD_TARGET"
+        echo "📥 Restaurando dependencias: $BUILD_TARGET"
         dotnet restore "$BUILD_TARGET"
 
-        echo "Compilando: $BUILD_TARGET"
+        echo "🔨 Compilando: $BUILD_TARGET"
         dotnet build "$BUILD_TARGET" --no-restore --configuration "$CONFIGURATION"
 
         rm -rf "$TOOLS_DIR"
         mkdir -p "$TOOLS_DIR"
 
-        echo "Instalando dotnet-ef $EF_TOOL_VERSION..."
+        echo "📦 Instalando dotnet-ef $EF_TOOL_VERSION..."
         dotnet tool install dotnet-ef \
           --tool-path "$TOOLS_DIR" \
           --version "$EF_TOOL_VERSION"
@@ -397,12 +841,14 @@ runs:
         SUMMARY_FILE="$ANALYSIS_ROOT/migration-risk-summary.md"
 
         {
-          echo "# Análisis de migraciones EF Core"
+          echo "# 📊 Análisis de migraciones EF Core"
           echo ""
           echo "| Campo | Valor |"
           echo "|---|---|"
           printf '| Ambiente | `%s` |\n' "${ENVIRONMENT_NAME:-UNKNOWN}"
           printf '| Startup project | `%s` |\n' "$STARTUP_PROJECT"
+          printf '| sqlcmd disponible | `%s` |\n' "$SQLCMD_AVAILABLE"
+          printf '| sqlcmd reintentos | `%s` |\n' "$SQLCMD_RETRY_COUNT"
         } > "$SUMMARY_FILE"
 
         while read -r MIGRATION_PROJECT; do
@@ -418,9 +864,10 @@ runs:
             EF_ARGS+=(--context "$DB_CONTEXT")
           fi
 
-          echo "Ejecutando dotnet ef migrations list..."
-          echo "Proyecto migraciones: $MIGRATION_PROJECT"
-          echo "Startup project: $STARTUP_PROJECT"
+          echo ""
+          echo "🔍 Ejecutando dotnet ef migrations list..."
+          echo "   Proyecto: $MIGRATION_PROJECT"
+          echo "   Startup: $STARTUP_PROJECT"
 
           set +e
           MIGRATIONS_OUTPUT="$("${EF_CMD[@]}" migrations list "${EF_ARGS[@]}" --connection "$DB_CONNECTION" --verbose 2>&1)"
@@ -440,7 +887,7 @@ runs:
           if [[ -z "$PENDING_MIGRATIONS" ]]; then
             {
               echo ""
-              printf '## Proyecto: `%s`\n' "$MIGRATION_PROJECT"
+              printf '## ✅ Proyecto: `%s`\n' "$MIGRATION_PROJECT"
               echo ""
               echo "- Resultado: sin migraciones pendientes."
               echo "- Riesgo: **NONE**"
@@ -458,9 +905,9 @@ runs:
             SCRIPT_FILE="$ANALYSIS_ROOT/${SAFE_PROJECT}_${ENVIRONMENT_NAME}_pending.sql"
             FINDINGS_FILE="$ANALYSIS_ROOT/${SAFE_PROJECT}_${ENVIRONMENT_NAME}_findings.md"
 
-            echo "Generando SQL de migraciones pendientes..."
-            echo "Desde: $FROM_MIGRATION"
-            echo "Hasta: $LATEST_PENDING"
+            echo "📝 Generando SQL de migraciones pendientes..."
+            echo "   Desde: $FROM_MIGRATION"
+            echo "   Hasta: $LATEST_PENDING"
 
             set +e
             SCRIPT_OUTPUT="$("${EF_CMD[@]}" migrations script "$FROM_MIGRATION" "$LATEST_PENDING" "${EF_ARGS[@]}" --idempotent --output "$SCRIPT_FILE" 2>&1)"
@@ -477,12 +924,21 @@ runs:
             show_sql_file "$SCRIPT_FILE" "SQL Generado: $MIGRATION_PROJECT"
 
             PROJECT_RISK="$(classify_sql_risk "$SCRIPT_FILE" "$FINDINGS_FILE")"
+
+            PROJECT_RISK="$(classify_table_impact \
+              "$SCRIPT_FILE" \
+              "$FINDINGS_FILE" \
+              "$PROJECT_RISK" \
+              "$SAFE_PROJECT")"
+
             OVERALL_RISK="$(max_risk "$OVERALL_RISK" "$PROJECT_RISK")"
             SQL_FILES="${SQL_FILES}${SCRIPT_FILE}"$'\n'
 
+            IMPACT_MD_FILE="$ANALYSIS_ROOT/${SAFE_PROJECT}_${ENVIRONMENT_NAME}_impact.md"
+
             {
               echo ""
-              printf '## Proyecto: `%s`\n' "$MIGRATION_PROJECT"
+              printf '## ⚠️ Proyecto: `%s`\n' "$MIGRATION_PROJECT"
               echo ""
               echo "| Campo | Valor |"
               echo "|---|---|"
@@ -498,12 +954,19 @@ runs:
               echo ""
               echo "### Hallazgos"
               cat "$FINDINGS_FILE"
+
+              if [[ -f "$IMPACT_MD_FILE" ]]; then
+                echo ""
+                echo "### Registros potencialmente impactados"
+                echo ""
+                cat "$IMPACT_MD_FILE"
+              fi
             } >> "$SUMMARY_FILE"
           fi
 
           if [[ "$VALIDATE_MODEL_CHANGES" == "true" ]]; then
-            echo "Ejecutando dotnet ef migrations has-pending-model-changes..."
-            echo "Proyecto migraciones: $MIGRATION_PROJECT"
+            echo "🔎 Ejecutando dotnet ef migrations has-pending-model-changes..."
+            echo "   Proyecto: $MIGRATION_PROJECT"
 
             set +e
             MODEL_CHANGES_OUTPUT="$("${EF_CMD[@]}" migrations has-pending-model-changes "${EF_ARGS[@]}" 2>&1)"
@@ -514,7 +977,7 @@ runs:
 
             if [[ "$MODEL_CHANGES_EXIT_CODE" -ne 0 ]]; then
               echo "❌ Falló dotnet ef migrations has-pending-model-changes para el proyecto: $MIGRATION_PROJECT"
-              echo "Puede ser porque EF detectó cambios en el modelo que no tienen migración generada, o porque falló la ejecución del comando."
+              echo "   Puede ser porque EF detectó cambios en el modelo que no tienen migración generada."
               exit "$MODEL_CHANGES_EXIT_CODE"
             fi
           fi
@@ -528,7 +991,7 @@ runs:
 
         {
           echo ""
-          echo "## Resultado final"
+          echo "## 📋 Resultado final"
           echo ""
           echo "| Campo | Valor |"
           echo "|---|---|"
@@ -547,6 +1010,7 @@ runs:
           echo "migration_risk=$OVERALL_RISK"
           echo "requires_dba=$REQUIRES_DBA"
           echo "analysis_dir=$ANALYSIS_ROOT"
+          echo "sqlcmd_available=$SQLCMD_AVAILABLE"
 
           echo "sql_files<<EOF"
           echo "$SQL_FILES_CLEAN"
@@ -569,3 +1033,5 @@ runs:
           exit 1
         fi
 
+        echo ""
+        echo "✅ Validación completada exitosamente"
