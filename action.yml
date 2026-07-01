@@ -234,6 +234,8 @@ runs:
 
         if [[ -n "${DB_CONNECTION:-}" ]]; then
           echo "::add-mask::$DB_CONNECTION"
+          export DataAccessRegistry__TransactionalConnection="$DB_CONNECTION"
+          export DataAccessRegistry__ReadOnlyConnection="$DB_CONNECTION"
         fi
 
         if [[ -n "${NUGET_TOKEN:-}" ]]; then
