@@ -1,44 +1,24 @@
-name: 'Generic Build and Push'
+name: "Build and push ecr"
 
-description: 'Build y push de imagen Docker'
+description: "Build y push de una imagen Docker a Amazon ECR"
 
 inputs:
-
-  #########################################################
-  # ACR
-  #########################################################
-
-  ACR_USERNAME:
-    description: "Usuario ACR"
-    required: true
-
-  ACR_PASSWORD:
-    description: "Password ACR"
-    required: true
-
-  ACR_NAME:
-    description: "Nombre del ACR"
-    required: true
-
-  ACR_FULL_NAME:
-    description: "Nombre completo del ACR"
-    required: true
-
   #########################################################
   # AWS ECR
   #########################################################
 
   ECR_ID:
-    description: "AWS Access Key"
-    required: false
+    description: "AWS Access Key ID"
+    required: true
 
   ECR_PASSWORD:
-    description: "AWS Secret Key"
-    required: false
+    description: "AWS Secret Access Key"
+    required: true
 
-  ECR_FULLNAME:
-    description: "ECR fullname"
+  awsRegion:
+    description: "Región de AWS"
     required: false
+    default: "us-east-1"
 
   #########################################################
   # APP
@@ -56,219 +36,118 @@ inputs:
     description: "Tag de la imagen"
     required: true
 
-  #########################################################
-  # MATRIX DEPLOY
-  #########################################################
-
-  matrix_deploy:
-    description: 'Nombre de las instancias '
-    required: false
-    default: "[]"
-
-  #########################################################
-  # REGISTRIES
-  #########################################################
-
-  andreani:
-    description: "Push registry Andreani"
-    required: false
-    default: "true"
-
-  witwot:
-    description: "Push registry Witwot"
-    required: false
-    default: "false"
-
-  hop:
-    description: "Push registry HOP"
-    required: false
-    default: "false"
-
 runs:
   using: "composite"
-
   steps:
-
     #########################################################
     # CHECKOUT
     #########################################################
 
     - name: Checkout
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
 
     #########################################################
     # DOCKER BUILDX
     #########################################################
 
     - name: Setup Docker Buildx
-      uses: docker/setup-buildx-action@v3
-
-    #########################################################
-    # GENERATE TAGS
-    #########################################################
-
-    - name: Generate Docker Tags
-      id: tags
-      uses: actions/github-script@v7
-      env:
-        MATRIX_DEPLOY: ${{ inputs.matrix_deploy }}
-      with:
-        result-encoding: string
-        script: |
-          const tags = [];
-
-          let matrixDeploy = [];
-
-          try {
-            matrixDeploy = JSON.parse(process.env.MATRIX_DEPLOY || "[]");
-          } catch (e) {
-            console.log("matrix_deploy inválido");
-          }
-
-          const registry = '${{ inputs.ACR_FULL_NAME }}';
-          const project = '${{ inputs.teamProject }}';
-          const app = '${{ inputs.appName }}';
-          const version = '${{ inputs.appVersion }}';
-
-          if (Array.isArray(matrixDeploy) && matrixDeploy.length > 0) {
-
-            matrixDeploy.forEach(deploy => {
-              tags.push(
-                `${registry}/${project}-${app}-${deploy}:${version}`
-              );
-            });
-
-          } else {
-
-            tags.push(
-              `${registry}/${project}-${app}:${version}`
-            );
-
-          }
-
-          
-
-          console.log(tags);
-
-          return tags.join('\n');
-
-    #########################################################
-    # DEBUG TAGS
-    #########################################################
-
-    - name: Show Tags
-      shell: bash
-      run: |
-        echo "Tags generados:"
-        echo "${{ steps.tags.outputs.result }}"
-
-    #########################################################
-    # LOGIN ACR
-    #########################################################
-
-    - name: Login ACR
-      if: ${{ inputs.andreani == 'true' }}
-      uses: azure/docker-login@v1
-      with:
-        login-server: ${{ inputs.ACR_FULL_NAME }}
-        username: ${{ inputs.ACR_USERNAME }}
-        password: ${{ inputs.ACR_PASSWORD }}
-
-    #########################################################
-    # BUILD + PUSH ACR
-    #########################################################
-
-    - name: Build and push
-      uses: docker/build-push-action@v5
-      with:
-        context: . 
-        file: Dockerfile 
-        push: true
-        tags: |
-          ${{ steps.tags.outputs.result }}
+      uses: docker/setup-buildx-action@v4
 
     #########################################################
     # AWS CREDENTIALS
     #########################################################
 
     - name: Configure AWS Credentials
-      if: ${{ inputs.andreani == 'true' }}
-      uses: aws-actions/configure-aws-credentials@v4
+      uses: aws-actions/configure-aws-credentials@v6
       with:
         aws-access-key-id: ${{ inputs.ECR_ID }}
         aws-secret-access-key: ${{ inputs.ECR_PASSWORD }}
-        aws-region: us-east-1
+        aws-region: ${{ inputs.awsRegion }}
 
     #########################################################
     # LOGIN ECR
     #########################################################
 
-    - name: Login ECR Public
-      if: ${{ inputs.andreani == 'true' }}
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    #########################################################
+    # GENERATE IMAGE INFORMATION
+    #########################################################
+
+    - name: Generate Docker image information
+      id: image
       shell: bash
+      env:
+        REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        TEAM_PROJECT: ${{ inputs.teamProject }}
+        APP_NAME: ${{ inputs.appName }}
+        APP_VERSION: ${{ inputs.appVersion }}
       run: |
         set -euo pipefail
 
-        aws ecr get-login-password --region us-east-1 \
-          | docker login \
-              --username AWS \
-              --password-stdin ${{ inputs.ECR_FULLNAME }}
+        REPOSITORY_NAME="${TEAM_PROJECT}-${APP_NAME}"
+        IMAGE_TAG="${REGISTRY}/${REPOSITORY_NAME}:${APP_VERSION}"
+
+        echo "repository-name=$REPOSITORY_NAME" >> "$GITHUB_OUTPUT"
+        echo "image-tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+        echo "Repositorio ECR: $REPOSITORY_NAME"
+        echo "Imagen: $IMAGE_TAG"
 
     #########################################################
-    # CREATE ECR REPO
+    # CREATE ECR REPOSITORY
     #########################################################
 
-    - name: Ensure ECR Repository Exists
-      if: ${{ inputs.andreani == 'true' }}
+    - name: Ensure ECR repository exists
       shell: bash
+      env:
+        AWS_REGION: ${{ inputs.awsRegion }}
+        REPOSITORY_NAME: ${{ steps.image.outputs.repository-name }}
       run: |
         set -euo pipefail
 
-        REPOSITORY_NAME="${{ inputs.teamProject }}-${{ inputs.appName }}"
-
-        aws ecr describe-repositories \
+        if aws ecr describe-repositories \
           --repository-names "$REPOSITORY_NAME" \
-          --region us-east-1 >/dev/null 2>&1 || \
-        aws ecr create-repository \
-          --repository-name "$REPOSITORY_NAME" \
-          --region us-east-1
+          --region "$AWS_REGION" \
+          >/dev/null 2>&1; then
 
-        REPOSITORY_URI=$(aws ecr describe-repositories \
-          --repository-names "$REPOSITORY_NAME" \
-          --region us-east-1 \
-          --query 'repositories[0].repositoryUri' \
-          --output text)
+          echo "El repositorio ya existe: $REPOSITORY_NAME"
+        else
+          echo "Creando repositorio ECR: $REPOSITORY_NAME"
 
-        echo "REPOSITORY_URI=$REPOSITORY_URI" >> $GITHUB_ENV
+          aws ecr create-repository \
+            --repository-name "$REPOSITORY_NAME" \
+            --region "$AWS_REGION" \
+            >/dev/null
 
-    #########################################################
-    # PUSH ECR
-    #########################################################
-
-    - name: Push to ECR
-      if: ${{ inputs.andreani == 'true' }}
-      shell: bash
-      run: |
-        set -euo pipefail
-
-        SOURCE_IMAGE="${{ inputs.ACR_FULL_NAME }}/${{ inputs.teamProject }}-${{ inputs.appName }}:${{ inputs.appVersion }}"
-
-        TARGET_IMAGE="${REPOSITORY_URI}:${{ inputs.appVersion }}"
-
-        echo "Pulling image desde ACR..."
-        docker pull "$SOURCE_IMAGE"
-
-        echo "Tagging image..."
-        docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
-
-        echo "Pushing image a ECR..."
-        docker push "$TARGET_IMAGE"
+          echo "Repositorio creado correctamente"
+        fi
 
     #########################################################
-    # FINISHED
+    # BUILD + PUSH
+    #########################################################
+
+    - name: Build and push
+      id: build
+      uses: docker/build-push-action@v7
+      with:
+        context: .
+        file: ./Dockerfile
+        push: true
+        tags: ${{ steps.image.outputs.image-tag }}
+
+    #########################################################
+    # FINISH
     #########################################################
 
     - name: Finish
       shell: bash
+      env:
+        IMAGE_TAG: ${{ steps.image.outputs.image-tag }}
+        IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
       run: |
-        echo "Build y Push completado correctamente"
+        echo "Build y push completado correctamente"
+        echo "Imagen: $IMAGE_TAG"
+        echo "Digest: $IMAGE_DIGEST"
