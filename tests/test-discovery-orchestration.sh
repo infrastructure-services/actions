@@ -37,6 +37,9 @@ case "${1:-}" in
     exit "${FAKE_BUILD_EXIT:-0}"
     ;;
   run)
+    if [[ -n "${FAKE_SQL_STDERR:-}" ]]; then
+      printf '%s\n' "$FAKE_SQL_STDERR" >&2
+    fi
     exit "${FAKE_SQL_EXIT:-0}"
     ;;
   *)
@@ -70,6 +73,7 @@ run_discovery() {
   local RUNNER_ONLY="$2"
   local RESTORE_EXIT="$3"
   local SQL_EXIT="$4"
+  local SQL_STDERR="${5:-}"
   local OUTPUT_FILE="$TEMP_DIR/${NAME}.out"
   local STDOUT_FILE="$TEMP_DIR/${NAME}.stdout"
 
@@ -80,6 +84,7 @@ run_discovery() {
   FAKE_DOTNET_LOG="$DOTNET_LOG" \
   FAKE_RESTORE_EXIT="$RESTORE_EXIT" \
   FAKE_SQL_EXIT="$SQL_EXIT" \
+  FAKE_SQL_STDERR="$SQL_STDERR" \
   GITHUB_ACTION_PATH="$ACTION_ROOT" \
   GITHUB_WORKSPACE="$WORKSPACE" \
   GITHUB_OUTPUT="$OUTPUT_FILE" \
@@ -134,5 +139,75 @@ RESULT="$(run_discovery execution-failure false 0 1)"
 OUTPUT_FILE="${RESULT%%|*}"
 [[ "$(value "$OUTPUT_FILE" consistency_reason)" == "FAIL_SQL_DISCOVERY_HELPER" ]]
 echo "PASS: fallo local de ejecución no se confunde con conectividad SQL"
+
+assert_safe_diagnostic() {
+  local NAME="$1"
+  local DIAGNOSTIC="$2"
+  local EXPECTED="$3"
+  local RESULT OUTPUT_FILE STDOUT_FILE SUMMARY_FILE
+
+  RESULT="$(run_discovery "$NAME" false 0 4 "$DIAGNOSTIC")"
+  OUTPUT_FILE="${RESULT%%|*}"
+  STDOUT_FILE="${RESULT#*|}"
+  SUMMARY_FILE="$WORKSPACE/artifacts/$NAME/summary.md"
+
+  [[ "$(value "$OUTPUT_FILE" consistency_reason)" == "FAIL_SQL_DISCOVERY_HELPER" ]]
+  grep -Fxq 'SqlDiscovery no pudo ejecutarse correctamente.' "$STDOUT_FILE"
+  grep -Fxq 'sql-execution-exit=4' "$STDOUT_FILE"
+  grep -Fxq "sql-diagnostic-code=$EXPECTED" "$STDOUT_FILE"
+  grep -Fq "| SQL execution exit | \`4\` |" "$SUMMARY_FILE"
+  grep -Fq "| SQL diagnostic code | \`$EXPECTED\` |" "$SUMMARY_FILE"
+}
+
+assert_safe_diagnostic argument-exception \
+  'SQL_DISCOVERY_FAILED:ArgumentException' \
+  'SQL_DISCOVERY_FAILED:ArgumentException'
+echo "PASS: nombre de excepción permitido se conserva"
+
+assert_safe_diagnostic sql-number \
+  'SQL_DISCOVERY_FAILED:18456' \
+  'SQL_DISCOVERY_FAILED:18456'
+echo "PASS: número SQL permitido se conserva"
+
+assert_safe_diagnostic empty-metadata \
+  'SQL_DISCOVERY_FAILED:EMPTY_METADATA_RESULT' \
+  'SQL_DISCOVERY_FAILED:EMPTY_METADATA_RESULT'
+echo "PASS: resultado de metadata vacío permitido se conserva"
+
+assert_safe_diagnostic arbitrary-stderr \
+  'línea arbitraria que no debe publicarse' \
+  'UNKNOWN_SAFE_DIAGNOSTIC'
+STDOUT_FILE="$TEMP_DIR/arbitrary-stderr.stdout"
+if grep -RFq 'línea arbitraria' \
+  "$STDOUT_FILE" "$WORKSPACE/artifacts/arbitrary-stderr"; then
+  echo "FAIL: una línea arbitraria de stderr fue publicada."
+  exit 1
+fi
+echo "PASS: stderr arbitrario no se publica"
+
+assert_safe_diagnostic connection-string-stderr \
+  'Server=forbidden-host;User ID=forbidden-user;Password=forbidden-value' \
+  'UNKNOWN_SAFE_DIAGNOSTIC'
+STDOUT_FILE="$TEMP_DIR/connection-string-stderr.stdout"
+if grep -REq 'forbidden-host|forbidden-user|forbidden-value' \
+  "$STDOUT_FILE" "$WORKSPACE/artifacts/connection-string-stderr"; then
+  echo "FAIL: una connection string de prueba fue publicada."
+  exit 1
+fi
+echo "PASS: líneas con formato de connection string no se publican"
+
+assert_safe_diagnostic exception-details \
+  $'SQL_DISCOVERY_FAILED:ArgumentException\nSystem.ArgumentException: forbidden-message\n   at SqlDiscovery.Main()' \
+  'SQL_DISCOVERY_FAILED:ArgumentException'
+STDOUT_FILE="$TEMP_DIR/exception-details.stdout"
+if grep -REq 'forbidden-message|SqlDiscovery\.Main' \
+  "$STDOUT_FILE" "$WORKSPACE/artifacts/exception-details"; then
+  echo "FAIL: exception.Message o stack trace fueron publicados."
+  exit 1
+fi
+echo "PASS: exception.Message y stack trace no se publican"
+
+assert_safe_diagnostic no-diagnostic '' 'UNKNOWN_SAFE_DIAGNOSTIC'
+echo "PASS: ausencia de diagnóstico seguro devuelve UNKNOWN_SAFE_DIAGNOSTIC"
 
 echo "OK: orquestación de SqlDiscovery validada"

@@ -46,6 +46,7 @@ SDK_VERSION=""
 SQL_RESTORE_EXIT=-1
 SQL_BUILD_EXIT=-1
 SQL_EXIT=-1
+SQL_DIAGNOSTIC_CODE="NOT_EXECUTED"
 
 sha256_file() {
   local FILE="$1"
@@ -121,6 +122,20 @@ sanitize_build_diagnostics() {
   fi
 }
 
+extract_safe_sql_diagnostic() {
+  local LOG_FILE="$1"
+  local DIAGNOSTIC=""
+
+  if [[ -s "$LOG_FILE" ]]; then
+    DIAGNOSTIC="$(grep -E -m 1 \
+      '^(DB_CONNECTION_REQUIRED|FAIL_METADATA_VISIBILITY|SQL_DISCOVERY_FAILED:(EMPTY_METADATA_RESULT|-?[0-9]+|[A-Za-z_][A-Za-z0-9_`]*Exception))$' \
+      "$LOG_FILE" 2>/dev/null || true)"
+    DIAGNOSTIC="${DIAGNOSTIC%$'\r'}"
+  fi
+
+  printf '%s\n' "${DIAGNOSTIC:-UNKNOWN_SAFE_DIAGNOSTIC}"
+}
+
 prepare_sql_helper() {
   : > "$SQL_BUILD_LOG"
   SDK_VERSION="$(dotnet --version 2>/dev/null || true)"
@@ -188,6 +203,8 @@ write_report_and_outputs() {
     --arg sdkVersion "$SDK_VERSION" \
     --arg sqlRestoreExit "$SQL_RESTORE_EXIT" \
     --arg sqlBuildExit "$SQL_BUILD_EXIT" \
+    --arg sqlExecutionExit "$SQL_EXIT" \
+    --arg sqlDiagnosticCode "$SQL_DIAGNOSTIC_CODE" \
     --arg repoMigrationsSha256 "$REPO_SHA" \
     --arg efHistorySha256 "$HISTORY_SHA" \
     --argjson businessObjectCount "$BUSINESS_OBJECT_COUNT" \
@@ -208,6 +225,8 @@ write_report_and_outputs() {
       sdkVersion: $sdkVersion,
       sqlRestoreExit: $sqlRestoreExit,
       sqlBuildExit: $sqlBuildExit,
+      sqlExecutionExit: $sqlExecutionExit,
+      sqlDiagnosticCode: $sqlDiagnosticCode,
       databaseName: $databaseName,
       scenario: $scenario,
       sourceKind: $sourceKind,
@@ -250,6 +269,8 @@ write_report_and_outputs() {
     printf '| .NET SDK | `%s` |\n' "${SDK_VERSION:-No disponible}"
     printf '| Restore exit | `%s` |\n' "$SQL_RESTORE_EXIT"
     printf '| Build exit | `%s` |\n' "$SQL_BUILD_EXIT"
+    printf '| SQL execution exit | `%s` |\n' "$SQL_EXIT"
+    printf '| SQL diagnostic code | `%s` |\n' "$SQL_DIAGNOSTIC_CODE"
     printf '| Escenario detectado | `%s` |\n' "$SCENARIO"
     printf '| Source kind | `%s` |\n' "$SOURCE_KIND"
     printf '| Base inspeccionada | `%s` |\n' "${DATABASE_NAME:-No disponible}"
@@ -378,6 +399,15 @@ SQL_EXIT=$?
 set -e
 unset DB_CONNECTION
 
+if [[ "$SQL_EXIT" -ne 0 ]]; then
+  SQL_DIAGNOSTIC_CODE="$(extract_safe_sql_diagnostic "$SQL_EXECUTION_LOG")"
+  echo "SqlDiscovery no pudo ejecutarse correctamente."
+  echo "sql-execution-exit=$SQL_EXIT"
+  echo "sql-diagnostic-code=$SQL_DIAGNOSTIC_CODE"
+else
+  SQL_DIAGNOSTIC_CODE="NONE"
+fi
+
 if [[ "$SQL_EXIT" -eq 5 ]]; then
   run_classifier METADATA_INSUFFICIENT
   write_report_and_outputs
@@ -391,7 +421,6 @@ if [[ "$SQL_EXIT" -eq 3 ]]; then
 fi
 
 if [[ "$SQL_EXIT" -ne 0 ]]; then
-  echo "SqlDiscovery no pudo ejecutarse correctamente: exit=$SQL_EXIT"
   run_classifier HELPER_FAILED
   write_report_and_outputs
   exit 0
