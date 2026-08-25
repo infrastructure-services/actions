@@ -15,6 +15,11 @@ inputs:
     required: false
     default: ""
 
+  runner-validation-only:
+    description: Restaura y compila SqlDiscovery sin recibir connection string ni abrir SQL.
+    required: false
+    default: "false"
+
   environment-name:
     description: Ambiente inspeccionado.
     required: false
@@ -91,6 +96,7 @@ runs:
   steps:
     - name: Discover repository state without executing application code
       id: repository
+      if: ${{ inputs.runner-validation-only != 'true' }}
       shell: bash
       env:
         ENVIRONMENT_NAME: ${{ inputs.environment-name }}
@@ -99,7 +105,7 @@ runs:
 
     - name: Setup .NET for SQL metadata helper
       id: setup_dotnet
-      if: ${{ inputs.secret-found == 'true' && steps.repository.outputs.repository_status == 'READY' }}
+      if: ${{ inputs.runner-validation-only == 'true' || (inputs.secret-found == 'true' && steps.repository.outputs.repository_status == 'READY') }}
       continue-on-error: true
       uses: actions/setup-dotnet@v5
       with:
@@ -112,6 +118,7 @@ runs:
         DATABASE_LIFECYCLE: ${{ inputs.database-lifecycle }}
         SECRET_FOUND: ${{ inputs.secret-found }}
         DB_CONNECTION: ${{ inputs.connection-string }}
+        RUNNER_VALIDATION_ONLY: ${{ inputs.runner-validation-only }}
         ENVIRONMENT_NAME: ${{ inputs.environment-name }}
         OUTPUT_DIRECTORY: ${{ inputs.output-directory }}
         REPOSITORY_STATUS: ${{ steps.repository.outputs.repository_status }}

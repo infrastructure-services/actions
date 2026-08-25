@@ -29,6 +29,24 @@ if grep -rEiq 'dotnet[[:space:]]+ef|dbcontext[[:space:]]+list|migrations[[:space
   exit 1
 fi
 
+if grep -rEiq 'dotnet[[:space:]]+new|dotnet[[:space:]]+add[[:space:]]+package|dotnet[[:space:]]+package[[:space:]]+add' \
+  "$ACTION_ROOT/action.yml" "$ACTION_ROOT/scripts"; then
+  echo "FAIL: SqlDiscovery no debe generar proyectos ni agregar PackageReference dinámicamente."
+  exit 1
+fi
+
+for REQUIRED_BUILD_STEP in \
+  'dotnet restore' \
+  'SqlDiscovery/NuGet.Config' \
+  'dotnet build' \
+  '--no-restore'
+do
+  if ! grep -Fq -- "$REQUIRED_BUILD_STEP" "$ACTION_ROOT/scripts/discover-db-scenario.sh"; then
+    echo "FAIL: falta preparación determinista del helper: $REQUIRED_BUILD_STEP"
+    exit 1
+  fi
+done
+
 if grep -rEq 'dbcontexts\.json|repo-migrations\.json|dotnet-ef\.stderr' \
   "$ACTION_ROOT/action.yml" "$ACTION_ROOT/scripts"; then
   echo "FAIL: el discovery conserva stdout crudo de herramientas EF."

@@ -4,6 +4,7 @@ set -euo pipefail
 ACTION_PATH="${GITHUB_ACTION_PATH:?GITHUB_ACTION_PATH no informado}"
 WORKSPACE="${GITHUB_WORKSPACE:-$PWD}"
 LIFECYCLE="$(printf '%s' "${DATABASE_LIFECYCLE:-}" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')"
+RUNNER_VALIDATION_ONLY="$(printf '%s' "${RUNNER_VALIDATION_ONLY:-false}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
 OUTPUT_ROOT="${OUTPUT_DIRECTORY:-artifacts/db-discovery}"
 SAFE_ENVIRONMENT="$(printf '%s' "${ENVIRONMENT_NAME:-TEST}" | sed 's#[^A-Za-z0-9._-]#_#g')"
 
@@ -20,7 +21,8 @@ REPO_MIGRATIONS_FILE="$REPORT_DIRECTORY/repo-migrations.txt"
 DB_MIGRATIONS_FILE="$REPORT_DIRECTORY/db-migrations.txt"
 TEMP_ROOT="${RUNNER_TEMP:-/tmp}/db-sql-discovery-${GITHUB_RUN_ID:-local}-${GITHUB_JOB:-job}-${RANDOM}"
 SQL_DISCOVERY_FILE="$TEMP_ROOT/sql-discovery.json"
-SQL_STDERR="$TEMP_ROOT/sql-discovery.stderr"
+SQL_BUILD_LOG="$TEMP_ROOT/sql-build.log"
+SQL_EXECUTION_LOG="$TEMP_ROOT/sql-execution.log"
 SQL_BUILD_ROOT="$TEMP_ROOT/build"
 
 mkdir -p "$REPORT_DIRECTORY" "$TEMP_ROOT"
@@ -40,6 +42,10 @@ EF_HISTORY_EXISTS=false
 METADATA_VISIBILITY_VERIFIED=false
 STRUCTURAL_COUNTS_JSON='{}'
 CLASSIFICATION_DATA=""
+SDK_VERSION=""
+SQL_RESTORE_EXIT=-1
+SQL_BUILD_EXIT=-1
+SQL_EXIT=-1
 
 sha256_file() {
   local FILE="$1"
@@ -72,6 +78,84 @@ run_classifier() {
     "${REPOSITORY_REASON:-OK}")"
 }
 
+set_runner_validation_result() {
+  CLASSIFICATION_DATA="consistency_status=CONSISTENT
+consistency_reason=RUNNER_VALIDATION_OK
+scenario=RUNNER_VALIDATION_ONLY
+source_kind=UNKNOWN
+last_applied_migration=
+latest_repo_migration=
+has_pending_migrations=false
+repo_migration_count=0
+ef_history_count=0"
+}
+
+sanitize_build_diagnostics() {
+  local LOG_FILE="$1"
+  local LINE COUNT=0
+
+  [[ -s "$LOG_FILE" ]] || {
+    echo "No hubo líneas diagnósticas útiles disponibles."
+    return
+  }
+
+  while IFS= read -r LINE; do
+    if [[ "$LINE" =~ NU[0-9]{4}|MSB[0-9]{4}|NETSDK[0-9]{4}|[Ee]rror([: ]|$) ]]; then
+      LINE="${LINE//$ACTION_PATH/<action-path>}"
+      LINE="${LINE//$WORKSPACE/<workspace>}"
+      LINE="${LINE//$TEMP_ROOT/<temp-path>}"
+      if [[ -n "${HOME:-}" ]]; then
+        LINE="${LINE//$HOME/<runner-home>}"
+      fi
+      LINE="$(printf '%s\n' "$LINE" | sed -E \
+        -e 's#https?://[^[:space:]]+#<url>#g' \
+        -e 's#((Password|Pwd|User ID|UID|Access Token|Token|Client Secret)[[:space:]]*=)[^;[:space:]]+#\1***#Ig')"
+      printf '  %s\n' "$LINE"
+      COUNT=$((COUNT + 1))
+      [[ "$COUNT" -ge 50 ]] && break
+    fi
+  done < "$LOG_FILE"
+
+  if [[ "$COUNT" -eq 0 ]]; then
+    echo "No hubo líneas NUxxxx, MSBxxxx, NETSDKxxxx o error para mostrar."
+  fi
+}
+
+prepare_sql_helper() {
+  : > "$SQL_BUILD_LOG"
+  SDK_VERSION="$(dotnet --version 2>/dev/null || true)"
+
+  set +e
+  dotnet restore "$ACTION_PATH/tools/SqlDiscovery/SqlDiscovery.csproj" \
+    --configfile "$ACTION_PATH/tools/SqlDiscovery/NuGet.Config" \
+    --property:BaseIntermediateOutputPath="$SQL_BUILD_ROOT/obj/" \
+    --verbosity minimal \
+    > "$SQL_BUILD_LOG" 2>&1
+  SQL_RESTORE_EXIT=$?
+
+  if [[ "$SQL_RESTORE_EXIT" -eq 0 ]]; then
+    dotnet build "$ACTION_PATH/tools/SqlDiscovery/SqlDiscovery.csproj" \
+      --no-restore \
+      --configuration Release \
+      --property:BaseOutputPath="$SQL_BUILD_ROOT/bin/" \
+      --property:BaseIntermediateOutputPath="$SQL_BUILD_ROOT/obj/" \
+      --verbosity minimal \
+      >> "$SQL_BUILD_LOG" 2>&1
+    SQL_BUILD_EXIT=$?
+  else
+    SQL_BUILD_EXIT=1
+  fi
+  set -e
+
+  if [[ "$SQL_RESTORE_EXIT" -ne 0 || "$SQL_BUILD_EXIT" -ne 0 ]]; then
+    echo "SqlDiscovery no pudo prepararse: restore-exit=$SQL_RESTORE_EXIT build-exit=$SQL_BUILD_EXIT"
+    sanitize_build_diagnostics "$SQL_BUILD_LOG"
+    return 1
+  fi
+
+  echo "SqlDiscovery preparado correctamente con .NET SDK ${SDK_VERSION:-desconocido}."
+}
+
 write_report_and_outputs() {
   local CONSISTENCY_STATUS CONSISTENCY_REASON SCENARIO SOURCE_KIND
   local LAST_APPLIED LATEST_REPO HAS_PENDING REPO_COUNT HISTORY_COUNT
@@ -100,6 +184,10 @@ write_report_and_outputs() {
     --arg lastAppliedMigration "$LAST_APPLIED" \
     --arg latestRepoMigration "$LATEST_REPO" \
     --arg selectedMigrationProject "${SELECTED_MIGRATION_PROJECT:-}" \
+    --arg executionMode "$RUNNER_VALIDATION_ONLY" \
+    --arg sdkVersion "$SDK_VERSION" \
+    --arg sqlRestoreExit "$SQL_RESTORE_EXIT" \
+    --arg sqlBuildExit "$SQL_BUILD_EXIT" \
     --arg repoMigrationsSha256 "$REPO_SHA" \
     --arg efHistorySha256 "$HISTORY_SHA" \
     --argjson businessObjectCount "$BUSINESS_OBJECT_COUNT" \
@@ -116,6 +204,10 @@ write_report_and_outputs() {
     '{
       databaseLifecycle: $lifecycle,
       environmentName: $environment,
+      runnerValidationOnly: ($executionMode == "true"),
+      sdkVersion: $sdkVersion,
+      sqlRestoreExit: $sqlRestoreExit,
+      sqlBuildExit: $sqlBuildExit,
       databaseName: $databaseName,
       scenario: $scenario,
       sourceKind: $sourceKind,
@@ -145,11 +237,19 @@ write_report_and_outputs() {
     }' > "$REPORT_FILE"
 
   {
-    echo "### DB Scenario Discovery — $SAFE_ENVIRONMENT"
+    if [[ "$RUNNER_VALIDATION_ONLY" == "true" ]]; then
+      echo "### SqlDiscovery Runner Validation — $SAFE_ENVIRONMENT"
+    else
+      echo "### DB Scenario Discovery — $SAFE_ENVIRONMENT"
+    fi
     echo ""
     echo "| Campo | Valor |"
     echo "|---|---|"
     printf '| Lifecycle declarado | `%s` |\n' "$LIFECYCLE"
+    printf '| Runner validation only | `%s` |\n' "$RUNNER_VALIDATION_ONLY"
+    printf '| .NET SDK | `%s` |\n' "${SDK_VERSION:-No disponible}"
+    printf '| Restore exit | `%s` |\n' "$SQL_RESTORE_EXIT"
+    printf '| Build exit | `%s` |\n' "$SQL_BUILD_EXIT"
     printf '| Escenario detectado | `%s` |\n' "$SCENARIO"
     printf '| Source kind | `%s` |\n' "$SOURCE_KIND"
     printf '| Base inspeccionada | `%s` |\n' "${DATABASE_NAME:-No disponible}"
@@ -168,7 +268,11 @@ write_report_and_outputs() {
     printf '| Consistency status | `%s` |\n' "$CONSISTENCY_STATUS"
     printf '| Consistency reason | `%s` |\n' "$CONSISTENCY_REASON"
     echo ""
-    echo "El helper SQL ejecuta únicamente SELECT y solicita conexión al primary."
+    if [[ "$RUNNER_VALIDATION_ONLY" == "true" ]]; then
+      echo "SqlDiscovery fue restaurado y compilado sin Key Vault, connection string, TCP ni SQL."
+    else
+      echo "El helper SQL ejecuta únicamente SELECT y solicita conexión al primary."
+    fi
   } > "$SUMMARY_FILE"
 
   if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
@@ -202,8 +306,35 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
+if [[ "$RUNNER_VALIDATION_ONLY" != "true" && "$RUNNER_VALIDATION_ONLY" != "false" ]]; then
+  run_classifier HELPER_FAILED
+  write_report_and_outputs
+  exit 0
+fi
+
 if [[ "$LIFECYCLE" != "NEW" && "$LIFECYCLE" != "EXISTING" ]]; then
   run_classifier READY
+  write_report_and_outputs
+  exit 0
+fi
+
+if [[ "$RUNNER_VALIDATION_ONLY" == "true" ]]; then
+  unset DB_CONNECTION
+  SECRET_FOUND=false
+
+  if [[ "${DOTNET_SETUP_OUTCOME:-success}" != "success" ]]; then
+    run_classifier HELPER_FAILED
+    write_report_and_outputs
+    exit 0
+  fi
+
+  if ! prepare_sql_helper; then
+    run_classifier HELPER_FAILED
+    write_report_and_outputs
+    exit 0
+  fi
+
+  set_runner_validation_result
   write_report_and_outputs
   exit 0
 fi
@@ -228,46 +359,24 @@ if [[ "${DOTNET_SETUP_OUTCOME:-success}" != "success" ]]; then
   exit 0
 fi
 
-set +e
-dotnet restore "$ACTION_PATH/tools/SqlDiscovery/SqlDiscovery.csproj" \
-  --configfile "$ACTION_PATH/tools/SqlDiscovery/NuGet.Config" \
-  --property:BaseIntermediateOutputPath="$SQL_BUILD_ROOT/obj/" \
-  >/dev/null 2> "$SQL_STDERR"
-SQL_RESTORE_EXIT=$?
-
-if [[ "$SQL_RESTORE_EXIT" -eq 0 ]]; then
-  dotnet build "$ACTION_PATH/tools/SqlDiscovery/SqlDiscovery.csproj" \
-    --no-restore \
-    --configuration Release \
-    --property:BaseOutputPath="$SQL_BUILD_ROOT/bin/" \
-    --property:BaseIntermediateOutputPath="$SQL_BUILD_ROOT/obj/" \
-    >/dev/null 2>> "$SQL_STDERR"
-  SQL_BUILD_EXIT=$?
-else
-  SQL_BUILD_EXIT=1
-fi
-
-if [[ "$SQL_RESTORE_EXIT" -eq 0 && "$SQL_BUILD_EXIT" -eq 0 ]]; then
-  DB_CONNECTION="$DB_CONNECTION" dotnet run \
-    --project "$ACTION_PATH/tools/SqlDiscovery/SqlDiscovery.csproj" \
-    --configuration Release \
-    --no-build \
-    --no-restore \
-    --property:BaseOutputPath="$SQL_BUILD_ROOT/bin/" \
-    --property:BaseIntermediateOutputPath="$SQL_BUILD_ROOT/obj/" \
-    > "$SQL_DISCOVERY_FILE" 2>> "$SQL_STDERR"
-  SQL_EXIT=$?
-else
-  SQL_EXIT=1
-fi
-set -e
-unset DB_CONNECTION
-
-if [[ "$SQL_RESTORE_EXIT" -ne 0 || "$SQL_BUILD_EXIT" -ne 0 ]]; then
+if ! prepare_sql_helper; then
   run_classifier HELPER_FAILED
   write_report_and_outputs
   exit 0
 fi
+
+set +e
+DB_CONNECTION="$DB_CONNECTION" dotnet run \
+  --project "$ACTION_PATH/tools/SqlDiscovery/SqlDiscovery.csproj" \
+  --configuration Release \
+  --no-build \
+  --no-restore \
+  --property:BaseOutputPath="$SQL_BUILD_ROOT/bin/" \
+  --property:BaseIntermediateOutputPath="$SQL_BUILD_ROOT/obj/" \
+  > "$SQL_DISCOVERY_FILE" 2> "$SQL_EXECUTION_LOG"
+SQL_EXIT=$?
+set -e
+unset DB_CONNECTION
 
 if [[ "$SQL_EXIT" -eq 5 ]]; then
   run_classifier METADATA_INSUFFICIENT
@@ -275,14 +384,15 @@ if [[ "$SQL_EXIT" -eq 5 ]]; then
   exit 0
 fi
 
-if [[ "$SQL_EXIT" -eq 4 || "$SQL_EXIT" -eq 2 ]]; then
-  run_classifier HELPER_FAILED
+if [[ "$SQL_EXIT" -eq 3 ]]; then
+  run_classifier CONNECTION_FAILED
   write_report_and_outputs
   exit 0
 fi
 
 if [[ "$SQL_EXIT" -ne 0 ]]; then
-  run_classifier CONNECTION_FAILED
+  echo "SqlDiscovery no pudo ejecutarse correctamente: exit=$SQL_EXIT"
+  run_classifier HELPER_FAILED
   write_report_and_outputs
   exit 0
 fi
