@@ -1,76 +1,125 @@
-## Discover DB Scenario
+## Database Release Qualification V1 — hardened engine
 
-Composite action de discovery TEST que combina evidencia estática del repositorio con metadata de SQL Server para inferir `NEW_EF`, `EXISTING_EF` o `EXISTING_SQL`.
+Action piloto, TEST-only y analyze-only para calificar releases SQL Server sin ejecutar SQL. Las fuentes EF y SQL convergen previamente en dos archivos provistos por el autor: `forward.sql` y `rollback.sql`.
 
-El usuario declara únicamente `database-lifecycle=NEW|EXISTING`. La action no ejecuta código de la aplicación, comandos `dotnet-ef`, scripts SQL ni operaciones de deployment.
+### Flujo del engine
 
-### Discovery estático EF
+1. Verifica que discovery sea `CONSISTENT`.
+2. Conserva exactamente los bytes de forward/rollback y calcula sus SHA256.
+3. Parsea ambos scripts con `Microsoft.SqlServer.TransactSql.ScriptDom.TSql180Parser`.
+4. Obtiene operaciones, targets y columnas desde el AST; los errores, targets ambiguos, SQL dinámico y statements no soportados degradan `analysisConfidence`.
+5. Cruza forward contra PRE y conserva un screening preliminar de rollback contra PRE.
+6. En rehearsal, después de capturar POST1, vuelve a analizar rollback contra POST1; ése es el análisis autoritativo para qualification.
+7. Calcula por separado `forwardRisk`, `rollbackRisk`, riesgos de dependencia/operación POST1, `dataRisk` y `operationalRisk`; `finalRisk` es siempre el máximo observado.
+8. Escribe un payload estable y una attestation específica del ambiente/run.
 
-La detección usa, en orden:
+La action pública no recibe connection strings, no crea un adaptador de ejecución y no ejecuta rehearsal. Su resultado normal es `ANALYZED_NOT_REHEARSED`; una inconsistencia de discovery o confianza insuficiente queda bloqueada.
 
-- atributos `[Migration("...")]` presentes en fuentes generadas;
-- pares `Migration.cs` / `Migration.Designer.cs` con ID válido;
-- `ModelSnapshot` como evidencia EF adicional.
+### Payload y attestations
 
-Los IDs aceptados usan el formato determinista `yyyyMMddHHmmss_Name` y se ordenan lexicográficamente. Un snapshot, atributo o archivo relacionado con migrations que no permita construir una lista válida produce `BLOCKED_EF_REPOSITORY_INCONSISTENT`; nunca se interpreta como `EXISTING_SQL`.
+El payload promovible no contiene ambiente:
 
-Si la evidencia pertenece a más de un `.csproj`, devuelve `BLOCKED_AMBIGUOUS_MIGRATION_PROJECT`. Este incremento no crea ni inspecciona `DbContext`.
+```text
+artifacts/db-release/<release-id>/payload/
+  forward.sql
+  rollback.sql
+  forward.sha256
+  rollback.sha256
+  payload.json
+```
 
-### Seguridad y permisos SQL
+Su identidad depende exclusivamente de metadata estable y de los hashes de ambos scripts. Un payload existente se verifica byte a byte y nunca se reescribe.
 
-El helper solicita routing `ReadWrite` para inspeccionar el primary autoritativo y ejecuta únicamente `SELECT`. `ApplicationIntent` no se usa como barrera de seguridad.
+Cada qualification agrega evidencia separada:
 
-Permisos mínimos efectivos sobre la base inspeccionada:
+```text
+artifacts/db-release/<release-id>/attestations/<environment>/<attestation-id>/
+  qualification-attestation.json
+  dependency-analysis.json
+  risk-analysis.json
+  preliminary-dependency-analysis.json
+  preliminary-risk-analysis.json
+  post1-rollback-analysis.json
+  pre-schema.json
+  pre-schema.sha256
+  post-schema.json
+  post-schema.sha256
+  schema-diff.json
+```
 
-- acceso de login y `CONNECT` a la base;
-- `VIEW DEFINITION` sobre la base;
-- `SELECT` sobre `dbo.__EFMigrationsHistory`, si existe.
+Las attestations pueden variar entre TEST, QA y PROD sin cambiar la identidad del payload. Esta iteración no implementa promoción ni workflows QA/PROD.
 
-La action comprueba visibilidad de metadata antes de interpretar ausencia de objetos o history. Visibilidad insuficiente produce `FAIL_METADATA_VISIBILITY`.
+### Schema versus datos
 
-Una base NEW solo se considera vacía cuando no encuentra estructura de usuario fuera de la allowlist técnica. Se inspeccionan todos los objetos visibles de `sys.objects`, schemas de usuario, tablas, tipos definidos por usuario, assemblies, DDL triggers, XML schema collections, partition functions/schemes y full-text catalogs.
+El fingerprint certifica exclusivamente estructura. Por eso el resultado separa:
 
-Exclusiones técnicas:
+- `schemaRollbackValidity`: `VALID`, `INVALID`, `NOT_TESTED`;
+- `dataRollbackValidity`: `NOT_APPLICABLE`, `VALID`, `INVALID`, `UNVERIFIED`, `NOT_TESTED`;
+- `rollbackCapability`: `FULL_REVERSIBLE`, `SCHEMA_ONLY`, `FORWARD_FIX_ONLY`, `RESTORE_REQUIRED`, `UNKNOWN`.
 
-- schemas `sys`, `INFORMATION_SCHEMA` y `cicd`;
-- schemas asociados a roles fijos de base;
-- `dbo.__EFMigrationsHistory` y sus objetos hijos;
-- objetos con `is_ms_shipped=1`.
+`PRE_SCHEMA == PRE2_SCHEMA` sólo puede validar la dimensión estructural. Cuando forward/rollback contiene DML o forward puede destruir datos, la ausencia de un `IDataRollbackValidationContract` produce `UNVERIFIED` y bloquea la certificación completa. La aprobación DBA no convierte un rollback inválido o no verificado en válido.
 
-### Estados
+### Rehearsal abstracto
 
-- `NEW_EF`
-- `EXISTING_EF`
-- `EXISTING_SQL`
-- `BLOCKED_BASELINE_REQUIRED`
-- `BLOCKED_HISTORY_WITHOUT_REPO`
-- `BLOCKED_EF_SEQUENCE_DIVERGED`
-- `BLOCKED_NEW_WITHOUT_MIGRATIONS`
-- `BLOCKED_NEW_NOT_EMPTY`
-- `BLOCKED_AMBIGUOUS_MIGRATION_PROJECT`
-- `BLOCKED_EF_REPOSITORY_INCONSISTENT`
-- `FAIL_SECRET_REQUIRED`
-- `FAIL_DATABASE_UNREACHABLE`
-- `FAIL_METADATA_VISIBILITY`
-- `FAIL_SQL_DISCOVERY_HELPER`
+`RehearsalEngine` modela:
 
-### Outputs y artifacts
+```text
+PRE → analyze FORWARD/PRE → FORWARD → POST1 → analyze ROLLBACK/POST1
+    → ROLLBACK → PRE2 → FORWARD exacto → POST2
+```
 
-Los outputs son compactos: escenario, status/reason, contadores, indicador de base vacía, primera/última evidencia relevante, SHA256 de las dos listas y proyecto seleccionado.
+pero sólo depende de `IRehearsalDatabase`. No existe implementación SQL real. El screening rollback/PRE nunca reemplaza el análisis rollback/POST1. Discovery bloqueado, PROD, análisis insuficiente o data rollback no verificable cortan antes del siguiente paso mutante aplicable.
 
-Las listas completas quedan únicamente en el artifact:
+Después de POST1, `RiskEngine` recalcula `rollbackDependencyRisk` y `rollbackOperationalRisk` usando objetos y métricas POST1. La attestation principal usa ese análisis y conserva el preliminar como evidencia separada. Un riesgo POST1 mayor eleva `finalRisk`; no altera los scripts ni la identidad del payload. Si PRE2 difiere de PRE, el rollback sigue siendo `INVALID/BLOCKED` y no se vuelve aprobable por ese riesgo.
 
-- `repo-migrations.txt`
-- `db-migrations.txt`
-- `discovery.json`
-- `summary.md`
+### Canonical schema y cobertura
 
-No se publican stdout crudos de herramientas ni de la aplicación.
+`SqlServerSchemaReader` está implementado exclusivamente con `SELECT` y modela:
 
-### Pruebas locales
+- schemas y propietarios;
+- tablas y temporalidad;
+- columnas, tipos, nullability, identity y computed columns;
+- defaults, PK/UQ, checks y FK;
+- índices rowstore, keys, INCLUDE, filtros, locking/options, data space y estado disabled;
+- triggers, views, schema binding y expression dependencies.
+
+Las métricas de filas, tamaño reservado, índices, LOB, particiones y dependencias se usan para riesgo, pero no entran al fingerprint.
+
+Las siguientes categorías se detectan explícitamente como cobertura parcial cuando existen, porque V1 no conserva todavía toda su semántica en el canonical model:
+
+- sequences;
+- user-defined types;
+- synonyms;
+- partition functions y partition schemes;
+- data compression;
+- metadata temporal extendida no representada por el modelo básico;
+- columnstore, XML, spatial y otros índices especiales;
+- indexed views;
+- full-text indexes;
+- estadísticas creadas manualmente;
+- otros tipos persistentes no modelados.
+
+Su presencia se publica en `unsupportedSchemaFeatures`, degrada `schemaCoverage` y puede llevar `analysisConfidence` a `PARTIAL` o `INSUFFICIENT` si la release toca el objeto afectado.
+
+### Target preflight
+
+`TargetRiskEngine` es un componente puro que combina:
+
+```text
+FINAL_TARGET_RISK = MAX(QUALIFIED_RELEASE_RISK, TARGET_PREFLIGHT_RISK)
+```
+
+El preflight futuro podrá recibir métricas propias de QA/PROD sin modificar el payload ni el schema fingerprint. En esta iteración no se conecta a esos ambientes.
+
+### Límites del AST
+
+ScriptDom aporta parsing sintáctico real, pero no resuelve por sí solo semántica runtime, SQL dinámico, efectos internos de procedures, nombres dependientes de default schema, objetos cross-database ni toda resolución de aliases/CTE complejos. Esos casos nunca quedan automáticamente `COMPLETE/LOW`: se degradan o bloquean.
+
+### Validación local
 
 ```bash
-bash tests/test-classification.sh
-bash tests/test-repository-discovery.sh
-bash tests/test-sql-read-only.sh
+dotnet restore tests/DatabaseReleaseQualification.Tests/DatabaseReleaseQualification.Tests.csproj \
+  --configfile tools/DatabaseReleaseQualification/NuGet.Config
+dotnet run --project tests/DatabaseReleaseQualification.Tests/DatabaseReleaseQualification.Tests.csproj
+bash tests/test-database-release-static.sh
 ```
