@@ -1,0 +1,139 @@
+name: Discover DB Scenario
+description: Clasifica de forma read-only un repositorio y una base SQL Server TEST
+
+inputs:
+  database-lifecycle:
+    description: Lifecycle declarado. Valores permitidos NEW o EXISTING.
+    required: true
+
+  secret-found:
+    description: Indica si la connection string fue encontrada en Key Vault.
+    required: true
+
+  connection-string:
+    description: Connection string SQL utilizada exclusivamente por el helper SQL.
+    required: false
+    default: ""
+
+  environment-name:
+    description: Ambiente inspeccionado.
+    required: false
+    default: TEST
+
+  dotnet-version:
+    description: Versión de .NET SDK requerida por el helper SQL.
+    required: false
+    default: "10.0.x"
+
+  output-directory:
+    description: Directorio relativo al workspace para evidencia de discovery.
+    required: false
+    default: artifacts/db-discovery
+
+outputs:
+  scenario:
+    value: ${{ steps.discovery.outputs.scenario }}
+    description: NEW_EF, EXISTING_EF, EXISTING_SQL o BLOCKED.
+  source-kind:
+    value: ${{ steps.discovery.outputs.source_kind }}
+    description: EF, SQL o UNKNOWN.
+  consistency-status:
+    value: ${{ steps.discovery.outputs.consistency_status }}
+    description: CONSISTENT, BLOCKED o FAIL.
+  consistency-reason:
+    value: ${{ steps.discovery.outputs.consistency_reason }}
+    description: Código estable que explica el resultado.
+  database-name:
+    value: ${{ steps.discovery.outputs.database_name }}
+    description: Nombre real informado por SQL Server.
+  business-object-count:
+    value: ${{ steps.discovery.outputs.business_object_count }}
+    description: Cantidad conservadora de estructuras de usuario detectadas.
+  business-table-count:
+    value: ${{ steps.discovery.outputs.business_table_count }}
+    description: Cantidad de tablas de negocio detectadas.
+  empty-for-new:
+    value: ${{ steps.discovery.outputs.empty_for_new }}
+    description: Indica si la base puede considerarse vacía para NEW.
+  ef-history-exists:
+    value: ${{ steps.discovery.outputs.ef_history_exists }}
+    description: Indica si existe dbo.__EFMigrationsHistory.
+  ef-history-count:
+    value: ${{ steps.discovery.outputs.ef_history_count }}
+    description: Cantidad de MigrationId aplicados.
+  ef-history-sha256:
+    value: ${{ steps.discovery.outputs.ef_history_sha256 }}
+    description: SHA256 de la lista normalizada de history.
+  last-applied-migration:
+    value: ${{ steps.discovery.outputs.last_applied_migration }}
+    description: Última migración aplicada.
+  repo-has-migrations:
+    value: ${{ steps.discovery.outputs.repo_has_migrations }}
+    description: Indica si el discovery estático obtuvo migraciones válidas.
+  repo-migration-count:
+    value: ${{ steps.discovery.outputs.repo_migration_count }}
+    description: Cantidad de migraciones válidas del repositorio.
+  repo-migrations-sha256:
+    value: ${{ steps.discovery.outputs.repo_migrations_sha256 }}
+    description: SHA256 de la lista normalizada del repositorio.
+  latest-repo-migration:
+    value: ${{ steps.discovery.outputs.latest_repo_migration }}
+    description: Última migración disponible.
+  has-pending-migrations:
+    value: ${{ steps.discovery.outputs.has_pending_migrations }}
+    description: Indica si existen migraciones posteriores al prefijo aplicado.
+  selected-migration-project:
+    value: ${{ steps.discovery.outputs.selected_migration_project }}
+    description: Proyecto único asociado a la evidencia EF.
+
+runs:
+  using: composite
+  steps:
+    - name: Discover repository state without executing application code
+      id: repository
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment-name }}
+        OUTPUT_DIRECTORY: ${{ inputs.output-directory }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/discover-repository.sh"
+
+    - name: Setup .NET for SQL metadata helper
+      id: setup_dotnet
+      if: ${{ inputs.secret-found == 'true' && steps.repository.outputs.repository_status == 'READY' }}
+      continue-on-error: true
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: ${{ inputs.dotnet-version }}
+
+    - name: Discover SQL Server state and classify
+      id: discovery
+      shell: bash
+      env:
+        DATABASE_LIFECYCLE: ${{ inputs.database-lifecycle }}
+        SECRET_FOUND: ${{ inputs.secret-found }}
+        DB_CONNECTION: ${{ inputs.connection-string }}
+        ENVIRONMENT_NAME: ${{ inputs.environment-name }}
+        OUTPUT_DIRECTORY: ${{ inputs.output-directory }}
+        REPOSITORY_STATUS: ${{ steps.repository.outputs.repository_status }}
+        REPOSITORY_REASON: ${{ steps.repository.outputs.repository_reason }}
+        REPO_HAS_MIGRATIONS: ${{ steps.repository.outputs.repo_has_migrations }}
+        REPO_MIGRATION_COUNT: ${{ steps.repository.outputs.repo_migration_count }}
+        REPO_MIGRATIONS_SHA256: ${{ steps.repository.outputs.repo_migrations_sha256 }}
+        LATEST_REPO_MIGRATION: ${{ steps.repository.outputs.latest_repo_migration }}
+        SELECTED_MIGRATION_PROJECT: ${{ steps.repository.outputs.selected_migration_project }}
+        MODEL_SNAPSHOT_EXISTS: ${{ steps.repository.outputs.model_snapshot_exists }}
+        DOTNET_SETUP_OUTCOME: ${{ steps.setup_dotnet.outcome }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/discover-db-scenario.sh"
+
+    - name: Enforce discovery result
+      shell: bash
+      env:
+        CONSISTENCY_STATUS: ${{ steps.discovery.outputs.consistency_status }}
+        CONSISTENCY_REASON: ${{ steps.discovery.outputs.consistency_reason }}
+      run: |
+        set -euo pipefail
+        if [[ "$CONSISTENCY_STATUS" != "CONSISTENT" ]]; then
+          echo "DB discovery finalizó con status=$CONSISTENCY_STATUS reason=$CONSISTENCY_REASON"
+          exit 1
+        fi
+        echo "DB discovery consistente."
