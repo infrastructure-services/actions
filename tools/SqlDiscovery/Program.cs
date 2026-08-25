@@ -122,6 +122,8 @@ try
     var partitionSchemes = countsReader.GetInt64(7);
     var fullTextCatalogs = countsReader.GetInt64(8);
 
+    await countsReader.CloseAsync();
+
     var businessObjectCount = schemaScopedObjects
         + userSchemas
         + userDefinedTypes

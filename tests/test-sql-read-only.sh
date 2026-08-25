@@ -18,6 +18,24 @@ if grep -Eq 'ApplicationIntent[[:space:]]*=[[:space:]]*ApplicationIntent\.ReadOn
   exit 1
 fi
 
+if grep -Eiq 'MultipleActiveResultSets|MultipleActiveResultSets[[:space:]]*=' "$PROGRAM"; then
+  echo "FAIL: el helper no debe depender de MARS para administrar el lifecycle de readers."
+  exit 1
+fi
+
+COUNTS_READER_OPEN_LINE="$(grep -nF 'await using var countsReader = await countsCommand.ExecuteReaderAsync();' "$PROGRAM" | head -n 1 | cut -d: -f1 || true)"
+COUNTS_READER_CLOSE_LINE="$(grep -nF 'await countsReader.CloseAsync();' "$PROGRAM" | head -n 1 | cut -d: -f1 || true)"
+NEXT_CONNECTION_COMMAND_LINE="$(grep -nF 'var businessTableCount = await ScalarLongAsync(connection, businessTableCountSql);' "$PROGRAM" | head -n 1 | cut -d: -f1 || true)"
+
+if ! [[ "$COUNTS_READER_OPEN_LINE" =~ ^[0-9]+$ \
+  && "$COUNTS_READER_CLOSE_LINE" =~ ^[0-9]+$ \
+  && "$NEXT_CONNECTION_COMMAND_LINE" =~ ^[0-9]+$ \
+  && "$COUNTS_READER_OPEN_LINE" -lt "$COUNTS_READER_CLOSE_LINE" \
+  && "$COUNTS_READER_CLOSE_LINE" -lt "$NEXT_CONNECTION_COMMAND_LINE" ]]; then
+  echo "FAIL: countsReader debe cerrarse antes del siguiente command sobre la conexión."
+  exit 1
+fi
+
 if grep -Fq 'DB_CONNECTION' "$REPOSITORY_DISCOVERY"; then
   echo "FAIL: la inspección estática del repositorio recibió la connection string."
   exit 1
