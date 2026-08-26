@@ -8,15 +8,32 @@ public static class QualificationCli
 {
     public static Task<int> RunAsync(string[] args)
     {
+        if (args.Length == 0)
+        {
+            Console.Error.WriteLine("DATABASE_RELEASE_QUALIFICATION_FAILED:INVALID_COMMAND");
+            return Task.FromResult(2);
+        }
+
+        return args[0].ToLowerInvariant() switch
+        {
+            "analyze" => AnalyzeAsync(args.Skip(1).ToArray()),
+            "capture-schema" => CaptureSchemaAsync(args.Skip(1).ToArray()),
+            "compare-schema-captures" => CompareSchemaCapturesAsync(args.Skip(1).ToArray()),
+            _ => InvalidCommand()
+        };
+    }
+
+    private static Task<int> InvalidCommand()
+    {
+        Console.Error.WriteLine("DATABASE_RELEASE_QUALIFICATION_FAILED:INVALID_COMMAND");
+        return Task.FromResult(2);
+    }
+
+    private static Task<int> AnalyzeAsync(string[] args)
+    {
         try
         {
-            if (args.Length == 0 || !string.Equals(args[0], "analyze", StringComparison.OrdinalIgnoreCase))
-            {
-                Console.Error.WriteLine("DATABASE_RELEASE_QUALIFICATION_FAILED:INVALID_COMMAND");
-                return Task.FromResult(2);
-            }
-
-            var options = Parse(args.Skip(1).ToArray());
+            var options = Parse(args);
             var environment = Required(options, "environment").ToUpperInvariant();
             if (!string.Equals(environment, "TEST", StringComparison.Ordinal))
             {
@@ -121,6 +138,117 @@ public static class QualificationCli
         }
     }
 
+    private static async Task<int> CaptureSchemaAsync(string[] args)
+    {
+        string? resultPath = null;
+        try
+        {
+            var options = Parse(args);
+            RequireTestEnvironment(options);
+            resultPath = Path.GetFullPath(Required(options, "result"));
+            var connectionString = Environment.GetEnvironmentVariable("DB_CONNECTION");
+            if (string.IsNullOrWhiteSpace(connectionString))
+            {
+                throw new SchemaCaptureException(SchemaCaptureErrorClassifier.MissingConnection());
+            }
+
+            var source = await new SqlServerSchemaReader().CaptureWithMetadataAsync(connectionString);
+            var artifact = new SchemaCaptureArtifactWriter().WriteCapture(
+                Path.GetFullPath(Required(options, "output")),
+                SafeSegment(options, "capture-id"),
+                source);
+            WriteJsonResult(resultPath, new
+            {
+                status = SchemaCaptureStatuses.Success,
+                diagnosticCode = "SCHEMA_CAPTURE_COMPLETE",
+                artifact.CaptureDirectory,
+                artifact.SchemaHash,
+                artifact.Metadata.DatabaseName,
+                artifact.Metadata.ServerVersion,
+                artifact.Metadata.ServerMajorVersion,
+                artifact.Metadata.SchemaCoverage,
+                artifact.Metadata.MetricsAvailability,
+                artifact.Metadata.MetricsDiagnosticCode,
+                artifact.Metadata.ObjectCounts,
+                artifact.Metadata.UnsupportedSchemaFeatures
+            });
+            Console.WriteLine("Schema capture read-only completado.");
+            return 0;
+        }
+        catch (SchemaCaptureException exception)
+        {
+            WriteFailureResult(resultPath, exception.Failure.Status, exception.Failure.DiagnosticCode);
+            Console.Error.WriteLine($"SCHEMA_CAPTURE_FAILED:{exception.Failure.Status}:{exception.Failure.DiagnosticCode}");
+            return exception.Failure.ExitCode;
+        }
+        catch (Exception exception)
+        {
+            var diagnostic = SchemaCaptureErrorClassifier.SafeDiagnostic(exception);
+            WriteFailureResult(resultPath, SchemaCaptureStatuses.CaptureFailed, diagnostic);
+            Console.Error.WriteLine($"SCHEMA_CAPTURE_FAILED:{SchemaCaptureStatuses.CaptureFailed}:{diagnostic}");
+            return 6;
+        }
+    }
+
+    private static Task<int> CompareSchemaCapturesAsync(string[] args)
+    {
+        string? resultPath = null;
+        try
+        {
+            var options = Parse(args);
+            RequireTestEnvironment(options);
+            resultPath = Path.GetFullPath(Required(options, "result"));
+            var first = SchemaCaptureArtifactWriter.ReadArtifact(RequiredDirectory(options, "capture-1"));
+            var second = SchemaCaptureArtifactWriter.ReadArtifact(RequiredDirectory(options, "capture-2"));
+            var comparison = new SchemaCaptureArtifactWriter().CompareAndWrite(
+                first, second, Path.GetFullPath(Required(options, "output")));
+            WriteJsonResult(resultPath, new
+            {
+                comparison.Status,
+                comparison.DiagnosticCode,
+                comparison.Deterministic,
+                comparison.Capture1SchemaHash,
+                comparison.Capture2SchemaHash
+            });
+            Console.WriteLine($"Schema capture determinism: {comparison.Deterministic.ToString().ToLowerInvariant()}.");
+            return Task.FromResult(comparison.Deterministic ? 0 : 7);
+        }
+        catch (Exception exception)
+        {
+            var diagnostic = SchemaCaptureErrorClassifier.SafeDiagnostic(exception);
+            WriteFailureResult(resultPath, SchemaCaptureStatuses.CaptureFailed, diagnostic);
+            Console.Error.WriteLine($"SCHEMA_CAPTURE_FAILED:{SchemaCaptureStatuses.CaptureFailed}:{diagnostic}");
+            return Task.FromResult(6);
+        }
+    }
+
+    private static void RequireTestEnvironment(IReadOnlyDictionary<string, string> options)
+    {
+        if (!string.Equals(Required(options, "environment"), "TEST", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("ENVIRONMENT_NOT_ALLOWED");
+        }
+    }
+
+    private static void WriteFailureResult(string? path, string status, string diagnosticCode)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+        try
+        {
+            WriteJsonResult(path, new { status, diagnosticCode });
+        }
+        catch
+        {
+            // The primary sanitized failure remains authoritative.
+        }
+    }
+
+    private static void WriteJsonResult<T>(string path, T value)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, JsonSerializer.Serialize(value, JsonDefaults.Indented) + Environment.NewLine);
+    }
+
     private static Dictionary<string, string> Parse(string[] args)
     {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -148,6 +276,12 @@ public static class QualificationCli
     {
         var path = Path.GetFullPath(Required(options, key));
         return File.Exists(path) ? path : throw new FileNotFoundException($"MISSING_{key.ToUpperInvariant()}_FILE");
+    }
+
+    private static string RequiredDirectory(IReadOnlyDictionary<string, string> options, string key)
+    {
+        var path = Path.GetFullPath(Required(options, key));
+        return Directory.Exists(path) ? path : throw new DirectoryNotFoundException($"MISSING_{key.ToUpperInvariant()}_DIRECTORY");
     }
 
     private static string SafeReleaseId(IReadOnlyDictionary<string, string> options)

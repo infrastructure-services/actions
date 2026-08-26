@@ -6,6 +6,17 @@ var tests = new (string Name, Func<Task> Run)[]
     ("fingerprint estable ante distinto orden", FingerprintIgnoresOrder),
     ("diferencia estructural cambia fingerprint", StructuralDifferenceChangesFingerprint),
     ("métricas no contaminan fingerprint", MetricsDoNotChangeFingerprint),
+    ("dos captures equivalentes son determinísticos", EquivalentCapturesAreDeterministic),
+    ("captures estructuralmente distintas se bloquean", DifferentCapturesAreNondeterministic),
+    ("metadata de capture separa métricas no disponibles", UnavailableMetricsDoNotFailCapture),
+    ("discovery bloqueado permite capture pero no rehearsal", BlockedDiscoveryAllowsCaptureOnly),
+    ("falta de metadata se clasifica de forma estable", MetadataVisibilityFailureIsClassified),
+    ("fallo de conexión se clasifica de forma estable", ConnectionFailureIsClassified),
+    ("guard de schema capture admite solo SELECT", SchemaCaptureSqlGuard),
+    ("queries degradan por versión SQL Server", SqlServerVersionQueriesDegradeSafely),
+    ("CLI capture sin conexión falla antes de SQL", CliSchemaCaptureRequiresEnvironmentSecret),
+    ("CLI compare devuelve estado no determinístico", CliSchemaComparisonBlocksMismatch),
+    ("artifacts no conservan valores de identidad", SchemaCaptureArtifactsExcludeIdentityValue),
     ("AST reconoce formatos equivalentes", AstEquivalentFormatting),
     ("AST resuelve aliases UPDATE y DELETE", AstResolvesAliases),
     ("AST reconoce statements requeridos", AstRecognizesRequiredStatements),
@@ -95,6 +106,229 @@ static Task MetricsDoNotChangeFingerprint()
     Equal(
         SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: true, rows: 10)).Sha256,
         SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: true, rows: 99_000_000)).Sha256);
+    return Task.CompletedTask;
+}
+
+static Task EquivalentCapturesAreDeterministic()
+{
+    var root = TempDirectory("schema-capture-equivalent");
+    try
+    {
+        var writer = new SchemaCaptureArtifactWriter();
+        var first = writer.WriteCapture(Path.Combine(root, "capture-1"), "capture-1",
+            CaptureSource(BaseSnapshot(includeIndex: true)));
+        var reordered = BaseSnapshot(includeIndex: true);
+        reordered.Objects.Reverse();
+        var second = writer.WriteCapture(Path.Combine(root, "capture-2"), "capture-2",
+            CaptureSource(reordered));
+        var comparison = writer.CompareAndWrite(first, second, Path.Combine(root, "comparison"));
+        True(comparison.Deterministic);
+        Equal(SchemaCaptureStatuses.Success, comparison.Status);
+        Equal(first.SchemaHash, second.SchemaHash);
+        True(File.Exists(Path.Combine(root, "capture-1", "canonical-schema.json")));
+        True(File.Exists(Path.Combine(root, "capture-2", "metadata.json")));
+        True(File.Exists(Path.Combine(root, "capture-2", "impact-metrics.json")));
+        True(File.Exists(Path.Combine(root, "comparison", "determinism.json")));
+        True(File.Exists(Path.Combine(root, "comparison", "schema-diff.json")));
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task DifferentCapturesAreNondeterministic()
+{
+    var root = TempDirectory("schema-capture-different");
+    try
+    {
+        var writer = new SchemaCaptureArtifactWriter();
+        var first = writer.WriteCapture(Path.Combine(root, "capture-1"), "capture-1",
+            CaptureSource(BaseSnapshot(includeIndex: false)));
+        var second = writer.WriteCapture(Path.Combine(root, "capture-2"), "capture-2",
+            CaptureSource(BaseSnapshot(includeIndex: true)));
+        var comparison = writer.CompareAndWrite(first, second, Path.Combine(root, "comparison"));
+        True(!comparison.Deterministic);
+        Equal(SchemaCaptureStatuses.Nondeterministic, comparison.Status);
+        Equal("CONCURRENT_DDL_OR_NONDETERMINISTIC_CAPTURE", comparison.DiagnosticCode);
+        True(!comparison.SchemaDiff.IsEquivalent);
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task UnavailableMetricsDoNotFailCapture()
+{
+    var root = TempDirectory("schema-capture-no-metrics");
+    try
+    {
+        var snapshot = BaseSnapshot(includeIndex: true, rows: 100);
+        snapshot.ImpactMetrics.Clear();
+        var artifact = new SchemaCaptureArtifactWriter().WriteCapture(root, "capture-1",
+            CaptureSource(snapshot, MetricsAvailability.Unavailable, "SQL_229"));
+        Equal(SchemaCaptureStatuses.Success, artifact.Metadata.Status);
+        Equal(MetricsAvailability.Unavailable, artifact.Metadata.MetricsAvailability);
+        Equal("SQL_229", artifact.Metadata.MetricsDiagnosticCode);
+        Equal(SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: true, rows: 999)).Sha256, artifact.SchemaHash);
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static async Task BlockedDiscoveryAllowsCaptureOnly()
+{
+    True(SchemaCapturePolicy.AllowsReadOnlyCapture("BLOCKED_HISTORY_WITHOUT_REPO"));
+    var database = new FakeRehearsalDatabase();
+    var result = await new RehearsalEngine().QualifyAsync(
+        TestRelease(),
+        new DiscoveryGate { ConsistencyStatus = "BLOCKED", ConsistencyReason = "BLOCKED_HISTORY_WITHOUT_REPO" },
+        Forward(), Rollback(), database);
+    Equal("BLOCKED_DISCOVERY", result.QualificationStatus);
+    Equal(0, database.CaptureCount);
+    Equal(0, database.Executions.Count);
+}
+
+static Task MetadataVisibilityFailureIsClassified()
+{
+    var failure = SchemaCaptureErrorClassifier.Classify(
+        SchemaCapturePhase.MetadataVisibility, new InvalidOperationException("not emitted"));
+    Equal(SchemaCaptureStatuses.MetadataVisibility, failure.Status);
+    Equal("InvalidOperationException", failure.DiagnosticCode);
+    Equal(5, failure.ExitCode);
+    return Task.CompletedTask;
+}
+
+static Task ConnectionFailureIsClassified()
+{
+    var failure = SchemaCaptureErrorClassifier.Classify(
+        SchemaCapturePhase.OpenConnection, new InvalidOperationException("not emitted"));
+    Equal(SchemaCaptureStatuses.DatabaseUnreachable, failure.Status);
+    Equal("InvalidOperationException", failure.DiagnosticCode);
+    Equal(4, failure.ExitCode);
+    return Task.CompletedTask;
+}
+
+static Task SchemaCaptureSqlGuard()
+{
+    SqlServerSchemaReader.EnsureSelectOnlySql("SELECT DB_NAME();");
+    SqlServerSchemaReader.EnsureSelectOnlySql("WITH objects AS (SELECT 1 AS id) SELECT id FROM objects;");
+    foreach (var sql in new[]
+    {
+        "INSERT INTO dbo.T VALUES (1);", "UPDATE dbo.T SET A = 1;", "DELETE FROM dbo.T;",
+        "MERGE dbo.T AS target USING dbo.S AS source ON 1 = 0 WHEN NOT MATCHED THEN INSERT (A) VALUES (1);",
+        "CREATE TABLE dbo.T(A int);", "ALTER TABLE dbo.T ADD B int;", "DROP TABLE dbo.T;",
+        "TRUNCATE TABLE dbo.T;", "EXEC dbo.p;", "EXECUTE dbo.p;"
+    })
+    {
+        var blocked = false;
+        try { SqlServerSchemaReader.EnsureSelectOnlySql(sql); }
+        catch (InvalidOperationException) { blocked = true; }
+        True(blocked);
+    }
+    return Task.CompletedTask;
+}
+
+static Task SqlServerVersionQueriesDegradeSafely()
+{
+    var type = typeof(SqlServerSchemaReader);
+    var tablesMethod = type.GetMethod("TablesSql", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
+        ?? throw new InvalidOperationException("TablesSql not found.");
+    var featuresMethod = type.GetMethod("UnsupportedSchemaFeaturesSql", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
+        ?? throw new InvalidOperationException("UnsupportedSchemaFeaturesSql not found.");
+    string Tables(int version) => (string)(tablesMethod.Invoke(null, [version]) ?? "");
+    string Features(int version) => (string)(featuresMethod.Invoke(null, [version]) ?? "");
+
+    var version10Tables = Tables(10);
+    var version10Features = Features(10);
+    True(!version10Tables.Contains("temporal_type", StringComparison.Ordinal));
+    True(!version10Tables.Contains("is_memory_optimized", StringComparison.Ordinal));
+    True(!version10Features.Contains("sys.sequences", StringComparison.Ordinal));
+    True(!version10Features.Contains("temporal_type", StringComparison.Ordinal));
+
+    True(Tables(12).Contains("is_memory_optimized", StringComparison.Ordinal));
+    True(!Tables(12).Contains("temporal_type_desc", StringComparison.Ordinal));
+    True(Features(12).Contains("sys.sequences", StringComparison.Ordinal));
+    True(Features(13).Contains("temporal_type", StringComparison.Ordinal));
+    True(Features(14).Contains("is_node", StringComparison.Ordinal));
+    True(Features(16).Contains("ledger_type", StringComparison.Ordinal));
+
+    foreach (var sql in new[] { version10Tables, version10Features, Tables(12), Features(12), Tables(13), Features(13), Features(14), Features(16) })
+    {
+        SqlServerSchemaReader.EnsureSelectOnlySql(sql);
+    }
+    foreach (var field in type.GetFields(System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
+        .Where(field => field.FieldType == typeof(string) && field.Name.EndsWith("Sql", StringComparison.Ordinal)))
+    {
+        SqlServerSchemaReader.EnsureSelectOnlySql((string)(field.GetValue(null) ?? ""));
+    }
+    return Task.CompletedTask;
+}
+
+static async Task CliSchemaCaptureRequiresEnvironmentSecret()
+{
+    var root = TempDirectory("schema-capture-cli-missing-connection");
+    var previous = Environment.GetEnvironmentVariable("DB_CONNECTION");
+    try
+    {
+        Environment.SetEnvironmentVariable("DB_CONNECTION", null);
+        var resultPath = Path.Combine(root, "result.json");
+        var exit = await QualificationCli.RunAsync([
+            "capture-schema", "--environment", "TEST", "--capture-id", "capture-1",
+            "--output", Path.Combine(root, "capture-1"), "--result", resultPath
+        ]);
+        Equal(4, exit);
+        var result = JsonDocument.Parse(File.ReadAllText(resultPath));
+        Equal(SchemaCaptureStatuses.DatabaseUnreachable, result.RootElement.GetProperty("status").GetString());
+        Equal("DB_CONNECTION_REQUIRED", result.RootElement.GetProperty("diagnosticCode").GetString());
+        True(!Directory.Exists(Path.Combine(root, "capture-1")));
+    }
+    finally
+    {
+        Environment.SetEnvironmentVariable("DB_CONNECTION", previous);
+        DeleteTemp(root);
+    }
+}
+
+static async Task CliSchemaComparisonBlocksMismatch()
+{
+    var root = TempDirectory("schema-capture-cli-compare");
+    try
+    {
+        var writer = new SchemaCaptureArtifactWriter();
+        writer.WriteCapture(Path.Combine(root, "capture-1"), "capture-1", CaptureSource(BaseSnapshot(includeIndex: false)));
+        writer.WriteCapture(Path.Combine(root, "capture-2"), "capture-2", CaptureSource(BaseSnapshot(includeIndex: true)));
+        var resultPath = Path.Combine(root, "comparison-result.json");
+        var exit = await QualificationCli.RunAsync([
+            "compare-schema-captures", "--environment", "TEST",
+            "--capture-1", Path.Combine(root, "capture-1"), "--capture-2", Path.Combine(root, "capture-2"),
+            "--output", Path.Combine(root, "comparison"), "--result", resultPath
+        ]);
+        Equal(7, exit);
+        var result = JsonDocument.Parse(File.ReadAllText(resultPath));
+        Equal(SchemaCaptureStatuses.Nondeterministic, result.RootElement.GetProperty("status").GetString());
+        True(!result.RootElement.GetProperty("deterministic").GetBoolean());
+    }
+    finally { DeleteTemp(root); }
+}
+
+static Task SchemaCaptureArtifactsExcludeIdentityValue()
+{
+    var root = TempDirectory("schema-capture-no-identity-value");
+    const string sentinel = "Server=hidden;User Id=hidden;Password=never-persist-this";
+    var previous = Environment.GetEnvironmentVariable("DB_CONNECTION");
+    try
+    {
+        Environment.SetEnvironmentVariable("DB_CONNECTION", sentinel);
+        var artifact = new SchemaCaptureArtifactWriter().WriteCapture(
+            root, "capture-1", CaptureSource(BaseSnapshot(includeIndex: true)));
+        Equal("INSPECTION", artifact.Metadata.IdentityPurpose);
+        var evidence = string.Join("\n", Directory.GetFiles(root).Select(File.ReadAllText));
+        True(!evidence.Contains(sentinel, StringComparison.Ordinal));
+        True(!evidence.Contains("never-persist-this", StringComparison.Ordinal));
+    }
+    finally
+    {
+        Environment.SetEnvironmentVariable("DB_CONNECTION", previous);
+        DeleteTemp(root);
+    }
     return Task.CompletedTask;
 }
 
@@ -939,6 +1173,19 @@ static SchemaSnapshot BaseSnapshot(bool includeIndex, bool nullable = false, lon
     }
     return new SchemaSnapshot { Objects = objects, ImpactMetrics = [Metric(rows, 1, indexMb, includeIndex)] };
 }
+
+static SchemaCaptureSourceResult CaptureSource(
+    SchemaSnapshot snapshot,
+    MetricsAvailability metricsAvailability = MetricsAvailability.Complete,
+    string? metricsDiagnosticCode = null) => new()
+{
+    Snapshot = snapshot,
+    DatabaseName = "DatabaseForTests",
+    ServerVersion = "16.0.1000.6",
+    ServerMajorVersion = 16,
+    MetricsAvailability = metricsAvailability,
+    MetricsDiagnosticCode = metricsDiagnosticCode
+};
 
 static SchemaSnapshot AddCommentSnapshot(bool includeIndex, string type)
 {

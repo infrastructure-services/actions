@@ -7,24 +7,58 @@ public sealed class SqlServerSchemaReader
 {
     private const int CommandTimeoutSeconds = 60;
 
-    public async Task<SchemaSnapshot> CaptureAsync(string connectionString, CancellationToken cancellationToken = default)
+    public async Task<SchemaSnapshot> CaptureAsync(string connectionString, CancellationToken cancellationToken = default) =>
+        (await CaptureWithMetadataAsync(connectionString, cancellationToken)).Snapshot;
+
+    public async Task<SchemaCaptureSourceResult> CaptureWithMetadataAsync(
+        string connectionString,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(connectionString))
         {
-            throw new ArgumentException("A SQL Server connection string is required.", nameof(connectionString));
+            throw new SchemaCaptureException(SchemaCaptureErrorClassifier.MissingConnection());
         }
 
-        var builder = new SqlConnectionStringBuilder(connectionString)
+        SqlConnectionStringBuilder builder;
+        try
         {
-            ApplicationName = "cicd-database-release-qualification-v1"
-        };
+            builder = new SqlConnectionStringBuilder(connectionString)
+            {
+                ApplicationName = "cicd-database-schema-capture-v1",
+                ApplicationIntent = ApplicationIntent.ReadWrite
+            };
+        }
+        catch (Exception exception)
+        {
+            throw new SchemaCaptureException(
+                SchemaCaptureErrorClassifier.Classify(SchemaCapturePhase.OpenConnection, exception), exception);
+        }
 
         await using var connection = new SqlConnection(builder.ConnectionString);
-        await connection.OpenAsync(cancellationToken);
-        await EnsureMetadataVisibilityAsync(connection, cancellationToken);
+        try
+        {
+            await connection.OpenAsync(cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            throw new SchemaCaptureException(
+                SchemaCaptureErrorClassifier.Classify(SchemaCapturePhase.OpenConnection, exception), exception);
+        }
+
+        try
+        {
+            await EnsureMetadataVisibilityAsync(connection, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            throw new SchemaCaptureException(
+                SchemaCaptureErrorClassifier.Classify(SchemaCapturePhase.MetadataVisibility, exception), exception);
+        }
+
+        var server = await ReadServerMetadataAsync(connection, cancellationToken);
         var snapshot = new SchemaSnapshot();
 
-        await ReadAsync(connection, SchemasSql, reader => snapshot.Objects.Add(new SchemaObject
+        await ReadSchemaAsync(connection, SchemasSql, reader => snapshot.Objects.Add(new SchemaObject
         {
             Kind = "schema",
             Schema = Text(reader, 0),
@@ -32,7 +66,7 @@ public sealed class SqlServerSchemaReader
             Properties = Properties(("owner", Text(reader, 1)))
         }), cancellationToken);
 
-        await ReadAsync(connection, TablesSql, reader => snapshot.Objects.Add(new SchemaObject
+        await ReadSchemaAsync(connection, TablesSql(server.MajorVersion), reader => snapshot.Objects.Add(new SchemaObject
         {
             Kind = "table",
             Schema = Text(reader, 0),
@@ -45,7 +79,7 @@ public sealed class SqlServerSchemaReader
                 ("memoryOptimized", Boolean(reader, 6)))
         }), cancellationToken);
 
-        await ReadAsync(connection, ColumnsSql, reader => snapshot.Objects.Add(new SchemaObject
+        await ReadSchemaAsync(connection, ColumnsSql, reader => snapshot.Objects.Add(new SchemaObject
         {
             Kind = "column",
             Schema = Text(reader, 0),
@@ -70,7 +104,7 @@ public sealed class SqlServerSchemaReader
                 ("rowGuid", Boolean(reader, 18)))
         }), cancellationToken);
 
-        await ReadAsync(connection, DefaultsSql, reader => snapshot.Objects.Add(new SchemaObject
+        await ReadSchemaAsync(connection, DefaultsSql, reader => snapshot.Objects.Add(new SchemaObject
         {
             Kind = "default-constraint",
             Schema = Text(reader, 0),
@@ -79,7 +113,7 @@ public sealed class SqlServerSchemaReader
             Properties = Properties(("column", Text(reader, 3)), ("definitionSha256", DefinitionHash(Text(reader, 4))))
         }), cancellationToken);
 
-        await ReadAsync(connection, KeyConstraintsSql, reader => snapshot.Objects.Add(new SchemaObject
+        await ReadSchemaAsync(connection, KeyConstraintsSql, reader => snapshot.Objects.Add(new SchemaObject
         {
             Kind = "key-constraint-column",
             Schema = Text(reader, 0),
@@ -93,7 +127,7 @@ public sealed class SqlServerSchemaReader
                 ("descending", Boolean(reader, 6)))
         }), cancellationToken);
 
-        await ReadAsync(connection, ChecksSql, reader => snapshot.Objects.Add(new SchemaObject
+        await ReadSchemaAsync(connection, ChecksSql, reader => snapshot.Objects.Add(new SchemaObject
         {
             Kind = "check-constraint",
             Schema = Text(reader, 0),
@@ -107,7 +141,7 @@ public sealed class SqlServerSchemaReader
                 ("notForReplication", Boolean(reader, 7)))
         }), cancellationToken);
 
-        await ReadAsync(connection, ForeignKeysSql, reader => snapshot.Objects.Add(new SchemaObject
+        await ReadSchemaAsync(connection, ForeignKeysSql, reader => snapshot.Objects.Add(new SchemaObject
         {
             Kind = "foreign-key-column",
             Schema = Text(reader, 0),
@@ -126,7 +160,7 @@ public sealed class SqlServerSchemaReader
                 ("notTrusted", Boolean(reader, 11)))
         }), cancellationToken);
 
-        await ReadAsync(connection, IndexesSql, reader => snapshot.Objects.Add(new SchemaObject
+        await ReadSchemaAsync(connection, IndexesSql, reader => snapshot.Objects.Add(new SchemaObject
         {
             Kind = "index-column",
             Schema = Text(reader, 0),
@@ -153,7 +187,7 @@ public sealed class SqlServerSchemaReader
                 ("dataSpaceType", Text(reader, 19)))
         }), cancellationToken);
 
-        await ReadAsync(connection, TriggersSql, reader =>
+        await ReadSchemaAsync(connection, TriggersSql, reader =>
         {
             var definition = Text(reader, 6);
             if (string.IsNullOrWhiteSpace(definition))
@@ -174,7 +208,7 @@ public sealed class SqlServerSchemaReader
             });
         }, cancellationToken);
 
-        await ReadAsync(connection, ViewsSql, reader =>
+        await ReadSchemaAsync(connection, ViewsSql, reader =>
         {
             var definition = Text(reader, 3);
             if (string.IsNullOrWhiteSpace(definition))
@@ -190,24 +224,25 @@ public sealed class SqlServerSchemaReader
             });
         }, cancellationToken);
 
-        await ReadAsync(connection, DependenciesSql, reader => snapshot.Objects.Add(new SchemaObject
+        await ReadSchemaAsync(connection, DependenciesSql, reader => snapshot.Objects.Add(new SchemaObject
         {
             Kind = "schema-dependency",
             Schema = Text(reader, 0),
             Parent = Text(reader, 1),
-            Name = $"{Text(reader, 2)}:{Text(reader, 5)}:{Text(reader, 6)}:{Text(reader, 7)}",
+            Name = $"{Text(reader, 2)}:{Text(reader, 6)}:{Text(reader, 7)}:{Text(reader, 8)}",
             Properties = Properties(
                 ("referencingType", Text(reader, 2)),
                 ("referencingColumn", Text(reader, 3)),
                 ("referencedServer", Text(reader, 4)),
-                ("referencedSchema", Text(reader, 5)),
-                ("referencedEntity", Text(reader, 6)),
-                ("referencedColumn", Text(reader, 7)),
-                ("schemaBound", Boolean(reader, 8)),
-                ("callerDependent", Boolean(reader, 9)))
+                ("referencedDatabase", Text(reader, 5)),
+                ("referencedSchema", Text(reader, 6)),
+                ("referencedEntity", Text(reader, 7)),
+                ("referencedColumn", Text(reader, 8)),
+                ("schemaBound", Boolean(reader, 9)),
+                ("callerDependent", Boolean(reader, 10)))
         }), cancellationToken);
 
-        await ReadAsync(connection, UnsupportedSql, reader =>
+        await ReadSchemaAsync(connection, UnsupportedSql, reader =>
         {
             var category = Text(reader, 2);
             snapshot.UnsupportedSchemaFeatures.Add(category);
@@ -220,7 +255,7 @@ public sealed class SqlServerSchemaReader
             });
         }, cancellationToken);
 
-        await ReadAsync(connection, UnsupportedSchemaFeaturesSql, reader =>
+        await ReadSchemaAsync(connection, UnsupportedSchemaFeaturesSql(server.MajorVersion), reader =>
         {
             var feature = Text(reader, 2);
             snapshot.UnsupportedSchemaFeatures.Add(feature);
@@ -233,6 +268,8 @@ public sealed class SqlServerSchemaReader
             });
         }, cancellationToken);
 
+        var metricsAvailability = MetricsAvailability.Complete;
+        string? metricsDiagnosticCode = null;
         try
         {
             await ReadAsync(connection, ImpactSql, reader => snapshot.ImpactMetrics.Add(new TableImpactMetric
@@ -249,22 +286,75 @@ public sealed class SqlServerSchemaReader
                 TriggerCount = Int32(reader, 9),
                 DependencyCount = Int32(reader, 10)
             }), cancellationToken);
+            var tableCount = snapshot.Objects.Count(item => string.Equals(item.Kind, "table", StringComparison.Ordinal));
+            if (snapshot.ImpactMetrics.Count < tableCount)
+            {
+                metricsAvailability = snapshot.ImpactMetrics.Count == 0
+                    ? MetricsAvailability.Unavailable
+                    : MetricsAvailability.Partial;
+                metricsDiagnosticCode = "IMPACT_METRICS_INCOMPLETE";
+            }
         }
-        catch (SqlException exception) when (exception.Number == 229)
+        catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            snapshot.UnsupportedSchemaFeatures.Add("impact-metrics:permission-denied");
+            metricsAvailability = snapshot.ImpactMetrics.Count == 0
+                ? MetricsAvailability.Unavailable
+                : MetricsAvailability.Partial;
+            metricsDiagnosticCode = SchemaCaptureErrorClassifier.SafeDiagnostic(exception);
         }
 
         var unsupportedFeatures = snapshot.UnsupportedSchemaFeatures.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
         snapshot.UnsupportedSchemaFeatures.Clear();
         snapshot.UnsupportedSchemaFeatures.AddRange(unsupportedFeatures);
-        return snapshot;
+        return new SchemaCaptureSourceResult
+        {
+            Snapshot = snapshot,
+            DatabaseName = server.DatabaseName,
+            ServerVersion = server.ServerVersion,
+            ServerMajorVersion = server.MajorVersion,
+            MetricsAvailability = metricsAvailability,
+            MetricsDiagnosticCode = metricsDiagnosticCode
+        };
+    }
+
+    private static async Task<(string DatabaseName, string ServerVersion, int MajorVersion)> ReadServerMetadataAsync(
+        SqlConnection connection,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var values = new List<(string DatabaseName, string ServerVersion)>();
+            await ReadAsync(connection, ServerMetadataSql, reader =>
+                values.Add((Text(reader, 0), Text(reader, 1))), cancellationToken);
+            if (values.Count != 1 || string.IsNullOrWhiteSpace(values[0].DatabaseName)
+                || string.IsNullOrWhiteSpace(values[0].ServerVersion))
+            {
+                throw new InvalidOperationException("SERVER_METADATA_UNAVAILABLE");
+            }
+
+            var versionToken = values[0].ServerVersion.Split('.', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+            if (!int.TryParse(versionToken, NumberStyles.None, CultureInfo.InvariantCulture, out var majorVersion))
+            {
+                throw new InvalidOperationException("SERVER_VERSION_INVALID");
+            }
+            return (values[0].DatabaseName, values[0].ServerVersion, majorVersion);
+        }
+        catch (SchemaCaptureException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new SchemaCaptureException(
+                SchemaCaptureErrorClassifier.Classify(SchemaCapturePhase.SchemaMetadata, exception), exception);
+        }
     }
 
     private static async Task EnsureMetadataVisibilityAsync(SqlConnection connection, CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
         command.CommandText = "SELECT HAS_PERMS_BY_NAME(DB_NAME(), N'DATABASE', N'VIEW DEFINITION');";
+        EnsureSelectOnlySql(command.CommandText);
         command.CommandTimeout = CommandTimeoutSeconds;
         var value = await command.ExecuteScalarAsync(cancellationToken);
         if (value is null || value is DBNull || Convert.ToInt32(value, CultureInfo.InvariantCulture) != 1)
@@ -273,8 +363,30 @@ public sealed class SqlServerSchemaReader
         }
     }
 
+    private static async Task ReadSchemaAsync(
+        SqlConnection connection,
+        string sql,
+        Action<SqlDataReader> consume,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ReadAsync(connection, sql, consume, cancellationToken);
+        }
+        catch (SchemaCaptureException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new SchemaCaptureException(
+                SchemaCaptureErrorClassifier.Classify(SchemaCapturePhase.SchemaMetadata, exception), exception);
+        }
+    }
+
     private static async Task ReadAsync(SqlConnection connection, string sql, Action<SqlDataReader> consume, CancellationToken cancellationToken)
     {
+        EnsureSelectOnlySql(sql);
         await using var command = connection.CreateCommand();
         command.CommandText = sql;
         command.CommandTimeout = CommandTimeoutSeconds;
@@ -284,6 +396,9 @@ public sealed class SqlServerSchemaReader
             consume(reader);
         }
     }
+
+    public static void EnsureSelectOnlySql(string sql)
+        => SchemaCaptureSqlGuard.EnsureSelectOnly(sql);
 
     private static SortedDictionary<string, string> Properties(params (string Key, string Value)[] values) =>
         new(values.ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal), StringComparer.Ordinal);
@@ -298,6 +413,10 @@ public sealed class SqlServerSchemaReader
 
     private const string UserSchemaFilter = "s.name NOT IN (N'sys', N'INFORMATION_SCHEMA', N'cicd') AND NOT EXISTS (SELECT 1 FROM sys.database_principals AS dp WHERE dp.principal_id = s.principal_id AND dp.type = N'R' AND dp.is_fixed_role = 1)";
 
+    private const string ServerMetadataSql = """
+        SELECT DB_NAME(), CONVERT(nvarchar(128), SERVERPROPERTY(N'ProductVersion'));
+        """;
+
     private static readonly string SchemasSql = $"""
         SELECT s.name, USER_NAME(s.principal_id)
         FROM sys.schemas AS s
@@ -305,16 +424,35 @@ public sealed class SqlServerSchemaReader
         ORDER BY s.name;
         """;
 
-    private static readonly string TablesSql = $"""
-        SELECT s.name, t.name, t.temporal_type_desc,
-               hs.name, ht.name, t.durability_desc, t.is_memory_optimized
-        FROM sys.tables AS t
-        INNER JOIN sys.schemas AS s ON s.schema_id = t.schema_id
-        LEFT JOIN sys.tables AS ht ON ht.object_id = t.history_table_id
-        LEFT JOIN sys.schemas AS hs ON hs.schema_id = ht.schema_id
-        WHERE t.is_ms_shipped = 0 AND {UserSchemaFilter}
-        ORDER BY s.name, t.name;
-        """;
+    private static string TablesSql(int serverMajorVersion) => serverMajorVersion switch
+    {
+        >= 13 => $"""
+            SELECT s.name, t.name, t.temporal_type_desc,
+                   hs.name, ht.name, t.durability_desc, t.is_memory_optimized
+            FROM sys.tables AS t
+            INNER JOIN sys.schemas AS s ON s.schema_id = t.schema_id
+            LEFT JOIN sys.tables AS ht ON ht.object_id = t.history_table_id
+            LEFT JOIN sys.schemas AS hs ON hs.schema_id = ht.schema_id
+            WHERE t.is_ms_shipped = 0 AND {UserSchemaFilter}
+            ORDER BY s.name, t.name;
+            """,
+        >= 12 => $"""
+            SELECT s.name, t.name, N'NON_TEMPORAL_TABLE', NULL, NULL,
+                   t.durability_desc, t.is_memory_optimized
+            FROM sys.tables AS t
+            INNER JOIN sys.schemas AS s ON s.schema_id = t.schema_id
+            WHERE t.is_ms_shipped = 0 AND {UserSchemaFilter}
+            ORDER BY s.name, t.name;
+            """,
+        _ => $"""
+            SELECT s.name, t.name, N'NON_TEMPORAL_TABLE', NULL, NULL,
+                   N'SCHEMA_AND_DATA', CONVERT(bit, 0)
+            FROM sys.tables AS t
+            INNER JOIN sys.schemas AS s ON s.schema_id = t.schema_id
+            WHERE t.is_ms_shipped = 0 AND {UserSchemaFilter}
+            ORDER BY s.name, t.name;
+            """
+    };
 
     private static readonly string ColumnsSql = $"""
         SELECT s.name, t.name, c.name, c.column_id, ts.name, ty.name,
@@ -420,14 +558,15 @@ public sealed class SqlServerSchemaReader
 
     private static readonly string DependenciesSql = $"""
         SELECT s.name, o.name, o.type_desc, c.name, d.referenced_server_name,
-               d.referenced_schema_name, d.referenced_entity_name, d.referenced_minor_name,
+               d.referenced_database_name, d.referenced_schema_name, d.referenced_entity_name, rc.name,
                d.is_schema_bound_reference, d.is_caller_dependent
         FROM sys.sql_expression_dependencies AS d
         INNER JOIN sys.objects AS o ON o.object_id = d.referencing_id
         INNER JOIN sys.schemas AS s ON s.schema_id = o.schema_id
         LEFT JOIN sys.columns AS c ON c.object_id = o.object_id AND c.column_id = d.referencing_minor_id
+        LEFT JOIN sys.columns AS rc ON rc.object_id = d.referenced_id AND rc.column_id = d.referenced_minor_id
         WHERE o.is_ms_shipped = 0 AND {UserSchemaFilter}
-        ORDER BY s.name, o.name, d.referenced_schema_name, d.referenced_entity_name, d.referenced_minor_name;
+        ORDER BY s.name, o.name, d.referenced_database_name, d.referenced_schema_name, d.referenced_entity_name, rc.name;
         """;
 
     private static readonly string UnsupportedSql = $"""
@@ -464,70 +603,108 @@ public sealed class SqlServerSchemaReader
         ORDER BY s.name, t.name;
         """;
 
-    private static readonly string UnsupportedSchemaFeaturesSql = $"""
-        SELECT feature_schema, feature_object, feature_name
-        FROM (
-            SELECT s.name AS feature_schema, seq.name AS feature_object, N'sequence-definition' AS feature_name
-            FROM sys.sequences AS seq
-            INNER JOIN sys.schemas AS s ON s.schema_id = seq.schema_id
-            WHERE {UserSchemaFilter}
-            UNION ALL
-            SELECT s.name, sn.name, N'synonym-target'
+    private static string UnsupportedSchemaFeaturesSql(int serverMajorVersion)
+    {
+        var queries = new List<string>();
+        if (serverMajorVersion >= 11)
+        {
+            queries.Add($"""
+                SELECT s.name AS feature_schema, seq.name AS feature_object, N'sequence-definition' AS feature_name
+                FROM sys.sequences AS seq
+                INNER JOIN sys.schemas AS s ON s.schema_id = seq.schema_id
+                WHERE {UserSchemaFilter}
+                """);
+        }
+        queries.Add($"""
+            SELECT s.name AS feature_schema, sn.name AS feature_object, N'synonym-target' AS feature_name
             FROM sys.synonyms AS sn
             INNER JOIN sys.schemas AS s ON s.schema_id = sn.schema_id
             WHERE {UserSchemaFilter}
-            UNION ALL
-            SELECT s.name, ty.name, N'user-defined-type-definition'
+            """);
+        queries.Add($"""
+            SELECT s.name AS feature_schema, ty.name AS feature_object, N'user-defined-type-definition' AS feature_name
             FROM sys.types AS ty
             INNER JOIN sys.schemas AS s ON s.schema_id = ty.schema_id
             WHERE ty.is_user_defined = 1 AND {UserSchemaFilter}
-            UNION ALL
-            SELECT N'', pf.name, N'partition-function-definition'
+            """);
+        queries.Add("""
+            SELECT N'' AS feature_schema, pf.name AS feature_object, N'partition-function-definition' AS feature_name
             FROM sys.partition_functions AS pf
-            UNION ALL
-            SELECT N'', ps.name, N'partition-scheme-mapping'
+            """);
+        queries.Add("""
+            SELECT N'' AS feature_schema, ps.name AS feature_object, N'partition-scheme-mapping' AS feature_name
             FROM sys.partition_schemes AS ps
-            UNION ALL
-            SELECT DISTINCT s.name, t.name, N'data-compression'
+            """);
+        queries.Add($"""
+            SELECT DISTINCT s.name AS feature_schema, t.name AS feature_object, N'data-compression' AS feature_name
             FROM sys.partitions AS p
             INNER JOIN sys.tables AS t ON t.object_id = p.object_id
             INNER JOIN sys.schemas AS s ON s.schema_id = t.schema_id
             WHERE p.data_compression > 0 AND t.is_ms_shipped = 0 AND {UserSchemaFilter}
-            UNION ALL
-            SELECT s.name, t.name, N'temporal-table-extended-metadata'
-            FROM sys.tables AS t
-            INNER JOIN sys.schemas AS s ON s.schema_id = t.schema_id
-            WHERE t.temporal_type > 0 AND t.is_ms_shipped = 0 AND {UserSchemaFilter}
-            UNION ALL
-            SELECT s.name, t.name + N'.' + i.name,
+            """);
+        if (serverMajorVersion >= 13)
+        {
+            queries.Add($"""
+                SELECT s.name AS feature_schema, t.name AS feature_object, N'temporal-table-extended-metadata' AS feature_name
+                FROM sys.tables AS t
+                INNER JOIN sys.schemas AS s ON s.schema_id = t.schema_id
+                WHERE t.temporal_type > 0 AND t.is_ms_shipped = 0 AND {UserSchemaFilter}
+                """);
+        }
+        if (serverMajorVersion >= 14)
+        {
+            queries.Add($"""
+                SELECT s.name AS feature_schema, t.name AS feature_object, N'graph-table-extended-metadata' AS feature_name
+                FROM sys.tables AS t
+                INNER JOIN sys.schemas AS s ON s.schema_id = t.schema_id
+                WHERE (t.is_node = 1 OR t.is_edge = 1) AND t.is_ms_shipped = 0 AND {UserSchemaFilter}
+                """);
+        }
+        if (serverMajorVersion >= 16)
+        {
+            queries.Add($"""
+                SELECT s.name AS feature_schema, t.name AS feature_object, N'ledger-table-extended-metadata' AS feature_name
+                FROM sys.tables AS t
+                INNER JOIN sys.schemas AS s ON s.schema_id = t.schema_id
+                WHERE t.ledger_type > 0 AND t.is_ms_shipped = 0 AND {UserSchemaFilter}
+                """);
+        }
+        queries.Add($"""
+            SELECT s.name AS feature_schema, t.name + N'.' + i.name AS feature_object,
                    CASE i.type WHEN 3 THEN N'xml-index-options'
                                WHEN 4 THEN N'spatial-index-options'
                                WHEN 5 THEN N'columnstore-index-options'
                                WHEN 6 THEN N'columnstore-index-options'
-                               ELSE N'special-index-options' END
+                               ELSE N'special-index-options' END AS feature_name
             FROM sys.indexes AS i
             INNER JOIN sys.tables AS t ON t.object_id = i.object_id
             INNER JOIN sys.schemas AS s ON s.schema_id = t.schema_id
             WHERE i.type NOT IN (0, 1, 2) AND t.is_ms_shipped = 0 AND {UserSchemaFilter}
-            UNION ALL
-            SELECT s.name, v.name, N'indexed-view-index-options'
+            """);
+        queries.Add($"""
+            SELECT s.name AS feature_schema, v.name AS feature_object, N'indexed-view-index-options' AS feature_name
             FROM sys.views AS v
             INNER JOIN sys.schemas AS s ON s.schema_id = v.schema_id
             WHERE EXISTS (SELECT 1 FROM sys.indexes AS i WHERE i.object_id = v.object_id AND i.index_id > 0)
               AND v.is_ms_shipped = 0 AND {UserSchemaFilter}
-            UNION ALL
-            SELECT s.name, t.name, N'full-text-index-definition'
+            """);
+        queries.Add($"""
+            SELECT s.name AS feature_schema, t.name AS feature_object, N'full-text-index-definition' AS feature_name
             FROM sys.fulltext_indexes AS fi
             INNER JOIN sys.tables AS t ON t.object_id = fi.object_id
             INNER JOIN sys.schemas AS s ON s.schema_id = t.schema_id
             WHERE t.is_ms_shipped = 0 AND {UserSchemaFilter}
-            UNION ALL
-            SELECT s.name, o.name + N'.' + st.name, N'manually-created-statistics'
+            """);
+        queries.Add($"""
+            SELECT s.name AS feature_schema, o.name + N'.' + st.name AS feature_object, N'manually-created-statistics' AS feature_name
             FROM sys.stats AS st
             INNER JOIN sys.objects AS o ON o.object_id = st.object_id
             INNER JOIN sys.schemas AS s ON s.schema_id = o.schema_id
             WHERE st.user_created = 1 AND o.is_ms_shipped = 0 AND {UserSchemaFilter}
-        ) AS features
-        ORDER BY feature_schema, feature_object, feature_name;
-        """;
+            """);
+
+        return "SELECT feature_schema, feature_object, feature_name\nFROM (\n"
+            + string.Join("\nUNION ALL\n", queries)
+            + "\n) AS features\nORDER BY feature_schema, feature_object, feature_name;";
+    }
 }

@@ -1,0 +1,59 @@
+name: SQL Server Schema Capture (Read Only)
+description: Captura dos fingerprints estructurales SELECT-only y verifica su determinismo en TEST
+
+inputs:
+  connection-string:
+    description: Connection string de una identidad SQL dedicada a inspección least-privilege; nunca Owner/deployment. Solo se entrega al CLI mediante DB_CONNECTION.
+    required: true
+  environment-name:
+    description: Ambiente permitido para este primer piloto.
+    required: false
+    default: TEST
+  output-directory:
+    description: Directorio raíz del artifact de schema capture.
+    required: false
+    default: artifacts/db-schema-capture/TEST
+  dotnet-version:
+    description: Versión del SDK usada por el engine existente.
+    required: false
+    default: 10.0.x
+
+outputs:
+  status:
+    description: SUCCESS o estado FAIL sanitizado.
+    value: ${{ steps.capture.outputs.status }}
+  deterministic:
+    description: true únicamente cuando ambos fingerprints coinciden.
+    value: ${{ steps.capture.outputs.deterministic }}
+  capture-1-hash:
+    description: SHA256 estructural de la primera captura.
+    value: ${{ steps.capture.outputs.capture_1_hash }}
+  capture-2-hash:
+    description: SHA256 estructural de la segunda captura.
+    value: ${{ steps.capture.outputs.capture_2_hash }}
+  schema-coverage:
+    description: COMPLETE o PARTIAL según features estructurales no modeladas.
+    value: ${{ steps.capture.outputs.schema_coverage }}
+  metrics-availability:
+    description: COMPLETE, PARTIAL o UNAVAILABLE; no integra el fingerprint.
+    value: ${{ steps.capture.outputs.metrics_availability }}
+  artifact-directory:
+    description: Directorio local que debe publicar el workflow.
+    value: ${{ steps.capture.outputs.artifact_directory }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup .NET for schema capture engine
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: ${{ inputs.dotnet-version }}
+
+    - name: Capture SQL Server schema twice (read only)
+      id: capture
+      shell: bash
+      env:
+        DB_CONNECTION: ${{ inputs.connection-string }}
+        ENVIRONMENT_NAME: ${{ inputs.environment-name }}
+        OUTPUT_DIRECTORY: ${{ inputs.output-directory }}
+      run: bash "$GITHUB_ACTION_PATH/run-schema-capture.sh"
