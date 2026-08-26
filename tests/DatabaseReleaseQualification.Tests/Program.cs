@@ -139,7 +139,32 @@ var tests = new (string Name, Func<Task> Run)[]
     ("NEW sin initial qualified release no queda managed", NewWithoutQualifiedInitialReleaseIsNotManaged),
     ("CICDV3 permanece bloqueada por lineage", Cicdv3OnboardingRemainsBlocked),
     ("rehearsal exige onboarding managed", RehearsalRequiresManagedOnboarding),
-    ("onboarding no decide risk ni aprobación DBA", OnboardingDoesNotDecideRiskApproval)
+    ("onboarding no decide risk ni aprobación DBA", OnboardingDoesNotDecideRiskApproval),
+    ("bootstrap Existing crea Certified State 001", BootstrapExistingCreatesFirstCertifiedState),
+    ("NEW controlled crea Certified State 001 por qualified release", NewControlledCreatesFirstCertifiedState),
+    ("Certified State 002 referencia correctamente 001", DerivedSecondStateReferencesFirst),
+    ("Certified State 003 referencia correctamente 002", DerivedThirdStateReferencesSecond),
+    ("previous certification incorrecta bloquea append", WrongPreviousCertificationBlocksAppend),
+    ("previous evidence hash incorrecto bloquea append", WrongPreviousEvidenceHashBlocksAppend),
+    ("evidencia semántica cambia certification evidence hash", SemanticEvidenceChangesCertificationHash),
+    ("locator operacional no cambia certification evidence hash", EvidenceLocatorDoesNotChangeCertificationHash),
+    ("hash de evidencia cambia identidad de certificación", EvidenceHashChangeAffectsCertificationIdentity),
+    ("canonical schema movido conserva certificación semántica", CanonicalSchemaLocatorDoesNotChangeCertification),
+    ("canonical schema con bytes distintos queda inválido", CanonicalSchemaDifferentBytesAreInvalid),
+    ("cadena histórica valida tras relocalizar evidencia", HistoryChainValidatesAfterEvidenceRelocation),
+    ("timestamp y run metadata no alteran hash semántico", VolatileRecordMetadataDoesNotChangeHash),
+    ("historia certificada es inmutable", HistoricalCertifiedStateIsImmutable),
+    ("certificationId duplicado queda prohibido", DuplicateCertificationIdIsBlocked),
+    ("database identity distinta rompe la cadena", DifferentDatabaseIdentityBlocksAppend),
+    ("segunda certificación initial queda prohibida", SecondInitialCertificationIsBlocked),
+    ("canonical schema hash inconsistente bloquea append", CanonicalSchemaMismatchBlocksAppend),
+    ("DBA planned genera certificación QUALIFIED_RELEASE normal", DbaPlannedCreatesNormalCertifiedState),
+    ("DBA reconciled genera certificación de reconciliation", DbaReconciledCreatesReconciliationCertifiedState),
+    ("Certified State conserva canonical schema completo", CertifiedStatePreservesCanonicalSchema),
+    ("estado histórico se recupera por certificationId", HistoricalStateCanBeLoadedById),
+    ("current certified state devuelve el último record", CurrentCertifiedStateReturnsLatestRecord),
+    ("Registry y Certified State Store permanecen separados", RegistryAndCertifiedStateStoreAreSeparated),
+    ("Certified State rechaza metadata sensible", CertifiedStateRejectsSensitiveMetadata)
 };
 
 var failed = 0;
@@ -2378,6 +2403,604 @@ static Task OnboardingDoesNotDecideRiskApproval()
     Equal(0, typeof(DatabaseOnboardingEvaluator).GetConstructors().Single().GetParameters().Length);
     return Task.CompletedTask;
 }
+
+static Task BootstrapExistingCreatesFirstCertifiedState()
+{
+    var fixture = FirstCertifiedStateFixture();
+    Equal(CertifiedStateAppendStatus.Appended, fixture.Append.Status);
+    Equal(CertificationId(1), fixture.First.CertificationId);
+    True(fixture.First.PreviousCertificationId is null);
+    True(fixture.First.PreviousCertificationEvidenceHash is null);
+    Equal(CertificationOrigin.BootstrapApproved, fixture.First.CertificationOrigin);
+    Equal(CertificationDecision.HumanApproved, fixture.First.CertificationDecision);
+    Equal(fixture.Schema.Sha256, fixture.First.CanonicalSchemaHash);
+    True(fixture.First.CertificationEvidenceHash.Length == 64);
+    return Task.CompletedTask;
+}
+
+static Task NewControlledCreatesFirstCertifiedState()
+{
+    var pre = EmptyCanonicalSchema();
+    var post = SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: false));
+    var transition = QualifiedStateTransition(pre, post, "new-initial-release-001", controlledInitial: true,
+        sourceKind: "EF");
+    var record = BuildCertifiedState(
+        CertificationId(1), post, transition.Certification,
+        previous: null, qualifiedRelease: transition.QualifiedRelease,
+        lineage: LineageOnboardingState.ConsistentEf);
+    var append = new InMemoryCertifiedStateStore().Append(record);
+    Equal(CertifiedStateAppendStatus.Appended, append.Status);
+    Equal(CertificationOrigin.QualifiedRelease, record.CertificationOrigin);
+    Equal(CertificationDecision.Automatic, record.CertificationDecision);
+    True(record.PreviousCertificationId is null);
+    True(record.QualifiedRelease is not null);
+    True(record.CertificationEvidenceHash.Length == 64);
+    return Task.CompletedTask;
+}
+
+static Task DerivedSecondStateReferencesFirst()
+{
+    var chain = CertifiedStateChainFixture();
+    Equal(chain.First.CertificationId, chain.Second.PreviousCertificationId);
+    Equal(chain.First.CertificationEvidenceHash, chain.Second.PreviousCertificationEvidenceHash);
+    Equal(CertificationOrigin.QualifiedRelease, chain.Second.CertificationOrigin);
+    Equal(CertifiedStateAppendStatus.Appended, chain.SecondAppend.Status);
+    return Task.CompletedTask;
+}
+
+static Task DerivedThirdStateReferencesSecond()
+{
+    var chain = CertifiedStateChainFixture();
+    Equal(chain.Second.CertificationId, chain.Third.PreviousCertificationId);
+    Equal(chain.Second.CertificationEvidenceHash, chain.Third.PreviousCertificationEvidenceHash);
+    Equal(CertifiedStateAppendStatus.Appended, chain.ThirdAppend.Status);
+    Equal(3, chain.Store.ListHistory(DatabaseIdentityFixture()).Count);
+    return Task.CompletedTask;
+}
+
+static Task WrongPreviousCertificationBlocksAppend()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var roguePrevious = BuildBootstrapCertifiedState(CertificationId(9), fixture.Schema);
+    var post = CanonicalWithComment(includeIndex: false);
+    var transition = QualifiedStateTransition(fixture.Schema, post, "release-wrong-previous");
+    var second = BuildCertifiedState(CertificationId(2), post, transition.Certification,
+        roguePrevious, transition.QualifiedRelease);
+    var append = fixture.Store.Append(second);
+    Equal(CertifiedStateAppendStatus.Blocked, append.Status);
+    True(append.Reasons.Contains(CertifiedStateReasons.PreviousCertificationIncorrect));
+    Equal(1, fixture.Store.ListHistory(DatabaseIdentityFixture()).Count);
+    return Task.CompletedTask;
+}
+
+static Task WrongPreviousEvidenceHashBlocksAppend()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var post = CanonicalWithComment(includeIndex: false);
+    var transition = QualifiedStateTransition(fixture.Schema, post, "release-wrong-previous-hash");
+    var second = BuildCertifiedState(CertificationId(2), post, transition.Certification,
+        fixture.First, transition.QualifiedRelease);
+    second = SealCertifiedState(second with { PreviousCertificationEvidenceHash = new string('f', 64) });
+    var append = fixture.Store.Append(second);
+    Equal(CertifiedStateAppendStatus.Blocked, append.Status);
+    True(append.Reasons.Contains(CertifiedStateReasons.PreviousEvidenceHashIncorrect));
+    return Task.CompletedTask;
+}
+
+static Task SemanticEvidenceChangesCertificationHash()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var changed = fixture.First with
+    {
+        LineageEvidence = EvidenceReference.ContentAddressed(
+            "lineage", Hashing.Sha256("changed-lineage-evidence"),
+            fixture.First.LineageEvidence.StorageLocator)
+    };
+    var changedHash = CertifiedStateEvidenceHasher.ComputeHash(changed);
+    NotEqual(fixture.First.CertificationEvidenceHash, changedHash);
+    return Task.CompletedTask;
+}
+
+static Task EvidenceLocatorDoesNotChangeCertificationHash()
+{
+    var chain = CertifiedStateChainFixture();
+    var relocated = RelocateCertifiedStateEvidence(chain.Second, "backend-b");
+    Equal(chain.Second.CertificationEvidenceHash,
+        CertifiedStateEvidenceHasher.ComputeHash(relocated));
+    Equal(chain.Second.CanonicalSchemaEvidenceReference.EvidenceId,
+        relocated.CanonicalSchemaEvidenceReference.EvidenceId);
+    Equal(chain.Second.QualifiedRelease!.ExecutionEvidence.EvidenceSha256,
+        relocated.QualifiedRelease!.ExecutionEvidence.EvidenceSha256);
+    NotEqual(chain.Second.QualifiedRelease.ExecutionEvidence.StorageLocator,
+        relocated.QualifiedRelease.ExecutionEvidence.StorageLocator);
+    return Task.CompletedTask;
+}
+
+static Task EvidenceHashChangeAffectsCertificationIdentity()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var changedEvidenceHash = Hashing.Sha256("different-lineage-evidence-bytes");
+    var changed = fixture.First with
+    {
+        LineageEvidence = EvidenceReference.ContentAddressed(
+            "lineage", changedEvidenceHash, fixture.First.LineageEvidence.StorageLocator)
+    };
+    NotEqual(fixture.First.CertificationEvidenceHash,
+        CertifiedStateEvidenceHasher.ComputeHash(changed));
+
+    var inconsistentIdentity = SealCertifiedState(fixture.First with
+    {
+        LineageEvidence = fixture.First.LineageEvidence with
+        {
+            EvidenceSha256 = changedEvidenceHash
+        }
+    });
+    var append = new InMemoryCertifiedStateStore().Append(inconsistentIdentity);
+    Equal(CertifiedStateAppendStatus.Blocked, append.Status);
+    True(append.Reasons.Contains(CertifiedStateReasons.EvidenceIdInvalid));
+    return Task.CompletedTask;
+}
+
+static Task CanonicalSchemaLocatorDoesNotChangeCertification()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var relocated = fixture.First with
+    {
+        CanonicalSchemaEvidenceReference = fixture.First.CanonicalSchemaEvidenceReference with
+        {
+            StorageLocator = "memory://backend-b/canonical-schema.json"
+        }
+    };
+    Equal(fixture.First.CertificationEvidenceHash,
+        CertifiedStateEvidenceHasher.ComputeHash(relocated));
+    Equal(0, CertifiedStateRecordValidator.Validate(relocated).Count);
+    return Task.CompletedTask;
+}
+
+static Task CanonicalSchemaDifferentBytesAreInvalid()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var differentCanonical = CanonicalWithComment(includeIndex: false);
+    NotEqual(fixture.Schema.Sha256, differentCanonical.Sha256);
+    var changed = fixture.First with { CanonicalSchemaEvidence = differentCanonical };
+    var append = new InMemoryCertifiedStateStore().Append(changed);
+    Equal(CertifiedStateAppendStatus.Blocked, append.Status);
+    True(append.Reasons.Contains(CertifiedStateReasons.CanonicalSchemaHashMismatch));
+    return Task.CompletedTask;
+}
+
+static Task HistoryChainValidatesAfterEvidenceRelocation()
+{
+    var chain = CertifiedStateChainFixture();
+    var relocated = new[] { chain.First, chain.Second, chain.Third }
+        .Select((record, index) => RelocateCertifiedStateEvidence(record, $"backend-{index + 1}"))
+        .ToArray();
+    var store = new InMemoryCertifiedStateStore();
+    foreach (var record in relocated)
+        Equal(CertifiedStateAppendStatus.Appended, store.Append(record).Status);
+    Equal(chain.Third.CertificationEvidenceHash,
+        store.GetCurrent(DatabaseIdentityFixture())!.CertificationEvidenceHash);
+    Equal(chain.First.CertificationEvidenceHash,
+        relocated[1].PreviousCertificationEvidenceHash);
+    Equal(chain.Second.CertificationEvidenceHash,
+        relocated[2].PreviousCertificationEvidenceHash);
+    return Task.CompletedTask;
+}
+
+static Task VolatileRecordMetadataDoesNotChangeHash()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var changed = fixture.First with
+    {
+        CreatedAtUtc = fixture.First.CreatedAtUtc.AddDays(1),
+        RunMetadata = new SortedDictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["runId"] = "different-run"
+        }
+    };
+    Equal(fixture.First.CertificationEvidenceHash, CertifiedStateEvidenceHasher.ComputeHash(changed));
+    return Task.CompletedTask;
+}
+
+static Task HistoricalCertifiedStateIsImmutable()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var tampered = SealCertifiedState(fixture.First with
+    {
+        LineageEvidence = EvidenceReference.ContentAddressed(
+            "lineage", Hashing.Sha256("tampered-lineage-evidence"),
+            fixture.First.LineageEvidence.StorageLocator)
+    });
+    var append = fixture.Store.Append(tampered);
+    Equal(CertifiedStateAppendStatus.Blocked, append.Status);
+    True(append.Reasons.Contains(CertifiedStateReasons.HistoricalRecordImmutable));
+    Equal(fixture.First.CertificationEvidenceHash,
+        fixture.Store.GetById(fixture.First.CertificationId)!.CertificationEvidenceHash);
+
+    var returned = fixture.Store.GetById(fixture.First.CertificationId)!;
+    returned.RunMetadata["runId"] = "caller-mutation";
+    NotEqual("caller-mutation", fixture.Store.GetById(fixture.First.CertificationId)!.RunMetadata["runId"]);
+    return Task.CompletedTask;
+}
+
+static Task DuplicateCertificationIdIsBlocked()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var append = fixture.Store.Append(fixture.First);
+    Equal(CertifiedStateAppendStatus.Blocked, append.Status);
+    True(append.Reasons.Contains(CertifiedStateReasons.DuplicateCertificationId));
+    True(append.Reasons.Contains(CertifiedStateReasons.CertificationRecordAlreadyExists));
+    return Task.CompletedTask;
+}
+
+static Task DifferentDatabaseIdentityBlocksAppend()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var post = CanonicalWithComment(includeIndex: false);
+    var transition = QualifiedStateTransition(fixture.Schema, post, "release-cross-database");
+    var second = BuildCertifiedState(CertificationId(2), post, transition.Certification,
+        fixture.First, transition.QualifiedRelease);
+    second = SealCertifiedState(second with { ApplicationId = "9999" });
+    var append = fixture.Store.Append(second);
+    Equal(CertifiedStateAppendStatus.Blocked, append.Status);
+    True(append.Reasons.Contains(CertifiedStateReasons.DatabaseIdentityMismatch));
+    return Task.CompletedTask;
+}
+
+static Task SecondInitialCertificationIsBlocked()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var secondInitial = BuildBootstrapCertifiedState(CertificationId(8), fixture.Schema);
+    var append = fixture.Store.Append(secondInitial);
+    Equal(CertifiedStateAppendStatus.Blocked, append.Status);
+    True(append.Reasons.Contains(CertifiedStateReasons.InitialCertificationAlreadyExists));
+    return Task.CompletedTask;
+}
+
+static Task CanonicalSchemaMismatchBlocksAppend()
+{
+    var record = BuildBootstrapCertifiedState(CertificationId(1),
+        SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: false)));
+    record = SealCertifiedState(record with { CanonicalSchemaHash = new string('f', 64) });
+    var append = new InMemoryCertifiedStateStore().Append(record);
+    Equal(CertifiedStateAppendStatus.Blocked, append.Status);
+    True(append.Reasons.Contains(CertifiedStateReasons.CanonicalSchemaHashMismatch));
+    return Task.CompletedTask;
+}
+
+static Task DbaPlannedCreatesNormalCertifiedState()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var post = SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: true));
+    var forward = ReleaseScript.FromText("forward", "CREATE INDEX IX_DBA ON dbo.Orden(Fecha);");
+    var rollback = ReleaseScript.FromText("rollback", "DROP INDEX IX_DBA ON dbo.Orden;");
+    var payload = ReleasePayloadBuilder.Build(PlannedDbaRelease(), forward, rollback);
+    var transition = QualifiedStateTransition(fixture.Schema, post, payload.ReleaseId, payload: payload);
+    var second = BuildCertifiedState(CertificationId(2), post, transition.Certification,
+        fixture.First, transition.QualifiedRelease);
+    var append = fixture.Store.Append(second);
+    Equal(CertifiedStateAppendStatus.Appended, append.Status);
+    Equal(CertificationOrigin.QualifiedRelease, second.CertificationOrigin);
+    Equal(DatabaseChangeOrigins.Dba, second.QualifiedRelease!.ChangeOrigin);
+    Equal("SQL", second.QualifiedRelease.SourceKind);
+    True(second.ReconciliationEvidence is null);
+    return Task.CompletedTask;
+}
+
+static Task DbaReconciledCreatesReconciliationCertifiedState()
+{
+    var (certified, observed) = ReconciliationSchemas(oneDifference: true);
+    var store = new InMemoryCertifiedStateStore();
+    var first = BuildBootstrapCertifiedState(CertificationId(1), certified);
+    Equal(CertifiedStateAppendStatus.Appended, store.Append(first).Status);
+    var difference = StructuralDifferenceBuilder.Build(certified, observed).Single();
+    var reconciliation = new ReconciliationEvaluator().Evaluate(
+        ReconciliationContextFixture(CertificationOrigin.BreakGlassReconciliation),
+        certified, observed, [ApproveDba(difference)]);
+    var certification = ReconciliationCertification(certified.Sha256, observed.Sha256);
+    var second = BuildCertifiedState(CertificationId(2), observed, certification, first,
+        reconciliation: reconciliation);
+    var append = store.Append(second);
+    Equal(CertifiedStateAppendStatus.Appended, append.Status);
+    Equal(CertificationOrigin.BreakGlassReconciliation, second.CertificationOrigin);
+    True(second.QualifiedRelease is null);
+    True(second.ReconciliationEvidence is not null);
+    Equal(observed.Sha256, second.CanonicalSchemaEvidence!.Sha256);
+    return Task.CompletedTask;
+}
+
+static Task CertifiedStatePreservesCanonicalSchema()
+{
+    var (certified, observed) = ReconciliationSchemas(oneDifference: true);
+    var store = new InMemoryCertifiedStateStore();
+    var first = BuildBootstrapCertifiedState(CertificationId(1), certified);
+    store.Append(first);
+    var loaded = store.GetById(first.CertificationId)!;
+    Equal(certified.Sha256, loaded.CanonicalSchemaHash);
+    Equal(certified.Json, loaded.CanonicalSchemaEvidence!.Json);
+    True(loaded.CanonicalSchemaEvidenceReference.StorageLocator!
+        .EndsWith("canonical-schema.json", StringComparison.Ordinal));
+    var difference = StructuralDifferenceBuilder.Build(loaded.CanonicalSchemaEvidence, observed).Single();
+    var reconciliation = new ReconciliationEvaluator().Evaluate(
+        ReconciliationContextFixture(CertificationOrigin.BreakGlassReconciliation),
+        loaded.CanonicalSchemaEvidence, observed, [ApproveDba(difference)]);
+    Equal(ReconciliationStatus.ReadyForCertification, reconciliation.ReconciliationStatus);
+    return Task.CompletedTask;
+}
+
+static Task HistoricalStateCanBeLoadedById()
+{
+    var chain = CertifiedStateChainFixture();
+    var historical = chain.Store.GetById(chain.First.CertificationId);
+    True(historical is not null);
+    Equal(chain.First.CanonicalSchemaHash, historical!.CanonicalSchemaHash);
+    Equal(chain.First.CertificationEvidenceHash, historical.CertificationEvidenceHash);
+    return Task.CompletedTask;
+}
+
+static Task CurrentCertifiedStateReturnsLatestRecord()
+{
+    var chain = CertifiedStateChainFixture();
+    var current = chain.Store.GetCurrent(DatabaseIdentityFixture());
+    True(current is not null);
+    Equal(chain.Third.CertificationId, current!.CertificationId);
+    Equal(chain.Third.CanonicalSchemaHash, current.CanonicalSchemaHash);
+    return Task.CompletedTask;
+}
+
+static Task RegistryAndCertifiedStateStoreAreSeparated()
+{
+    var registry = RegistryDocument(RegistryTarget(
+        DatabaseCertificationStatuses.BaselineRequired));
+    var before = JsonSerializer.Serialize(registry, JsonDefaults.Compact);
+    var fixture = FirstCertifiedStateFixture();
+    var after = JsonSerializer.Serialize(registry, JsonDefaults.Compact);
+    Equal(before, after);
+    True(typeof(DatabaseRegistryDocument).GetProperty("History") is null);
+    True(typeof(DatabaseTarget).GetProperty("CertificationHistory") is null);
+    True(typeof(ICertifiedStateStore).GetMethods().Any(method => method.Name == "ListHistory"));
+    True(fixture.Store is ICertifiedStateStore);
+    return Task.CompletedTask;
+}
+
+static Task CertifiedStateRejectsSensitiveMetadata()
+{
+    var blocked = false;
+    try
+    {
+        _ = BuildBootstrapCertifiedState(CertificationId(1),
+            SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: false)),
+            new Dictionary<string, string> { ["secretToken"] = "redacted" });
+    }
+    catch (InvalidOperationException exception)
+    {
+        blocked = exception.Message == "RUN_METADATA_SENSITIVE_KEY_REJECTED";
+    }
+    True(blocked);
+    return Task.CompletedTask;
+}
+
+static (InMemoryCertifiedStateStore Store, CertifiedStateRecord First, CanonicalSchema Schema,
+    CertifiedStateAppendResult Append) FirstCertifiedStateFixture()
+{
+    var schema = SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: false));
+    var first = BuildBootstrapCertifiedState(CertificationId(1), schema);
+    var store = new InMemoryCertifiedStateStore();
+    var append = store.Append(first);
+    return (store, first, schema, append);
+}
+
+static (InMemoryCertifiedStateStore Store, CertifiedStateRecord First, CertifiedStateRecord Second,
+    CertifiedStateRecord Third, CertifiedStateAppendResult SecondAppend,
+    CertifiedStateAppendResult ThirdAppend) CertifiedStateChainFixture()
+{
+    var initial = FirstCertifiedStateFixture();
+    var secondSchema = CanonicalWithComment(includeIndex: false);
+    var secondTransition = QualifiedStateTransition(initial.Schema, secondSchema, "qualified-release-002");
+    var second = BuildCertifiedState(CertificationId(2), secondSchema,
+        secondTransition.Certification, initial.First, secondTransition.QualifiedRelease);
+    var secondAppend = initial.Store.Append(second);
+
+    var thirdSchema = CanonicalWithComment(includeIndex: true);
+    var thirdTransition = QualifiedStateTransition(secondSchema, thirdSchema, "qualified-release-003");
+    var third = BuildCertifiedState(CertificationId(3), thirdSchema,
+        thirdTransition.Certification, second, thirdTransition.QualifiedRelease);
+    var thirdAppend = initial.Store.Append(third);
+    return (initial.Store, initial.First, second, third, secondAppend, thirdAppend);
+}
+
+static CertifiedStateRecord BuildBootstrapCertifiedState(
+    string certificationId,
+    CanonicalSchema schema,
+    IReadOnlyDictionary<string, string>? runMetadata = null)
+{
+    var certification = new CertificationDecisionEngine().Evaluate(new CertificationRequest
+    {
+        Origin = CertificationOrigin.BootstrapApproved,
+        DatabaseLifecycle = DatabaseLifecycles.Existing,
+        ObservedPreSchemaHash = schema.Sha256,
+        DriftStatus = DatabaseDriftStatuses.BaselineRequired,
+        LineageStatus = "CONSISTENT",
+        CertificationApprovalGranted = CertificationApprovalRequirement.Human,
+        CertificationApprovalReference = "CHG-BOOTSTRAP-001"
+    });
+    Equal(CertificationDecision.HumanApproved, certification.Decision);
+    return BuildCertifiedState(certificationId, schema, certification,
+        runMetadata: runMetadata);
+}
+
+static CertifiedStateRecord BuildCertifiedState(
+    string certificationId,
+    CanonicalSchema schema,
+    CertificationResult certification,
+    CertifiedStateRecord? previous = null,
+    QualifiedReleaseCertificationReference? qualifiedRelease = null,
+    ReconciliationResult? reconciliation = null,
+    LineageOnboardingState lineage = LineageOnboardingState.LegacySql,
+    IReadOnlyDictionary<string, string>? runMetadata = null) => CertifiedStateRecordBuilder.Build(
+        new CertifiedStateRecordRequest
+        {
+            CertificationId = certificationId,
+            PreviousCertification = previous,
+            DatabaseIdentity = DatabaseIdentityFixture(),
+            CanonicalSchema = schema,
+            CanonicalSchemaStorageLocator = $"memory://canonical/{certificationId}/canonical-schema.json",
+            Certification = certification,
+            DecisionEvidenceStorageLocator = $"memory://certification/{certificationId}/decision-evidence.json",
+            TransitionEvidenceStorageLocator = $"memory://certification/{certificationId}/transition-evidence.json",
+            RegistryProvenance = RegistryProvenance(),
+            LineageStatus = lineage,
+            LineageEvidenceStorageLocator = $"memory://lineage/{certificationId}/lineage-evidence.json",
+            LineageEvidenceHash = Hashing.Sha256($"lineage|{lineage}|{certificationId}"),
+            Reconciliation = reconciliation,
+            ReconciliationEvidenceStorageLocator = reconciliation is null
+                ? null
+                : $"memory://reconciliation/{reconciliation.Evidence.ReconciliationId}/evidence.json",
+            QualifiedRelease = qualifiedRelease,
+            CreatedAtUtc = DateTimeOffset.Parse("2026-08-26T15:00:00Z"),
+            RunMetadata = runMetadata ?? new SortedDictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["runId"] = "certification-fixture",
+                ["runAttempt"] = "1"
+            }
+        });
+
+static (CertificationResult Certification,
+    QualifiedReleaseCertificationReference QualifiedRelease) QualifiedStateTransition(
+    CanonicalSchema pre,
+    CanonicalSchema post,
+    string releaseId,
+    bool controlledInitial = false,
+    string sourceKind = "SQL",
+    ReleasePayloadMetadata? payload = null)
+{
+    var payloadHash = payload?.PayloadHash ?? Hashing.Sha256($"{releaseId}|payload");
+    var forwardHash = payload?.ForwardHash ?? Hashing.Sha256($"{releaseId}|forward");
+    var rollbackHash = payload?.RollbackHash ?? Hashing.Sha256($"{releaseId}|rollback");
+    var request = new CertificationRequest
+    {
+        Origin = CertificationOrigin.QualifiedRelease,
+        DatabaseLifecycle = controlledInitial ? DatabaseLifecycles.New : DatabaseLifecycles.Existing,
+        InitialPreStateValidated = controlledInitial,
+        CertifiedPreSchemaHash = controlledInitial ? null : pre.Sha256,
+        ObservedPreSchemaHash = pre.Sha256,
+        QualifiedPreSchemaHash = pre.Sha256,
+        QualifiedPostSchemaHash = post.Sha256,
+        ObservedPostSchemaHash = post.Sha256,
+        ReleaseId = releaseId,
+        QualifiedPayloadHash = payloadHash,
+        ExecutedPayloadHash = payloadHash,
+        QualifiedForwardHash = forwardHash,
+        ExecutedForwardHash = forwardHash,
+        QualifiedRollbackHash = rollbackHash,
+        VerifiedRollbackHash = rollbackHash,
+        QualifiedRelease = true,
+        ExecutionSucceeded = true,
+        DriftStatus = DatabaseDriftStatuses.Match,
+        LineageStatus = "CONSISTENT",
+        DeploymentAuthorization = new DeploymentAuthorizationEvidence
+        {
+            PolicyId = "DEPLOYMENT_POLICY_V1",
+            Risk = RiskLevel.Low,
+            Requirement = DeploymentAuthorizationRequirement.AutomaticPolicy,
+            Decision = DeploymentAuthorizationDecision.Authorized,
+            ReleaseQualificationGatePassed = true,
+            AnalysisConfidence = AnalysisConfidence.Complete,
+            SchemaRollbackValidity = SchemaRollbackValidity.Valid,
+            DataRollbackValidity = DataRollbackValidity.NotApplicable,
+            RollbackCapability = RollbackCapability.FullReversible
+        }
+    };
+    var certification = new CertificationDecisionEngine().Evaluate(request);
+    Equal(CertificationDecision.Automatic, certification.Decision);
+
+    var qualificationReference = $"memory://qualification/{releaseId}/attestation.json";
+    var authorizationReference = $"memory://authorization/{releaseId}/authorization.json";
+    var executionReference = $"memory://execution/{releaseId}/execution.json";
+    var qualificationHash = Hashing.Sha256($"{releaseId}|qualification");
+    var authorizationHash = Hashing.Sha256($"{releaseId}|authorization");
+    var executionHash = Hashing.Sha256($"{releaseId}|execution");
+    var qualified = payload is null
+        ? new QualifiedReleaseCertificationReference
+        {
+            ReleaseId = releaseId,
+            PayloadHash = payloadHash,
+            ForwardHash = forwardHash,
+            RollbackHash = rollbackHash,
+            SourceKind = sourceKind,
+            ChangeOrigin = DatabaseChangeOrigins.Application,
+            ChangePath = DatabaseChangePaths.PlannedRelease,
+            QualificationEvidence = EvidenceReference.ContentAddressed(
+                "qualified-release", qualificationHash, qualificationReference),
+            DeploymentAuthorizationEvidence = EvidenceReference.ContentAddressed(
+                "deployment-authorization", authorizationHash, authorizationReference),
+            ExecutionEvidence = EvidenceReference.ContentAddressed(
+                "execution", executionHash, executionReference),
+            ObservedPostSchemaHash = post.Sha256
+        }
+        : QualifiedReleaseCertificationReference.FromPayload(
+            payload,
+            qualificationReference,
+            qualificationHash,
+            authorizationReference,
+            authorizationHash,
+            executionReference,
+            executionHash,
+            post.Sha256);
+    return (certification, qualified);
+}
+
+static CertifiedStateRecord RelocateCertifiedStateEvidence(
+    CertifiedStateRecord record,
+    string backend)
+{
+    static EvidenceReference Move(EvidenceReference evidence, string backend, string name) =>
+        evidence with { StorageLocator = $"memory://{backend}/{name}.json" };
+
+    var qualified = record.QualifiedRelease is null
+        ? null
+        : record.QualifiedRelease with
+        {
+            QualificationEvidence = Move(record.QualifiedRelease.QualificationEvidence,
+                backend, "qualified-release"),
+            DeploymentAuthorizationEvidence = Move(
+                record.QualifiedRelease.DeploymentAuthorizationEvidence,
+                backend, "deployment-authorization"),
+            ExecutionEvidence = Move(record.QualifiedRelease.ExecutionEvidence,
+                backend, "execution")
+        };
+    return record with
+    {
+        CanonicalSchemaEvidenceReference = Move(record.CanonicalSchemaEvidenceReference,
+            backend, "canonical-schema"),
+        DecisionEvidence = Move(record.DecisionEvidence, backend, "decision"),
+        TransitionEvidence = Move(record.TransitionEvidence, backend, "transition"),
+        LineageEvidence = Move(record.LineageEvidence, backend, "lineage"),
+        ReconciliationEvidence = record.ReconciliationEvidence is null
+            ? null
+            : Move(record.ReconciliationEvidence, backend, "reconciliation"),
+        QualifiedRelease = qualified
+    };
+}
+
+static CertifiedStateRecord SealCertifiedState(CertifiedStateRecord record) => record with
+{
+    CertificationEvidenceHash = CertifiedStateEvidenceHasher.ComputeHash(record)
+};
+
+static DatabaseIdentity DatabaseIdentityFixture() => new("3602", "TEST", "CICDV3");
+
+static string CertificationId(int sequence) =>
+    $"00000000-0000-4000-8000-{sequence:000000000000}";
+
+static CanonicalSchema EmptyCanonicalSchema() => SchemaCanonicalizer.Canonicalize(new SchemaSnapshot
+{
+    Objects = [],
+    ImpactMetrics = []
+});
+
+static CanonicalSchema CanonicalWithComment(bool includeIndex) =>
+    SchemaCanonicalizer.Canonicalize(AddCommentSnapshot(includeIndex, "nvarchar(50)"));
 
 static RiskAnalysisReport AnalyzeRisk(SchemaSnapshot snapshot, string forward, string rollback) =>
     new RiskEngine().Evaluate(AnalyzePair(snapshot, forward, rollback), snapshot);
