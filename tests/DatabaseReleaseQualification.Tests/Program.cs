@@ -93,7 +93,23 @@ var tests = new (string Name, Func<Task> Run)[]
     ("coverage unsupported degrada confidence", UnsupportedCoverageDegradesConfidence),
     ("feature unsupported relevante bloquea", RelevantUnsupportedFeatureBlocks),
     ("CLI analyze-only genera payload y attestation", CliAnalyzeOnlyPackage),
-    ("CLI bloquea discovery inconsistente", CliBlocksInconsistentDiscovery)
+    ("CLI bloquea discovery inconsistente", CliBlocksInconsistentDiscovery),
+    ("sin Certified PRE no existe certificación automática", DerivedCertificationRequiresCertifiedPre),
+    ("cadena íntegra produce certificación derivada automática", DerivedCertificationIsAutomatic),
+    ("PRE con drift prohíbe certificación automática", PreDriftBlocksDerivedCertification),
+    ("POST distinto del qualified POST bloquea certificación", PostMismatchBlocksDerivedCertification),
+    ("LOW autorizado por policy certifica automáticamente", LowRiskExactDeploymentCertifiesAutomatically),
+    ("HIGH sin autorización DBA no certifica", HighRiskMissingDeploymentAuthorizationBlocks),
+    ("rollback INVALID bloquea incluso con autorización", InvalidRollbackCannotBeOverriddenByAuthorization),
+    ("cambio out-of-band requiere reconciliación", OutOfBandRequiresReconciliation),
+    ("bootstrap queda listo para aprobación humana", BootstrapIsReadyForHumanApproval),
+    ("transición automática genera evidencia completa", AutomaticCertificationEvidenceIsComplete),
+    ("payload ejecutado distinto bloquea transición derivada", ExactQualifiedReleaseIsRequired),
+    ("HIGH con autorización DBA certifica sin segunda aprobación", HighRiskAuthorizedDeploymentCertifiesAutomatically),
+    ("CICDV3 continúa bloqueada por lineage", Cicdv3BootstrapRemainsBlockedByLineage),
+    ("RESTORE_REQUIRED autorizado puede certificar", RestoreRequiredAuthorizedCertifiesAutomatically),
+    ("RESTORE_REQUIRED sin autorización queda bloqueado", RestoreRequiredWithoutAuthorizationBlocks),
+    ("qualification gate no aprobado bloquea certificación", QualificationGateFailureBlocks)
 };
 
 var failed = 0;
@@ -1580,6 +1596,239 @@ static async Task CliBlocksInconsistentDiscovery()
     finally { DeleteTemp(root); }
 }
 
+static Task DerivedCertificationRequiresCertifiedPre()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(includeCertifiedPre: false));
+    Equal(CertificationDecision.Blocked, result.Decision);
+    Equal(CertificationDecisionReasons.CertifiedPreRequired, result.DecisionReason);
+    True(!result.Evidence.AutomaticEligible);
+    True(!result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task DerivedCertificationIsAutomatic()
+{
+    var result = new CertificationDecisionEngine().Evaluate(DerivedCertificationRequest());
+    Equal(CertificationDecision.Automatic, result.Decision);
+    Equal(CertificationOrigin.QualifiedRelease, result.Origin);
+    Equal(CertificationDecisionReasons.QualifiedReleaseTransition, result.DecisionReason);
+    Equal(CertificationPostHash(), result.NextCertifiedSchemaHash);
+    True(result.Evidence.ChainOfTrustIntact);
+    True(result.Evidence.AutomaticEligible);
+    True(result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task PreDriftBlocksDerivedCertification()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(observedPreSchemaHash: new string('9', 64)));
+    Equal(CertificationDecision.Blocked, result.Decision);
+    Equal(CertificationDecisionReasons.PreStateDriftDetected, result.DecisionReason);
+    True(!result.Evidence.PreMatchesCertified);
+    True(!result.Evidence.AutomaticEligible);
+    return Task.CompletedTask;
+}
+
+static Task PostMismatchBlocksDerivedCertification()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(observedPostSchemaHash: new string('8', 64)));
+    Equal(CertificationDecision.Blocked, result.Decision);
+    Equal(CertificationDecisionReasons.QualifiedPostMismatch, result.DecisionReason);
+    True(!result.Evidence.PostMatchesQualified);
+    True(!result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task LowRiskExactDeploymentCertifiesAutomatically()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(finalRisk: RiskLevel.Low));
+    Equal(CertificationDecision.Automatic, result.Decision);
+    True(result.Evidence.ExactQualifiedRelease);
+    Equal(DeploymentAuthorizationRequirement.AutomaticPolicy,
+        result.Evidence.DeploymentAuthorizationRequirement);
+    Equal(DeploymentAuthorizationDecision.Authorized,
+        result.Evidence.DeploymentAuthorizationDecision);
+    Equal(CertificationApprovalRequirement.None, result.Evidence.CertificationApprovalRequired);
+    return Task.CompletedTask;
+}
+
+static Task HighRiskMissingDeploymentAuthorizationBlocks()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(
+            finalRisk: RiskLevel.High,
+            authorizationRequirement: DeploymentAuthorizationRequirement.DbaApproval,
+            authorizationDecision: DeploymentAuthorizationDecision.NotAuthorized,
+            includeAuthorizationReference: false));
+    Equal(CertificationDecision.Blocked, result.Decision);
+    Equal(CertificationDecisionReasons.DeploymentAuthorizationRequired, result.DecisionReason);
+    True(!result.Evidence.AutomaticEligible);
+    True(!result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task InvalidRollbackCannotBeOverriddenByAuthorization()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(
+            finalRisk: RiskLevel.High,
+            schemaRollbackValidity: SchemaRollbackValidity.Invalid,
+            authorizationRequirement: DeploymentAuthorizationRequirement.DbaApproval,
+            authorizationDecision: DeploymentAuthorizationDecision.Authorized));
+    Equal(CertificationDecision.Blocked, result.Decision);
+    Equal(CertificationDecisionReasons.InvalidRollback, result.DecisionReason);
+    True(!result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task OutOfBandRequiresReconciliation()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(outOfBandChangeDetected: true));
+    Equal(CertificationDecision.Blocked, result.Decision);
+    Equal(CertificationDecisionReasons.DriftReconciliationRequired, result.DecisionReason);
+    Equal(CertificationOrigin.QualifiedRelease, result.Origin);
+    True(!result.Evidence.ChainOfTrustIntact);
+    return Task.CompletedTask;
+}
+
+static Task BootstrapIsReadyForHumanApproval()
+{
+    var result = new CertificationDecisionEngine().Evaluate(BootstrapCertificationRequest());
+    Equal(CertificationDecision.ReadyForHumanApproval, result.Decision);
+    Equal(CertificationOrigin.BootstrapApproved, result.Origin);
+    Equal(CertificationDecisionReasons.InitialBaselineApproval, result.DecisionReason);
+    Equal(CertificationApprovalRequirement.Human,
+        result.Evidence.CertificationApprovalRequired);
+    True(!result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task AutomaticCertificationEvidenceIsComplete()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(
+            finalRisk: RiskLevel.High,
+            authorizationRequirement: DeploymentAuthorizationRequirement.DbaApproval,
+            authorizationDecision: DeploymentAuthorizationDecision.Authorized));
+    var json = JsonDocument.Parse(JsonSerializer.Serialize(result.Evidence, JsonDefaults.Compact)).RootElement;
+    Equal(1, json.GetProperty("formatVersion").GetInt32());
+    Equal("DEPLOYMENT_POLICY_V1", json.GetProperty("policyId").GetString());
+    Equal("QUALIFIED_RELEASE", json.GetProperty("origin").GetString());
+    Equal("AUTOMATIC", json.GetProperty("decision").GetString());
+    Equal("QUALIFIED_RELEASE_TRANSITION", json.GetProperty("decisionReason").GetString());
+    Equal(CertificationPreHash(), json.GetProperty("previousCertifiedSchemaHash").GetString());
+    Equal(CertificationPreHash(), json.GetProperty("observedPreSchemaHash").GetString());
+    Equal(CertificationPostHash(), json.GetProperty("qualifiedPostSchemaHash").GetString());
+    Equal(CertificationPostHash(), json.GetProperty("observedPostSchemaHash").GetString());
+    Equal(CertificationPostHash(), json.GetProperty("nextCertifiedSchemaHash").GetString());
+    Equal(CertificationPayloadHash(), json.GetProperty("qualifiedPayloadHash").GetString());
+    Equal(CertificationPayloadHash(), json.GetProperty("executedPayloadHash").GetString());
+    Equal(CertificationForwardHash(), json.GetProperty("qualifiedForwardHash").GetString());
+    Equal(CertificationForwardHash(), json.GetProperty("executedForwardHash").GetString());
+    Equal(CertificationRollbackHash(), json.GetProperty("qualifiedRollbackHash").GetString());
+    Equal(CertificationRollbackHash(), json.GetProperty("verifiedRollbackHash").GetString());
+    True(json.GetProperty("exactQualifiedRelease").GetBoolean());
+    True(json.GetProperty("executionSucceeded").GetBoolean());
+    True(json.GetProperty("postMatchesQualified").GetBoolean());
+    True(json.GetProperty("chainOfTrustIntact").GetBoolean());
+    True(json.GetProperty("automaticEligible").GetBoolean());
+    Equal("HIGH", json.GetProperty("finalRisk").GetString());
+    Equal("DBA_APPROVAL", json.GetProperty("deploymentAuthorizationRequirement").GetString());
+    Equal("AUTHORIZED", json.GetProperty("deploymentAuthorizationDecision").GetString());
+    Equal("CHG-FIXTURE-001", json.GetProperty("authorizationReference").GetString());
+    True(json.GetProperty("releaseQualificationGatePassed").GetBoolean());
+    Equal("NONE", json.GetProperty("certificationApprovalRequired").GetString());
+    Equal("VALID", json.GetProperty("schemaRollbackValidity").GetString());
+    Equal("NOT_APPLICABLE", json.GetProperty("dataRollbackValidity").GetString());
+    Equal("FULL_REVERSIBLE", json.GetProperty("rollbackCapability").GetString());
+    return Task.CompletedTask;
+}
+
+static Task ExactQualifiedReleaseIsRequired()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(executedPayloadHash: new string('7', 64)));
+    Equal(CertificationDecision.Blocked, result.Decision);
+    Equal(CertificationDecisionReasons.ExactQualifiedReleaseRequired, result.DecisionReason);
+    True(!result.Evidence.ExactQualifiedRelease);
+    True(!result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task HighRiskAuthorizedDeploymentCertifiesAutomatically()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(
+            finalRisk: RiskLevel.High,
+            authorizationRequirement: DeploymentAuthorizationRequirement.DbaApproval,
+            authorizationDecision: DeploymentAuthorizationDecision.Authorized));
+    Equal(CertificationDecision.Automatic, result.Decision);
+    Equal(CertificationDecisionReasons.QualifiedReleaseTransition, result.DecisionReason);
+    Equal(DeploymentAuthorizationRequirement.DbaApproval,
+        result.Evidence.DeploymentAuthorizationRequirement);
+    Equal("CHG-FIXTURE-001", result.Evidence.AuthorizationReference);
+    Equal(CertificationApprovalRequirement.None, result.Evidence.CertificationApprovalRequired);
+    True(result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task Cicdv3BootstrapRemainsBlockedByLineage()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        BootstrapCertificationRequest(lineageStatus: "BLOCKED_HISTORY_WITHOUT_REPO"));
+    Equal(CertificationDecision.Blocked, result.Decision);
+    Equal(CertificationDecisionReasons.LineageNotEligible, result.DecisionReason);
+    True(!result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task RestoreRequiredAuthorizedCertifiesAutomatically()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(
+            finalRisk: RiskLevel.High,
+            rollbackCapability: RollbackCapability.RestoreRequired,
+            authorizationRequirement: DeploymentAuthorizationRequirement.DbaApproval,
+            authorizationDecision: DeploymentAuthorizationDecision.Authorized));
+    Equal(CertificationDecision.Automatic, result.Decision);
+    Equal(CertificationOrigin.QualifiedRelease, result.Origin);
+    Equal(RollbackCapability.RestoreRequired, result.Evidence.RollbackCapability);
+    Equal(DeploymentAuthorizationDecision.Authorized,
+        result.Evidence.DeploymentAuthorizationDecision);
+    True(result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task RestoreRequiredWithoutAuthorizationBlocks()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(
+            finalRisk: RiskLevel.High,
+            rollbackCapability: RollbackCapability.RestoreRequired,
+            authorizationRequirement: DeploymentAuthorizationRequirement.DbaApproval,
+            authorizationDecision: DeploymentAuthorizationDecision.NotAuthorized,
+            includeAuthorizationReference: false));
+    Equal(CertificationDecision.Blocked, result.Decision);
+    Equal(CertificationDecisionReasons.DeploymentAuthorizationRequired, result.DecisionReason);
+    True(!result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task QualificationGateFailureBlocks()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(releaseQualificationGatePassed: false));
+    Equal(CertificationDecision.Blocked, result.Decision);
+    Equal(CertificationDecisionReasons.ReleaseQualificationGateNotPassed, result.DecisionReason);
+    True(!result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
 static RiskAnalysisReport AnalyzeRisk(SchemaSnapshot snapshot, string forward, string rollback) =>
     new RiskEngine().Evaluate(AnalyzePair(snapshot, forward, rollback), snapshot);
 
@@ -1620,6 +1869,77 @@ static RehearsalResult AnalyzedResult(SchemaSnapshot snapshot) => new()
     ReapplyCertified = false,
     Pre = SchemaCanonicalizer.Canonicalize(snapshot)
 };
+
+static CertificationRequest DerivedCertificationRequest(
+    bool includeCertifiedPre = true,
+    string? observedPreSchemaHash = null,
+    string? observedPostSchemaHash = null,
+    string? executedPayloadHash = null,
+    RiskLevel finalRisk = RiskLevel.Low,
+    SchemaRollbackValidity schemaRollbackValidity = SchemaRollbackValidity.Valid,
+    RollbackCapability rollbackCapability = RollbackCapability.FullReversible,
+    bool outOfBandChangeDetected = false,
+    DeploymentAuthorizationRequirement? authorizationRequirement = null,
+    DeploymentAuthorizationDecision authorizationDecision = DeploymentAuthorizationDecision.Authorized,
+    bool includeAuthorizationReference = true,
+    bool releaseQualificationGatePassed = true)
+{
+    var requirement = authorizationRequirement
+        ?? (finalRisk == RiskLevel.Low
+            ? DeploymentAuthorizationRequirement.AutomaticPolicy
+            : DeploymentAuthorizationRequirement.DbaApproval);
+    return new CertificationRequest
+    {
+        Origin = CertificationOrigin.QualifiedRelease,
+        CertifiedPreSchemaHash = includeCertifiedPre ? CertificationPreHash() : null,
+        ObservedPreSchemaHash = observedPreSchemaHash ?? CertificationPreHash(),
+        QualifiedPreSchemaHash = CertificationPreHash(),
+        QualifiedPostSchemaHash = CertificationPostHash(),
+        ObservedPostSchemaHash = observedPostSchemaHash ?? CertificationPostHash(),
+        ReleaseId = "qualified-release-001",
+        QualifiedPayloadHash = CertificationPayloadHash(),
+        ExecutedPayloadHash = executedPayloadHash ?? CertificationPayloadHash(),
+        QualifiedForwardHash = CertificationForwardHash(),
+        ExecutedForwardHash = CertificationForwardHash(),
+        QualifiedRollbackHash = CertificationRollbackHash(),
+        VerifiedRollbackHash = CertificationRollbackHash(),
+        QualifiedRelease = true,
+        ExecutionSucceeded = true,
+        DriftStatus = DatabaseDriftStatuses.Match,
+        LineageStatus = "CONSISTENT",
+        OutOfBandChangeDetected = outOfBandChangeDetected,
+        DeploymentAuthorization = new DeploymentAuthorizationEvidence
+        {
+            PolicyId = "DEPLOYMENT_POLICY_V1",
+            Risk = finalRisk,
+            Requirement = requirement,
+            Decision = authorizationDecision,
+            AuthorizationReference = requirement == DeploymentAuthorizationRequirement.AutomaticPolicy
+                || !includeAuthorizationReference
+                ? null
+                : "CHG-FIXTURE-001",
+            ReleaseQualificationGatePassed = releaseQualificationGatePassed,
+            AnalysisConfidence = AnalysisConfidence.Complete,
+            SchemaRollbackValidity = schemaRollbackValidity,
+            DataRollbackValidity = DataRollbackValidity.NotApplicable,
+            RollbackCapability = rollbackCapability
+        }
+    };
+}
+
+static CertificationRequest BootstrapCertificationRequest(string lineageStatus = "CONSISTENT") => new()
+{
+    Origin = CertificationOrigin.BootstrapApproved,
+    ObservedPreSchemaHash = CertificationPreHash(),
+    DriftStatus = DatabaseDriftStatuses.BaselineRequired,
+    LineageStatus = lineageStatus
+};
+
+static string CertificationPreHash() => new('1', 64);
+static string CertificationPostHash() => new('2', 64);
+static string CertificationPayloadHash() => new('3', 64);
+static string CertificationForwardHash() => new('4', 64);
+static string CertificationRollbackHash() => new('5', 64);
 
 static ReleaseDescriptor TestRelease(string environment = "TEST") => new()
 {
