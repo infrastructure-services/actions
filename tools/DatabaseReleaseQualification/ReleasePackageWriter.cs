@@ -10,12 +10,17 @@ public static class ReleasePayloadBuilder
         ReleaseScript forward,
         ReleaseScript rollback)
     {
+        ValidateChangeMetadata(release);
         var stableIdentity = string.Concat(
             StableField("formatVersion", "1"),
             StableField("releaseId", release.ReleaseId),
             StableField("sourceKind", release.SourceKind),
             StableField("scenario", release.Scenario),
             StableField("databaseLifecycle", release.DatabaseLifecycle),
+            StableField("changeOrigin", release.ChangeOrigin),
+            StableField("changePath", release.ChangePath),
+            StableField("changeReference", release.ChangeReference ?? ""),
+            StableField("changeReason", release.ChangeReason ?? ""),
             StableField("forwardHash", forward.Sha256),
             StableField("rollbackHash", rollback.Sha256));
         return new ReleasePayloadMetadata
@@ -24,6 +29,10 @@ public static class ReleasePayloadBuilder
             SourceKind = release.SourceKind,
             Scenario = release.Scenario,
             DatabaseLifecycle = release.DatabaseLifecycle,
+            ChangeOrigin = release.ChangeOrigin,
+            ChangePath = release.ChangePath,
+            ChangeReference = release.ChangeReference,
+            ChangeReason = release.ChangeReason,
             ForwardHash = forward.Sha256,
             RollbackHash = rollback.Sha256,
             PayloadHash = Hashing.Sha256(stableIdentity)
@@ -32,6 +41,22 @@ public static class ReleasePayloadBuilder
 
     private static string StableField(string name, string value) =>
         $"{name.Length}:{name}{value.Length}:{value}";
+
+    private static void ValidateChangeMetadata(ReleaseDescriptor release)
+    {
+        if (release.SourceKind is not ("EF" or "SQL"))
+            throw new InvalidOperationException("SOURCE_KIND_INVALID");
+        if (release.ChangeOrigin is not (DatabaseChangeOrigins.Application or DatabaseChangeOrigins.Dba))
+            throw new InvalidOperationException("CHANGE_ORIGIN_INVALID");
+        if (release.ChangePath != DatabaseChangePaths.PlannedRelease)
+            throw new InvalidOperationException("OUT_OF_BAND_MUST_USE_RECONCILIATION");
+        if (release.ChangeOrigin == DatabaseChangeOrigins.Dba
+            && (string.IsNullOrWhiteSpace(release.ChangeReference)
+                || string.IsNullOrWhiteSpace(release.ChangeReason)))
+            throw new InvalidOperationException("DBA_CHANGE_METADATA_REQUIRED");
+        if ((release.ChangeReference?.Length ?? 0) > 256 || (release.ChangeReason?.Length ?? 0) > 1024)
+            throw new InvalidOperationException("CHANGE_METADATA_TOO_LONG");
+    }
 }
 
 public sealed class ReleasePackageWriter
@@ -107,6 +132,10 @@ public sealed class ReleasePackageWriter
             PayloadHash = payload.PayloadHash,
             ForwardHash = payload.ForwardHash,
             RollbackHash = payload.RollbackHash,
+            ChangeOrigin = payload.ChangeOrigin,
+            ChangePath = payload.ChangePath,
+            ChangeReference = payload.ChangeReference,
+            ChangeReason = payload.ChangeReason,
             PreSchemaHash = rehearsal.Pre?.Sha256,
             PostSchemaHash = rehearsal.Post1?.Sha256,
             SchemaRollbackValidity = rehearsal.SchemaRollbackValidity,
@@ -161,6 +190,10 @@ public sealed class ReleasePackageWriter
                 || !string.Equals(existing.SourceKind, payload.SourceKind, StringComparison.Ordinal)
                 || !string.Equals(existing.Scenario, payload.Scenario, StringComparison.Ordinal)
                 || !string.Equals(existing.DatabaseLifecycle, payload.DatabaseLifecycle, StringComparison.Ordinal)
+                || !string.Equals(existing.ChangeOrigin, payload.ChangeOrigin, StringComparison.Ordinal)
+                || !string.Equals(existing.ChangePath, payload.ChangePath, StringComparison.Ordinal)
+                || !string.Equals(existing.ChangeReference, payload.ChangeReference, StringComparison.Ordinal)
+                || !string.Equals(existing.ChangeReason, payload.ChangeReason, StringComparison.Ordinal)
                 || !string.Equals(existing.ForwardHash, payload.ForwardHash, StringComparison.Ordinal)
                 || !string.Equals(existing.RollbackHash, payload.RollbackHash, StringComparison.Ordinal))
                 throw new InvalidOperationException("PAYLOAD_IDENTITY_MISMATCH");

@@ -213,6 +213,18 @@ public sealed class DiscoveryGate
     public bool IsConsistent => string.Equals(ConsistencyStatus, "CONSISTENT", StringComparison.Ordinal);
 }
 
+public static class DatabaseChangeOrigins
+{
+    public const string Application = "APPLICATION";
+    public const string Dba = "DBA";
+}
+
+public static class DatabaseChangePaths
+{
+    public const string PlannedRelease = "PLANNED_RELEASE";
+    public const string OutOfBand = "OUT_OF_BAND";
+}
+
 public sealed class ReleaseDescriptor
 {
     public required string ReleaseId { get; init; }
@@ -220,6 +232,10 @@ public sealed class ReleaseDescriptor
     public required string SourceKind { get; init; }
     public required string Scenario { get; init; }
     public required string DatabaseLifecycle { get; init; }
+    public string ChangeOrigin { get; init; } = DatabaseChangeOrigins.Application;
+    public string ChangePath { get; init; } = DatabaseChangePaths.PlannedRelease;
+    public string? ChangeReference { get; init; }
+    public string? ChangeReason { get; init; }
 }
 
 public sealed class RehearsalResult
@@ -283,6 +299,10 @@ public sealed class ReleasePayloadMetadata
     public required string SourceKind { get; init; }
     public required string Scenario { get; init; }
     public required string DatabaseLifecycle { get; init; }
+    public required string ChangeOrigin { get; init; }
+    public required string ChangePath { get; init; }
+    public string? ChangeReference { get; init; }
+    public string? ChangeReason { get; init; }
     public required string ForwardHash { get; init; }
     public required string RollbackHash { get; init; }
     public required string PayloadHash { get; init; }
@@ -297,6 +317,10 @@ public sealed class QualificationAttestation
     public required string PayloadHash { get; init; }
     public required string ForwardHash { get; init; }
     public required string RollbackHash { get; init; }
+    public required string ChangeOrigin { get; init; }
+    public required string ChangePath { get; init; }
+    public string? ChangeReference { get; init; }
+    public string? ChangeReason { get; init; }
     public string? PreSchemaHash { get; init; }
     public string? PostSchemaHash { get; init; }
     public SchemaRollbackValidity SchemaRollbackValidity { get; init; }

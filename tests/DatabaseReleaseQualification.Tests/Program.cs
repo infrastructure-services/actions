@@ -109,7 +109,37 @@ var tests = new (string Name, Func<Task> Run)[]
     ("CICDV3 continúa bloqueada por lineage", Cicdv3BootstrapRemainsBlockedByLineage),
     ("RESTORE_REQUIRED autorizado puede certificar", RestoreRequiredAuthorizedCertifiesAutomatically),
     ("RESTORE_REQUIRED sin autorización queda bloqueado", RestoreRequiredWithoutAuthorizationBlocks),
-    ("qualification gate no aprobado bloquea certificación", QualificationGateFailureBlocks)
+    ("qualification gate no aprobado bloquea certificación", QualificationGateFailureBlocks),
+    ("SQL DBA planned usa el mismo Database Release engine", PlannedDbaUsesSharedReleaseEngine),
+    ("DBA no puede declarar finalRisk", PlannedDbaCannotOverrideRisk),
+    ("DBA HIGH conserva policy normal", PlannedDbaHighUsesNormalPolicy),
+    ("DBA LOW elegible puede autorizarse automáticamente", PlannedDbaLowCanBeAutomatic),
+    ("DBA con rollback INVALID queda bloqueado", PlannedDbaInvalidRollbackBlocks),
+    ("una diferencia DBA aprobada queda lista para certificar", KnownDbaDifferenceIsReady),
+    ("approved más unexplained bloquea reconciliación", MixedReconciliationBlocks),
+    ("todas las diferencias explicadas quedan listas", AllExplainedDifferencesAreReady),
+    ("sin diferencias no hay reconciliación", NoDifferencesNeedsNoReconciliation),
+    ("approved out-of-band requiere reference y reason", ApprovedOutOfBandRequiresMetadata),
+    ("reconciliation no expone accept-all", ReconciliationHasNoAcceptAll),
+    ("evidencia conserva before y after por objeto", ReconciliationEvidencePreservesObjectFingerprints),
+    ("estado reconciliado usa canonical observado completo", ReconciledStateContainsApprovedDbaObject),
+    ("estado reconciliado no repite drift futuro", ReconciledStateDoesNotDriftAgain),
+    ("Existing EF certificado y consistente queda managed", ExistingEfOnboardingIsManaged),
+    ("Existing legacy SQL certificado queda managed", ExistingLegacySqlOnboardingIsManaged),
+    ("Existing EF con history sin repo queda bloqueado", ExistingEfHistoryWithoutRepoIsBlocked),
+    ("structural certificado no supera lineage bloqueado", CertifiedStructuralDoesNotOverrideBlockedLineage),
+    ("baseline candidate con lineage válido queda pending", CandidateWithValidLineageIsPending),
+    ("drift sin explicación bloquea onboarding", UnexplainedDriftBlocksOnboarding),
+    ("reconciliation lista aún no queda managed", ReadyReconciliationIsNotManaged),
+    ("reconciliation certificada restaura managed", CertifiedReconciliationRestoresManaged),
+    ("DBA planned no genera drift de onboarding", PlannedDbaDoesNotCreateOnboardingDrift),
+    ("DBA out-of-band rompe la cadena administrada", DbaOutOfBandBreaksManagedChain),
+    ("NEW controlled inicia certificación automática 001", NewControlledCanStartAutomaticCertification),
+    ("NEW sin PRE inicial validado no certifica", NewWithoutValidatedInitialPreIsBlocked),
+    ("NEW sin initial qualified release no queda managed", NewWithoutQualifiedInitialReleaseIsNotManaged),
+    ("CICDV3 permanece bloqueada por lineage", Cicdv3OnboardingRemainsBlocked),
+    ("rehearsal exige onboarding managed", RehearsalRequiresManagedOnboarding),
+    ("onboarding no decide risk ni aprobación DBA", OnboardingDoesNotDecideRiskApproval)
 };
 
 var failed = 0;
@@ -1829,6 +1859,526 @@ static Task QualificationGateFailureBlocks()
     return Task.CompletedTask;
 }
 
+static Task PlannedDbaUsesSharedReleaseEngine()
+{
+    var snapshot = BaseSnapshot(includeIndex: false);
+    var forward = ReleaseScript.FromText("forward", "CREATE INDEX IX_DBA ON dbo.Orden(Fecha);");
+    var rollback = ReleaseScript.FromText("rollback", "DROP INDEX IX_DBA ON dbo.Orden;");
+    var dbaRelease = PlannedDbaRelease();
+    var applicationRelease = TestRelease();
+    var dbaAnalysis = AnalyzePair(snapshot, forward.Text, rollback.Text);
+    var applicationAnalysis = AnalyzePair(snapshot, forward.Text, rollback.Text);
+    var dbaRisk = new RiskEngine().Evaluate(dbaAnalysis, snapshot);
+    var applicationRisk = new RiskEngine().Evaluate(applicationAnalysis, snapshot);
+    var payload = ReleasePayloadBuilder.Build(dbaRelease, forward, rollback);
+
+    Equal(applicationRisk.FinalRisk, dbaRisk.FinalRisk);
+    Equal(applicationRisk.DependencyRisk, dbaRisk.DependencyRisk);
+    Equal("SQL", payload.SourceKind);
+    Equal(DatabaseChangeOrigins.Dba, payload.ChangeOrigin);
+    Equal(DatabaseChangePaths.PlannedRelease, payload.ChangePath);
+    Equal("CHG-DBA-001", payload.ChangeReference);
+    Equal("Crear índice operativo planificado", payload.ChangeReason);
+    True(typeof(ReleaseDescriptor).GetProperty("DbaRisk") is null);
+    True(applicationRelease.ChangeOrigin == DatabaseChangeOrigins.Application);
+    return Task.CompletedTask;
+}
+
+static Task PlannedDbaCannotOverrideRisk()
+{
+    var snapshot = BaseSnapshot(includeIndex: false);
+    var risk = AnalyzeRisk(snapshot, "DROP TABLE dbo.Orden;", "CREATE TABLE dbo.Orden(Id int);");
+    Equal(RiskLevel.High, risk.FinalRisk);
+    True(typeof(ReleaseDescriptor).GetProperty("FinalRisk") is null);
+    True(typeof(ReleasePayloadMetadata).GetProperty("FinalRisk") is null);
+    Equal(DatabaseChangeOrigins.Dba, PlannedDbaRelease().ChangeOrigin);
+    return Task.CompletedTask;
+}
+
+static Task PlannedDbaHighUsesNormalPolicy()
+{
+    var snapshot = BaseSnapshot(includeIndex: false);
+    var risk = AnalyzeRisk(snapshot, "DROP TABLE dbo.Orden;", "CREATE TABLE dbo.Orden(Id int);");
+    Equal(RiskLevel.High, risk.FinalRisk);
+    True(risk.RequiresDbaApproval);
+    var payload = ReleasePayloadBuilder.Build(
+        PlannedDbaRelease(),
+        ReleaseScript.FromText("forward", "DROP TABLE dbo.Orden;"),
+        ReleaseScript.FromText("rollback", "CREATE TABLE dbo.Orden(Id int);"));
+    Equal(DatabaseChangeOrigins.Dba, payload.ChangeOrigin);
+    return Task.CompletedTask;
+}
+
+static Task PlannedDbaLowCanBeAutomatic()
+{
+    var snapshot = BaseSnapshot(includeIndex: false);
+    var risk = AnalyzeRisk(snapshot, "SELECT 1;", "SELECT 1;");
+    Equal(RiskLevel.Low, risk.FinalRisk);
+    True(!risk.RequiresDbaApproval);
+    var certification = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(finalRisk: risk.FinalRisk));
+    Equal(CertificationDecision.Automatic, certification.Decision);
+    Equal(DeploymentAuthorizationRequirement.AutomaticPolicy,
+        certification.Evidence.DeploymentAuthorizationRequirement);
+    return Task.CompletedTask;
+}
+
+static Task PlannedDbaInvalidRollbackBlocks()
+{
+    var release = PlannedDbaRelease();
+    var certification = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(
+            finalRisk: RiskLevel.High,
+            schemaRollbackValidity: SchemaRollbackValidity.Invalid,
+            authorizationRequirement: DeploymentAuthorizationRequirement.DbaApproval,
+            authorizationDecision: DeploymentAuthorizationDecision.Authorized));
+    Equal(DatabaseChangeOrigins.Dba, release.ChangeOrigin);
+    Equal(CertificationDecision.Blocked, certification.Decision);
+    Equal(CertificationDecisionReasons.InvalidRollback, certification.DecisionReason);
+    return Task.CompletedTask;
+}
+
+static Task KnownDbaDifferenceIsReady()
+{
+    var (certified, observed) = ReconciliationSchemas(oneDifference: true);
+    var difference = StructuralDifferenceBuilder.Build(certified, observed).Single();
+    var result = new ReconciliationEvaluator().Evaluate(
+        ReconciliationContextFixture(CertificationOrigin.BreakGlassReconciliation),
+        certified,
+        observed,
+        [ApproveDba(difference)]);
+    Equal(ReconciliationStatus.ReadyForCertification, result.ReconciliationStatus);
+    Equal(1, result.ApprovedDifferenceCount);
+    Equal(0, result.UnexplainedDifferenceCount);
+    Equal(CertificationOrigin.BreakGlassReconciliation, result.Evidence.CertificationOrigin);
+    True(result.ReconciledCanonicalStateCandidate is not null);
+    return Task.CompletedTask;
+}
+
+static Task MixedReconciliationBlocks()
+{
+    var (certified, observed) = ReconciliationSchemas(oneDifference: false);
+    var differences = StructuralDifferenceBuilder.Build(certified, observed);
+    var result = new ReconciliationEvaluator().Evaluate(
+        ReconciliationContextFixture(CertificationOrigin.BreakGlassReconciliation),
+        certified,
+        observed,
+        [ApproveDba(differences[0])]);
+    Equal(2, differences.Count);
+    Equal(ReconciliationStatus.Blocked, result.ReconciliationStatus);
+    Equal(1, result.ApprovedDifferenceCount);
+    Equal(1, result.UnexplainedDifferenceCount);
+    True(result.BlockingReasons.Any(reason => reason.StartsWith("UNEXPLAINED_DIFFERENCE:", StringComparison.Ordinal)));
+    True(result.ReconciledCanonicalStateCandidate is null);
+    return Task.CompletedTask;
+}
+
+static Task AllExplainedDifferencesAreReady()
+{
+    var (certified, observed) = ReconciliationSchemas(oneDifference: false);
+    var differences = StructuralDifferenceBuilder.Build(certified, observed);
+    var dispositions = new[]
+    {
+        ApproveDba(differences[0]),
+        new ReconciliationDisposition
+        {
+            DifferenceId = differences[1].DifferenceId,
+            Classification = ReconciliationClassification.Expected,
+            ChangeOrigin = DatabaseChangeOrigins.Application,
+            Reference = "release-expected-002",
+            Reason = "Cambio estructural esperado por release calificada"
+        }
+    };
+    var result = new ReconciliationEvaluator().Evaluate(
+        ReconciliationContextFixture(CertificationOrigin.DriftReconciliation),
+        certified,
+        observed,
+        dispositions);
+    Equal(ReconciliationStatus.ReadyForCertification, result.ReconciliationStatus);
+    Equal(2, result.ApprovedDifferenceCount);
+    Equal(0, result.UnexplainedDifferenceCount);
+    return Task.CompletedTask;
+}
+
+static Task NoDifferencesNeedsNoReconciliation()
+{
+    var canonical = SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: false));
+    var result = new ReconciliationEvaluator().Evaluate(
+        ReconciliationContextFixture(CertificationOrigin.DriftReconciliation),
+        canonical,
+        canonical);
+    Equal(ReconciliationStatus.NoDifferences, result.ReconciliationStatus);
+    Equal(0, result.Items.Count);
+    Equal(0, result.ApprovedDifferenceCount);
+    Equal(0, result.UnexplainedDifferenceCount);
+    True(result.ReconciledCanonicalStateCandidate is null);
+    return Task.CompletedTask;
+}
+
+static Task ApprovedOutOfBandRequiresMetadata()
+{
+    var (certified, observed) = ReconciliationSchemas(oneDifference: true);
+    var difference = StructuralDifferenceBuilder.Build(certified, observed).Single();
+    var result = new ReconciliationEvaluator().Evaluate(
+        ReconciliationContextFixture(CertificationOrigin.BreakGlassReconciliation),
+        certified,
+        observed,
+        [new ReconciliationDisposition
+        {
+            DifferenceId = difference.DifferenceId,
+            Classification = ReconciliationClassification.ApprovedOutOfBand,
+            ChangeOrigin = DatabaseChangeOrigins.Dba
+        }]);
+    Equal(ReconciliationStatus.Blocked, result.ReconciliationStatus);
+    True(result.BlockingReasons.Any(reason => reason.StartsWith(
+        "APPROVED_OUT_OF_BAND_METADATA_REQUIRED:", StringComparison.Ordinal)));
+    Equal(1, result.UnexplainedDifferenceCount);
+    return Task.CompletedTask;
+}
+
+static Task ReconciliationHasNoAcceptAll()
+{
+    var exposedTypes = new[]
+    {
+        typeof(ReconciliationEvaluator),
+        typeof(ReconciliationContext),
+        typeof(ReconciliationDisposition),
+        typeof(ReconciliationResult),
+        typeof(ReconciliationEvidence)
+    };
+    True(exposedTypes.SelectMany(type => type.GetProperties())
+        .All(property => !property.Name.Contains("AcceptAll", StringComparison.OrdinalIgnoreCase)));
+    return Task.CompletedTask;
+}
+
+static Task ReconciliationEvidencePreservesObjectFingerprints()
+{
+    var certified = SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: false, nullable: false));
+    var observed = SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: false, nullable: true));
+    var difference = StructuralDifferenceBuilder.Build(certified, observed).Single();
+    var result = new ReconciliationEvaluator().Evaluate(
+        ReconciliationContextFixture(CertificationOrigin.DriftReconciliation),
+        certified,
+        observed,
+        [new ReconciliationDisposition
+        {
+            DifferenceId = difference.DifferenceId,
+            Classification = ReconciliationClassification.Expected,
+            ChangeOrigin = DatabaseChangeOrigins.Application,
+            Reference = "release-expected-003",
+            Reason = "Nullability esperada por qualified release"
+        }]);
+    var item = result.Evidence.Items.Single();
+    Equal("column|dbo|Orden|Fecha", item.ObjectIdentity);
+    Equal("column", item.ObjectType);
+    Equal(ReconciliationChangeType.Modified, item.ChangeType);
+    True(item.BeforeFingerprint?.Length == 64);
+    True(item.AfterFingerprint?.Length == 64);
+    NotEqual(item.BeforeFingerprint, item.AfterFingerprint);
+    return Task.CompletedTask;
+}
+
+static Task ReconciledStateContainsApprovedDbaObject()
+{
+    var (certified, observed) = ReconciliationSchemas(oneDifference: true);
+    var difference = StructuralDifferenceBuilder.Build(certified, observed).Single();
+    var result = new ReconciliationEvaluator().Evaluate(
+        ReconciliationContextFixture(CertificationOrigin.BreakGlassReconciliation),
+        certified,
+        observed,
+        [ApproveDba(difference)]);
+    var candidate = result.ReconciledCanonicalStateCandidate!;
+    Equal(observed.Sha256, candidate.Sha256);
+    True(candidate.Document.Objects.Any(item => item.Identity == difference.ObjectIdentity));
+    True(typeof(ReconciliationResult).GetProperties()
+        .All(property => !property.Name.Contains("Exclusion", StringComparison.OrdinalIgnoreCase)));
+    return Task.CompletedTask;
+}
+
+static Task ReconciledStateDoesNotDriftAgain()
+{
+    var (certified, observed) = ReconciliationSchemas(oneDifference: true);
+    var difference = StructuralDifferenceBuilder.Build(certified, observed).Single();
+    var reconciliation = new ReconciliationEvaluator().Evaluate(
+        ReconciliationContextFixture(CertificationOrigin.BreakGlassReconciliation),
+        certified,
+        observed,
+        [ApproveDba(difference)]);
+    var futureDiff = SchemaComparer.Compare(reconciliation.ReconciledCanonicalStateCandidate!, observed);
+    True(futureDiff.IsEquivalent);
+    return Task.CompletedTask;
+}
+
+static Task ExistingEfOnboardingIsManaged()
+{
+    var result = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("EXISTING_EF", "EF"),
+        CertifiedMatchingState());
+    Equal(StructuralOnboardingState.Certified, result.StructuralState);
+    Equal(LineageOnboardingState.ConsistentEf, result.LineageState);
+    Equal(ReconciliationOnboardingState.Match, result.ReconciliationState);
+    Equal(CertificationOnboardingState.Certified, result.CertificationState);
+    Equal(OverallOnboardingStatus.Managed, result.OverallOnboardingStatus);
+    True(result.DeploymentEligibility);
+    True(result.RehearsalEligibility);
+    return Task.CompletedTask;
+}
+
+static Task ExistingLegacySqlOnboardingIsManaged()
+{
+    var result = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("EXISTING_SQL", "SQL"),
+        CertifiedMatchingState());
+    Equal(LineageOnboardingState.LegacySql, result.LineageState);
+    Equal(OverallOnboardingStatus.Managed, result.OverallOnboardingStatus);
+    True(result.IsManaged);
+    True(!result.Reasons.Contains(DatabaseOnboardingReasons.LineageDivergent));
+    return Task.CompletedTask;
+}
+
+static Task ExistingEfHistoryWithoutRepoIsBlocked()
+{
+    var result = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("BLOCKED", "UNKNOWN", "BLOCKED", "BLOCKED_HISTORY_WITHOUT_REPO"),
+        BaselineCandidateState());
+    Equal(StructuralOnboardingState.Candidate, result.StructuralState);
+    Equal(LineageOnboardingState.BlockedHistoryWithoutRepo, result.LineageState);
+    Equal(OverallOnboardingStatus.Blocked, result.OverallOnboardingStatus);
+    True(result.Reasons.Contains(DatabaseOnboardingReasons.LineageBlockedHistoryWithoutRepo));
+    True(!result.DeploymentEligibility);
+    return Task.CompletedTask;
+}
+
+static Task CertifiedStructuralDoesNotOverrideBlockedLineage()
+{
+    var result = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("BLOCKED", "UNKNOWN", "BLOCKED", "BLOCKED_HISTORY_WITHOUT_REPO"),
+        CertifiedMatchingState());
+    Equal(StructuralOnboardingState.Certified, result.StructuralState);
+    Equal(OverallOnboardingStatus.Blocked, result.OverallOnboardingStatus);
+    True(!result.RehearsalEligibility);
+    True(result.Reasons.Contains(DatabaseOnboardingReasons.LineageBlockedHistoryWithoutRepo));
+    return Task.CompletedTask;
+}
+
+static Task CandidateWithValidLineageIsPending()
+{
+    var result = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("EXISTING_EF", "EF"),
+        BaselineCandidateState());
+    Equal(StructuralOnboardingState.Candidate, result.StructuralState);
+    Equal(OverallOnboardingStatus.Pending, result.OverallOnboardingStatus);
+    True(result.Reasons.Contains(DatabaseOnboardingReasons.BaselineNotCertified));
+    True(result.Reasons.Contains(DatabaseOnboardingReasons.ExistingBootstrapRequired));
+    True(!result.DeploymentEligibility);
+    True(!result.RehearsalEligibility);
+    return Task.CompletedTask;
+}
+
+static Task UnexplainedDriftBlocksOnboarding()
+{
+    var result = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("EXISTING_SQL", "SQL"),
+        CertifiedDriftedState());
+    Equal(StructuralOnboardingState.Certified, result.StructuralState);
+    Equal(ReconciliationOnboardingState.Blocked, result.ReconciliationState);
+    Equal(OverallOnboardingStatus.Blocked, result.OverallOnboardingStatus);
+    True(result.Reasons.Contains(DatabaseOnboardingReasons.UnexplainedDrift));
+    return Task.CompletedTask;
+}
+
+static Task ReadyReconciliationIsNotManaged()
+{
+    var fixture = ReadyReconciliationFixture();
+    var result = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("EXISTING_SQL", "SQL"),
+        fixture.State,
+        fixture.Reconciliation);
+    Equal(ReconciliationOnboardingState.ReadyForCertification, result.ReconciliationState);
+    Equal(OverallOnboardingStatus.Blocked, result.OverallOnboardingStatus);
+    True(result.Reasons.Contains(DatabaseOnboardingReasons.ReconciliationPending));
+    True(!result.DeploymentEligibility);
+    return Task.CompletedTask;
+}
+
+static Task CertifiedReconciliationRestoresManaged()
+{
+    var fixture = ReadyReconciliationFixture();
+    var certification = ReconciliationCertification(
+        fixture.Certified.Sha256,
+        fixture.Observed.Sha256);
+    True(certification.ProducesCertifiedState);
+    var result = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("EXISTING_SQL", "SQL"),
+        fixture.State,
+        fixture.Reconciliation,
+        certification);
+    Equal(StructuralOnboardingState.Certified, result.StructuralState);
+    Equal(ReconciliationOnboardingState.Reconciled, result.ReconciliationState);
+    Equal(CertificationOnboardingState.Certified, result.CertificationState);
+    Equal(OverallOnboardingStatus.Managed, result.OverallOnboardingStatus);
+    True(result.RehearsalEligibility);
+    return Task.CompletedTask;
+}
+
+static Task PlannedDbaDoesNotCreateOnboardingDrift()
+{
+    var release = PlannedDbaRelease();
+    var result = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("EXISTING_SQL", "SQL"),
+        CertifiedMatchingState());
+    Equal(DatabaseChangeOrigins.Dba, release.ChangeOrigin);
+    Equal(DatabaseChangePaths.PlannedRelease, release.ChangePath);
+    Equal(ReconciliationOnboardingState.Match, result.ReconciliationState);
+    Equal(OverallOnboardingStatus.Managed, result.OverallOnboardingStatus);
+    True(typeof(DatabaseOnboardingRequest).GetProperty("ChangeOrigin") is null);
+    return Task.CompletedTask;
+}
+
+static Task DbaOutOfBandBreaksManagedChain()
+{
+    var outOfBand = new ReleaseDescriptor
+    {
+        ReleaseId = "dba-break-glass-001",
+        Environment = "TEST",
+        SourceKind = "SQL",
+        Scenario = "EXISTING_SQL",
+        DatabaseLifecycle = DatabaseLifecycles.Existing,
+        ChangeOrigin = DatabaseChangeOrigins.Dba,
+        ChangePath = DatabaseChangePaths.OutOfBand,
+        ChangeReference = "INC-001",
+        ChangeReason = "Cambio operacional de emergencia"
+    };
+    var result = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("EXISTING_SQL", "SQL"),
+        CertifiedDriftedState());
+    Equal(DatabaseChangePaths.OutOfBand, outOfBand.ChangePath);
+    Equal(ReconciliationOnboardingState.Blocked, result.ReconciliationState);
+    Equal(OverallOnboardingStatus.Blocked, result.OverallOnboardingStatus);
+    True(result.Reasons.Contains(DatabaseOnboardingReasons.UnexplainedDrift));
+    return Task.CompletedTask;
+}
+
+static Task NewControlledCanStartAutomaticCertification()
+{
+    var certification = new CertificationDecisionEngine().Evaluate(
+        NewControlledCertificationRequest(qualifiedRelease: true));
+    Equal(CertificationDecision.Automatic, certification.Decision);
+    Equal(CertificationOrigin.QualifiedRelease, certification.Origin);
+    Equal(CertificationDecisionReasons.QualifiedInitialReleaseTransition, certification.DecisionReason);
+    True(certification.Evidence.ControlledInitialCertification);
+    True(certification.Evidence.InitialPreMatchesQualified);
+    True(certification.Evidence.ChainOfTrustIntact);
+
+    var state = EvaluateRegistry(
+        RegistryTarget(DatabaseCertificationStatuses.BaselineRequired,
+            lifecycle: DatabaseLifecycles.New),
+        RegistryObservation(CertificationPostHash()));
+    var onboarding = EvaluateOnboarding(
+        DatabaseLifecycles.New,
+        LineageAssessment("NEW_EF", "EF"),
+        state,
+        certification: certification);
+    Equal(StructuralOnboardingState.Certified, onboarding.StructuralState);
+    Equal(OverallOnboardingStatus.Managed, onboarding.OverallOnboardingStatus);
+    True(onboarding.RehearsalEligibility);
+    return Task.CompletedTask;
+}
+
+static Task NewWithoutValidatedInitialPreIsBlocked()
+{
+    var certification = new CertificationDecisionEngine().Evaluate(
+        NewControlledCertificationRequest(qualifiedRelease: true, initialPreValidated: false));
+    Equal(CertificationDecision.Blocked, certification.Decision);
+    Equal(CertificationDecisionReasons.ControlledInitialPreRequired, certification.DecisionReason);
+    True(!certification.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task NewWithoutQualifiedInitialReleaseIsNotManaged()
+{
+    var certification = new CertificationDecisionEngine().Evaluate(
+        NewControlledCertificationRequest(qualifiedRelease: false));
+    Equal(CertificationDecision.Blocked, certification.Decision);
+    Equal(CertificationDecisionReasons.QualifiedReleaseRequired, certification.DecisionReason);
+    var state = EvaluateRegistry(
+        RegistryTarget(DatabaseCertificationStatuses.BaselineRequired,
+            lifecycle: DatabaseLifecycles.New),
+        RegistryObservation(CertificationPostHash()));
+    var onboarding = EvaluateOnboarding(
+        DatabaseLifecycles.New,
+        LineageAssessment("NEW_EF", "EF"),
+        state,
+        certification: certification);
+    Equal(StructuralOnboardingState.Candidate, onboarding.StructuralState);
+    Equal(OverallOnboardingStatus.Pending, onboarding.OverallOnboardingStatus);
+    True(onboarding.Reasons.Contains(DatabaseOnboardingReasons.QualifiedInitialReleaseRequired));
+    True(!onboarding.IsManaged);
+    return Task.CompletedTask;
+}
+
+static Task Cicdv3OnboardingRemainsBlocked()
+{
+    var state = BaselineCandidateState();
+    Equal("3602", state.ApplicationId);
+    Equal("TEST", state.Environment);
+    Equal("CICDV3", state.DatabaseName);
+    var result = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("BLOCKED", "UNKNOWN", "BLOCKED", "BLOCKED_HISTORY_WITHOUT_REPO"),
+        state);
+    Equal(StructuralOnboardingState.Candidate, result.StructuralState);
+    Equal(OverallOnboardingStatus.Blocked, result.OverallOnboardingStatus);
+    True(!result.RehearsalEligibility);
+    True(!result.DeploymentEligibility);
+    True(result.Reasons.Contains(DatabaseOnboardingReasons.LineageBlockedHistoryWithoutRepo));
+    return Task.CompletedTask;
+}
+
+static Task RehearsalRequiresManagedOnboarding()
+{
+    var pending = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("EXISTING_SQL", "SQL"),
+        BaselineCandidateState());
+    var blocked = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("BLOCKED", "UNKNOWN", "BLOCKED", "BLOCKED_EF_SEQUENCE_DIVERGED"),
+        CertifiedMatchingState());
+    True(!pending.RehearsalEligibility);
+    True(!blocked.RehearsalEligibility);
+    True(pending.OverallOnboardingStatus != OverallOnboardingStatus.Managed);
+    True(blocked.OverallOnboardingStatus != OverallOnboardingStatus.Managed);
+    return Task.CompletedTask;
+}
+
+static Task OnboardingDoesNotDecideRiskApproval()
+{
+    var exposedTypes = new[]
+    {
+        typeof(DatabaseOnboardingEvaluator),
+        typeof(DatabaseOnboardingRequest),
+        typeof(DatabaseOnboardingResult),
+        typeof(DatabaseLineageAssessment)
+    };
+    var names = exposedTypes.SelectMany(type => type.GetProperties()).Select(property => property.Name).ToArray();
+    True(names.All(name => !name.Contains("Risk", StringComparison.OrdinalIgnoreCase)));
+    True(names.All(name => !name.Contains("Approval", StringComparison.OrdinalIgnoreCase)));
+    True(names.All(name => !name.Contains("AuthorizationDecision", StringComparison.OrdinalIgnoreCase)));
+    Equal(0, typeof(DatabaseOnboardingEvaluator).GetConstructors().Single().GetParameters().Length);
+    return Task.CompletedTask;
+}
+
 static RiskAnalysisReport AnalyzeRisk(SchemaSnapshot snapshot, string forward, string rollback) =>
     new RiskEngine().Evaluate(AnalyzePair(snapshot, forward, rollback), snapshot);
 
@@ -1927,6 +2477,42 @@ static CertificationRequest DerivedCertificationRequest(
     };
 }
 
+static CertificationRequest NewControlledCertificationRequest(
+    bool qualifiedRelease,
+    bool initialPreValidated = true) => new()
+{
+    Origin = CertificationOrigin.QualifiedRelease,
+    DatabaseLifecycle = DatabaseLifecycles.New,
+    InitialPreStateValidated = initialPreValidated,
+    ObservedPreSchemaHash = CertificationPreHash(),
+    QualifiedPreSchemaHash = CertificationPreHash(),
+    QualifiedPostSchemaHash = CertificationPostHash(),
+    ObservedPostSchemaHash = CertificationPostHash(),
+    ReleaseId = "qualified-initial-release-001",
+    QualifiedPayloadHash = CertificationPayloadHash(),
+    ExecutedPayloadHash = CertificationPayloadHash(),
+    QualifiedForwardHash = CertificationForwardHash(),
+    ExecutedForwardHash = CertificationForwardHash(),
+    QualifiedRollbackHash = CertificationRollbackHash(),
+    VerifiedRollbackHash = CertificationRollbackHash(),
+    QualifiedRelease = qualifiedRelease,
+    ExecutionSucceeded = true,
+    DriftStatus = DatabaseDriftStatuses.Match,
+    LineageStatus = "CONSISTENT",
+    DeploymentAuthorization = new DeploymentAuthorizationEvidence
+    {
+        PolicyId = "DEPLOYMENT_POLICY_V1",
+        Risk = RiskLevel.Low,
+        Requirement = DeploymentAuthorizationRequirement.AutomaticPolicy,
+        Decision = DeploymentAuthorizationDecision.Authorized,
+        ReleaseQualificationGatePassed = true,
+        AnalysisConfidence = AnalysisConfidence.Complete,
+        SchemaRollbackValidity = SchemaRollbackValidity.Valid,
+        DataRollbackValidity = DataRollbackValidity.NotApplicable,
+        RollbackCapability = RollbackCapability.FullReversible
+    }
+};
+
 static CertificationRequest BootstrapCertificationRequest(string lineageStatus = "CONSISTENT") => new()
 {
     Origin = CertificationOrigin.BootstrapApproved,
@@ -1940,6 +2526,133 @@ static string CertificationPostHash() => new('2', 64);
 static string CertificationPayloadHash() => new('3', 64);
 static string CertificationForwardHash() => new('4', 64);
 static string CertificationRollbackHash() => new('5', 64);
+
+static ReleaseDescriptor PlannedDbaRelease() => new()
+{
+    ReleaseId = "dba-release-001",
+    Environment = "TEST",
+    SourceKind = "SQL",
+    Scenario = "EXISTING_SQL",
+    DatabaseLifecycle = "EXISTING",
+    ChangeOrigin = DatabaseChangeOrigins.Dba,
+    ChangePath = DatabaseChangePaths.PlannedRelease,
+    ChangeReference = "CHG-DBA-001",
+    ChangeReason = "Crear índice operativo planificado"
+};
+
+static (CanonicalSchema Certified, CanonicalSchema Observed) ReconciliationSchemas(bool oneDifference)
+{
+    var certifiedSnapshot = BaseSnapshot(includeIndex: false);
+    var observedSnapshot = BaseSnapshot(includeIndex: false);
+    observedSnapshot.Objects.Add(Object("index", "dbo", "Orden", "IX_DBA_Fecha",
+        ("type", "NONCLUSTERED"), ("unique", "false"), ("disabled", "false")));
+    if (!oneDifference)
+    {
+        observedSnapshot.Objects.Add(Object("trigger", "dbo", "Orden", "TR_DBA_Audit",
+            ("disabled", "false"), ("insteadOf", "false")));
+    }
+    return (
+        SchemaCanonicalizer.Canonicalize(certifiedSnapshot),
+        SchemaCanonicalizer.Canonicalize(observedSnapshot));
+}
+
+static ReconciliationContext ReconciliationContextFixture(CertificationOrigin origin) => new()
+{
+    ReconciliationId = "reconciliation-001",
+    PreviousCertificationId = "certification-001",
+    ApplicationId = "3602",
+    Environment = "TEST",
+    DatabaseName = "CICDV3",
+    CertificationOrigin = origin,
+    CreatedAtUtc = DateTimeOffset.Parse("2026-08-26T12:00:00Z"),
+    RunMetadata = new SortedDictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["runId"] = "123456",
+        ["runAttempt"] = "1"
+    }
+};
+
+static ReconciliationDisposition ApproveDba(StructuralDifference difference) => new()
+{
+    DifferenceId = difference.DifferenceId,
+    Classification = ReconciliationClassification.ApprovedOutOfBand,
+    ChangeOrigin = DatabaseChangeOrigins.Dba,
+    Reference = "CHG-FIXTURE-001",
+    Reason = "Cambio DBA directo conocido y revisado"
+};
+
+static DatabaseLineageAssessment LineageAssessment(
+    string scenario,
+    string sourceKind,
+    string consistencyStatus = "CONSISTENT",
+    string consistencyReason = "OK") => new()
+{
+    Scenario = scenario,
+    SourceKind = sourceKind,
+    Discovery = new DiscoveryGate
+    {
+        ConsistencyStatus = consistencyStatus,
+        ConsistencyReason = consistencyReason
+    }
+};
+
+static DatabaseOnboardingResult EvaluateOnboarding(
+    string lifecycle,
+    DatabaseLineageAssessment lineage,
+    DatabaseStateEvaluation state,
+    ReconciliationResult? reconciliation = null,
+    CertificationResult? certification = null) => new DatabaseOnboardingEvaluator().Evaluate(new DatabaseOnboardingRequest
+{
+    DatabaseLifecycle = lifecycle,
+    LineageAssessment = lineage,
+    DatabaseState = state,
+    Reconciliation = reconciliation,
+    Certification = certification
+});
+
+static DatabaseStateEvaluation CertifiedMatchingState() => EvaluateRegistry(
+    RegistryTarget(DatabaseCertificationStatuses.Certified, ObservedSchemaHash()),
+    RegistryObservation());
+
+static DatabaseStateEvaluation CertifiedDriftedState() => EvaluateRegistry(
+    RegistryTarget(DatabaseCertificationStatuses.Certified, CertificationPreHash()),
+    RegistryObservation(CertificationPostHash()));
+
+static DatabaseStateEvaluation BaselineCandidateState() => EvaluateRegistry(
+    RegistryTarget(DatabaseCertificationStatuses.BaselineRequired),
+    RegistryObservation());
+
+static (CanonicalSchema Certified, CanonicalSchema Observed, DatabaseStateEvaluation State,
+    ReconciliationResult Reconciliation) ReadyReconciliationFixture()
+{
+    var (certified, observed) = ReconciliationSchemas(oneDifference: true);
+    var difference = StructuralDifferenceBuilder.Build(certified, observed).Single();
+    var reconciliation = new ReconciliationEvaluator().Evaluate(
+        ReconciliationContextFixture(CertificationOrigin.BreakGlassReconciliation),
+        certified,
+        observed,
+        [ApproveDba(difference)]);
+    var state = EvaluateRegistry(
+        RegistryTarget(DatabaseCertificationStatuses.Certified, certified.Sha256),
+        RegistryObservation(observed.Sha256));
+    return (certified, observed, state, reconciliation);
+}
+
+static CertificationResult ReconciliationCertification(string certifiedHash, string observedHash) =>
+    new CertificationDecisionEngine().Evaluate(new CertificationRequest
+    {
+        Origin = CertificationOrigin.BreakGlassReconciliation,
+        DatabaseLifecycle = DatabaseLifecycles.Existing,
+        CertifiedPreSchemaHash = certifiedHash,
+        ObservedPreSchemaHash = observedHash,
+        ObservedPostSchemaHash = observedHash,
+        DriftStatus = DatabaseDriftStatuses.DriftDetected,
+        LineageStatus = "CONSISTENT",
+        OutOfBandChangeDetected = true,
+        ReconciliationCompleted = true,
+        CertificationApprovalGranted = CertificationApprovalRequirement.Dba,
+        CertificationApprovalReference = "CHG-RECONCILIATION-001"
+    });
 
 static ReleaseDescriptor TestRelease(string environment = "TEST") => new()
 {
@@ -1997,12 +2710,13 @@ static DatabaseTarget RegistryTarget(
     string certificationStatus,
     string? certifiedSchemaHash = null,
     string environment = "TEST",
-    string databaseName = "CICDV3") => new()
+    string databaseName = "CICDV3",
+    string lifecycle = DatabaseLifecycles.Existing) => new()
 {
     ApplicationId = "3602",
     Environment = environment,
     DatabaseName = databaseName,
-    Lifecycle = "EXISTING",
+    Lifecycle = lifecycle,
     CertificationStatus = certificationStatus,
     CertifiedSchemaHash = certifiedSchemaHash
 };

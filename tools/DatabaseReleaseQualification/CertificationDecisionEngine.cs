@@ -42,6 +42,7 @@ public enum DeploymentAuthorizationDecision
 public static class CertificationDecisionReasons
 {
     public const string QualifiedReleaseTransition = "QUALIFIED_RELEASE_TRANSITION";
+    public const string QualifiedInitialReleaseTransition = "QUALIFIED_INITIAL_RELEASE_TRANSITION";
     public const string InitialBaselineApproval = "INITIAL_BASELINE_APPROVAL";
     public const string DriftReconciliation = "DRIFT_RECONCILIATION";
     public const string BreakGlassReconciliation = "BREAK_GLASS_RECONCILIATION";
@@ -65,6 +66,7 @@ public static class CertificationDecisionReasons
     public const string DeploymentAuthorizationRequired = "DEPLOYMENT_AUTHORIZATION_REQUIRED";
     public const string DeploymentAuthorizationBlocked = "DEPLOYMENT_AUTHORIZATION_BLOCKED";
     public const string DeploymentAuthorizationReferenceRequired = "DEPLOYMENT_AUTHORIZATION_REFERENCE_REQUIRED";
+    public const string ControlledInitialPreRequired = "CONTROLLED_INITIAL_PRE_REQUIRED";
 }
 
 public sealed class CertificationPolicy
@@ -101,6 +103,8 @@ public sealed class DeploymentAuthorizationEvidence
 public sealed class CertificationRequest
 {
     public required CertificationOrigin Origin { get; init; }
+    public string DatabaseLifecycle { get; init; } = DatabaseLifecycles.Existing;
+    public bool InitialPreStateValidated { get; init; }
     public string? CertifiedPreSchemaHash { get; init; }
     public required string ObservedPreSchemaHash { get; init; }
     public string? QualifiedPreSchemaHash { get; init; }
@@ -130,6 +134,9 @@ public sealed class CertificationEvidence
     public required string PolicyId { get; init; }
     public CertificationPolicyEvidence? CertificationPolicy { get; init; }
     public required CertificationOrigin Origin { get; init; }
+    public required string DatabaseLifecycle { get; init; }
+    public bool InitialPreStateValidated { get; init; }
+    public bool ControlledInitialCertification { get; init; }
     public required CertificationDecision Decision { get; init; }
     public required string DecisionReason { get; init; }
     public string? PreviousCertifiedSchemaHash { get; init; }
@@ -148,6 +155,7 @@ public sealed class CertificationEvidence
     public bool CertifiedPreAvailable { get; init; }
     public bool PreMatchesCertified { get; init; }
     public bool QualifiedPreMatchesCertified { get; init; }
+    public bool InitialPreMatchesQualified { get; init; }
     public bool QualifiedRelease { get; init; }
     public bool ExactQualifiedRelease { get; init; }
     public bool ExecutionSucceeded { get; init; }
@@ -208,16 +216,23 @@ public sealed class CertificationDecisionEngine(CertificationPolicy? policy = nu
 
     private CertificationResult EvaluateDerived(CertificationRequest request)
     {
-        if (request.CertifiedPreSchemaHash is null)
+        var controlledInitial = IsControlledInitial(request);
+        if (request.CertifiedPreSchemaHash is null && !controlledInitial)
+        {
+            var reason = request.DatabaseLifecycle == DatabaseLifecycles.New
+                ? CertificationDecisionReasons.ControlledInitialPreRequired
+                : CertificationDecisionReasons.CertifiedPreRequired;
             return Result(request, CertificationDecision.Blocked,
-                CertificationDecisionReasons.CertifiedPreRequired);
+                reason);
+        }
 
         if (request.OutOfBandChangeDetected
             || !string.Equals(request.DriftStatus, DatabaseDriftStatuses.Match, StringComparison.Ordinal))
             return Result(request, CertificationDecision.Blocked,
                 CertificationDecisionReasons.DriftReconciliationRequired);
 
-        if (!SameHash(request.CertifiedPreSchemaHash, request.ObservedPreSchemaHash))
+        if (!controlledInitial
+            && !SameHash(request.CertifiedPreSchemaHash, request.ObservedPreSchemaHash))
             return Result(request, CertificationDecision.Blocked,
                 CertificationDecisionReasons.PreStateDriftDetected);
 
@@ -225,7 +240,9 @@ public sealed class CertificationDecisionEngine(CertificationPolicy? policy = nu
             return Result(request, CertificationDecision.Blocked,
                 CertificationDecisionReasons.QualifiedReleaseRequired);
 
-        if (!SameHash(request.CertifiedPreSchemaHash, request.QualifiedPreSchemaHash))
+        if (!(controlledInitial
+                ? SameHash(request.ObservedPreSchemaHash, request.QualifiedPreSchemaHash)
+                : SameHash(request.CertifiedPreSchemaHash, request.QualifiedPreSchemaHash)))
             return Result(request, CertificationDecision.Blocked,
                 CertificationDecisionReasons.QualifiedPreMismatch);
 
@@ -273,7 +290,9 @@ public sealed class CertificationDecisionEngine(CertificationPolicy? policy = nu
                 CertificationDecisionReasons.QualifiedPostMismatch);
 
         return Result(request, CertificationDecision.Automatic,
-            CertificationDecisionReasons.QualifiedReleaseTransition,
+            controlledInitial
+                ? CertificationDecisionReasons.QualifiedInitialReleaseTransition
+                : CertificationDecisionReasons.QualifiedReleaseTransition,
             request.QualifiedPostSchemaHash);
     }
 
@@ -345,8 +364,11 @@ public sealed class CertificationDecisionEngine(CertificationPolicy? policy = nu
         CertificationApprovalRequirement requiredApproval = CertificationApprovalRequirement.None)
     {
         var certifiedPreAvailable = request.CertifiedPreSchemaHash is not null;
+        var controlledInitial = IsControlledInitial(request);
         var preMatchesCertified = SameHash(request.CertifiedPreSchemaHash, request.ObservedPreSchemaHash);
         var qualifiedPreMatchesCertified = SameHash(request.CertifiedPreSchemaHash, request.QualifiedPreSchemaHash);
+        var initialPreMatchesQualified = controlledInitial
+            && SameHash(request.ObservedPreSchemaHash, request.QualifiedPreSchemaHash);
         var exactQualifiedRelease = ExactQualifiedRelease(request);
         var postMatchesQualified = SameHash(request.QualifiedPostSchemaHash, request.ObservedPostSchemaHash);
         var authorization = request.DeploymentAuthorization;
@@ -355,10 +377,11 @@ public sealed class CertificationDecisionEngine(CertificationPolicy? policy = nu
             && authorization.Decision == DeploymentAuthorizationDecision.Authorized
             && (authorization.Requirement == DeploymentAuthorizationRequirement.AutomaticPolicy
                 || !string.IsNullOrWhiteSpace(authorization.AuthorizationReference));
+        var trustedPre = controlledInitial
+            ? request.InitialPreStateValidated && initialPreMatchesQualified
+            : certifiedPreAvailable && preMatchesCertified && qualifiedPreMatchesCertified;
         var chainIntact = request.Origin == CertificationOrigin.QualifiedRelease
-            && certifiedPreAvailable
-            && preMatchesCertified
-            && qualifiedPreMatchesCertified
+            && trustedPre
             && request.QualifiedRelease
             && exactQualifiedRelease
             && request.ExecutionSucceeded
@@ -386,6 +409,9 @@ public sealed class CertificationDecisionEngine(CertificationPolicy? policy = nu
                     BreakGlassApproval = _policy.BreakGlassApproval
                 },
             Origin = request.Origin,
+            DatabaseLifecycle = request.DatabaseLifecycle,
+            InitialPreStateValidated = request.InitialPreStateValidated,
+            ControlledInitialCertification = controlledInitial,
             Decision = decision,
             DecisionReason = reason,
             PreviousCertifiedSchemaHash = request.CertifiedPreSchemaHash,
@@ -404,6 +430,7 @@ public sealed class CertificationDecisionEngine(CertificationPolicy? policy = nu
             CertifiedPreAvailable = certifiedPreAvailable,
             PreMatchesCertified = preMatchesCertified,
             QualifiedPreMatchesCertified = qualifiedPreMatchesCertified,
+            InitialPreMatchesQualified = initialPreMatchesQualified,
             QualifiedRelease = request.QualifiedRelease,
             ExactQualifiedRelease = exactQualifiedRelease,
             ExecutionSucceeded = request.ExecutionSucceeded,
@@ -441,6 +468,8 @@ public sealed class CertificationDecisionEngine(CertificationPolicy? policy = nu
 
     private static bool HasValidCommonEvidence(CertificationRequest request)
     {
+        if (request.DatabaseLifecycle is not (DatabaseLifecycles.New or DatabaseLifecycles.Existing)) return false;
+        if (request.InitialPreStateValidated && request.DatabaseLifecycle != DatabaseLifecycles.New) return false;
         if (!IsHash(request.ObservedPreSchemaHash)) return false;
         if (request.CertifiedPreSchemaHash is not null && !IsHash(request.CertifiedPreSchemaHash)) return false;
         if (request.ObservedPostSchemaHash is not null && !IsHash(request.ObservedPostSchemaHash)) return false;
@@ -477,6 +506,12 @@ public sealed class CertificationDecisionEngine(CertificationPolicy? policy = nu
         && string.Equals(first, second, StringComparison.OrdinalIgnoreCase);
 
     private static bool IsHash(string? value) => value is not null && Sha256.IsMatch(value);
+
+    private static bool IsControlledInitial(CertificationRequest request) =>
+        request.Origin == CertificationOrigin.QualifiedRelease
+        && request.DatabaseLifecycle == DatabaseLifecycles.New
+        && request.CertifiedPreSchemaHash is null
+        && request.InitialPreStateValidated;
 
     private static bool ApprovalSatisfies(
         CertificationApprovalRequirement required,
