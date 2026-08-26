@@ -17,6 +17,35 @@ var tests = new (string Name, Func<Task> Run)[]
     ("CLI capture sin conexión falla antes de SQL", CliSchemaCaptureRequiresEnvironmentSecret),
     ("CLI compare devuelve estado no determinístico", CliSchemaComparisonBlocksMismatch),
     ("artifacts no conservan valores de identidad", SchemaCaptureArtifactsExcludeIdentityValue),
+    ("registry BASELINE_REQUIRED bloquea y pide candidate", RegistryBaselineRequired),
+    ("registryFormatVersion 1 es válido", RegistryFormatVersionOneIsValid),
+    ("registry sin versión es inválido", RegistryMissingFormatVersionIsInvalid),
+    ("registry con versión desconocida es inválido", RegistryUnknownFormatVersionIsInvalid),
+    ("registry CERTIFIED con hash igual produce MATCH", RegistryCertifiedMatch),
+    ("registry CERTIFIED con hash distinto detecta drift", RegistryCertifiedMismatch),
+    ("target no registrado queda bloqueado", RegistryTargetNotRegistered),
+    ("registry rechaza targets duplicados", RegistryRejectsDuplicateTargets),
+    ("registry rechaza CERTIFIED sin hash", RegistryRejectsCertifiedWithoutHash),
+    ("registry rechaza SHA256 inválido", RegistryRejectsInvalidHash),
+    ("registry rechaza environment inválido", RegistryRejectsInvalidEnvironment),
+    ("registry rechaza certificationStatus inválido", RegistryRejectsInvalidCertificationStatus),
+    ("registry rechaza lifecycle inválido", RegistryRejectsInvalidLifecycle),
+    ("registry rechaza campos obligatorios vacíos", RegistryRejectsEmptyRequiredFields),
+    ("registry rechaza baseline contradictorio", RegistryRejectsContradictoryBaseline),
+    ("baseline candidate nunca queda certificado", BaselineCandidateIsNeverCertified),
+    ("evaluación baseline no modifica registry", RegistryEvaluationDoesNotModifyRegistry),
+    ("observed hash nunca sustituye certified hash", ObservedHashNeverReplacesCertifiedHash),
+    ("evidencia de mismatch no inventa diff estructural", DriftEvidenceIsHashOnly),
+    ("registry commit aparece en evidencia", RegistryCommitAppearsInEvidence),
+    ("registry file SHA256 corresponde a bytes reales", RegistryFileShaMatchesBytes),
+    ("registry file SHA256 declarado incorrecto falla cerrado", RegistryFileShaMismatchFailsClosed),
+    ("cambiar targets cambia registry file SHA256", RegistryContentChangesFileSha),
+    ("cambiar observed no cambia registry file SHA256", ObservedHashDoesNotChangeRegistryFileSha),
+    ("baseline candidate conserva provenance", BaselineCandidatePreservesProvenance),
+    ("drift evidence conserva provenance", DriftEvidencePreservesProvenance),
+    ("MATCH sólo habilita gate de schema drift", MatchIsEligibleForSchemaDrift),
+    ("CLI baseline genera artifacts sin certificar", CliDatabaseStateBaselineProducesEvidence),
+    ("CLI registry inválido falla cerrado con evidencia", CliDatabaseStateInvalidRegistryFailsClosed),
     ("AST reconoce formatos equivalentes", AstEquivalentFormatting),
     ("AST resuelve aliases UPDATE y DELETE", AstResolvesAliases),
     ("AST reconoce statements requeridos", AstRecognizesRequiredStatements),
@@ -330,6 +359,461 @@ static Task SchemaCaptureArtifactsExcludeIdentityValue()
         DeleteTemp(root);
     }
     return Task.CompletedTask;
+}
+
+static Task RegistryBaselineRequired()
+{
+    var evaluation = EvaluateRegistry(RegistryTarget(DatabaseCertificationStatuses.BaselineRequired));
+    Equal(DatabaseCertificationStatuses.BaselineRequired, evaluation.RegistryStatus);
+    Equal(DatabaseDriftStatuses.BaselineRequired, evaluation.DriftStatus);
+    Equal(DatabaseGateStatuses.Blocked, evaluation.GateStatus);
+    Equal(DatabaseStateReasons.OnboardingBaselineRequired, evaluation.Reason);
+    True(evaluation.BaselineCandidate);
+    True(evaluation.CertifiedSchemaHash is null);
+    return Task.CompletedTask;
+}
+
+static Task RegistryFormatVersionOneIsValid()
+{
+    var registry = DatabaseRegistryLoader.Validate(RegistryDocument(), RegistryProvenance());
+    True(registry.IsValid);
+    Equal(1, registry.Registry!.RegistryFormatVersion);
+    return Task.CompletedTask;
+}
+
+static Task RegistryMissingFormatVersionIsInvalid()
+{
+    var registry = DatabaseRegistryLoader.Validate(
+        new DatabaseRegistryDocument { Targets = [] }, RegistryProvenance());
+    True(!registry.IsValid);
+    True(registry.Errors.Contains("REGISTRY_FORMAT_VERSION_INVALID", StringComparer.Ordinal));
+    Equal(DatabaseDriftStatuses.InvalidRegistry,
+        new DatabaseStateEvaluator().Evaluate(registry, RegistryObservation()).DriftStatus);
+    return Task.CompletedTask;
+}
+
+static Task RegistryUnknownFormatVersionIsInvalid()
+{
+    var registry = DatabaseRegistryLoader.Validate(new DatabaseRegistryDocument
+    {
+        RegistryFormatVersion = 2,
+        Targets = []
+    }, RegistryProvenance());
+    True(!registry.IsValid);
+    True(registry.Errors.Contains("REGISTRY_FORMAT_VERSION_INVALID", StringComparer.Ordinal));
+    Equal(DatabaseGateStatuses.Blocked,
+        new DatabaseStateEvaluator().Evaluate(registry, RegistryObservation()).GateStatus);
+    return Task.CompletedTask;
+}
+
+static Task RegistryCertifiedMatch()
+{
+    var evaluation = EvaluateRegistry(RegistryTarget(DatabaseCertificationStatuses.Certified, ObservedSchemaHash()));
+    Equal(DatabaseDriftStatuses.Match, evaluation.DriftStatus);
+    Equal(DatabaseGateStatuses.Eligible, evaluation.GateStatus);
+    Equal(DatabaseStateReasons.SchemaHashMatch, evaluation.Reason);
+    True(!evaluation.DriftDetected);
+    return Task.CompletedTask;
+}
+
+static Task RegistryCertifiedMismatch()
+{
+    var evaluation = EvaluateRegistry(RegistryTarget(DatabaseCertificationStatuses.Certified, new string('b', 64)));
+    Equal(DatabaseDriftStatuses.DriftDetected, evaluation.DriftStatus);
+    Equal(DatabaseGateStatuses.Blocked, evaluation.GateStatus);
+    Equal(DatabaseStateReasons.CertifiedSchemaHashMismatch, evaluation.Reason);
+    True(evaluation.DriftDetected);
+    Equal("HASH_MISMATCH", evaluation.DriftEvidenceKind);
+    True(!evaluation.StructuralDiffAvailable);
+    return Task.CompletedTask;
+}
+
+static Task RegistryTargetNotRegistered()
+{
+    var registry = DatabaseRegistryLoader.Validate(RegistryDocument(), RegistryProvenance());
+    var evaluation = new DatabaseStateEvaluator().Evaluate(registry, RegistryObservation());
+    Equal(DatabaseDriftStatuses.TargetNotRegistered, evaluation.RegistryStatus);
+    Equal(DatabaseDriftStatuses.TargetNotRegistered, evaluation.DriftStatus);
+    Equal(DatabaseGateStatuses.Blocked, evaluation.GateStatus);
+    Equal(DatabaseStateReasons.TargetNotRegistered, evaluation.Reason);
+    return Task.CompletedTask;
+}
+
+static Task RegistryRejectsDuplicateTargets()
+{
+    var registry = DatabaseRegistryLoader.Validate(new DatabaseRegistryDocument
+    {
+        RegistryFormatVersion = 1,
+        Targets =
+        [
+            RegistryTarget(DatabaseCertificationStatuses.BaselineRequired),
+            RegistryTarget(DatabaseCertificationStatuses.BaselineRequired)
+        ]
+    }, RegistryProvenance());
+    True(!registry.IsValid);
+    True(registry.Errors.Any(item => item.EndsWith("_DUPLICATE_TARGET", StringComparison.Ordinal)));
+    Equal(DatabaseDriftStatuses.InvalidRegistry,
+        new DatabaseStateEvaluator().Evaluate(registry, RegistryObservation()).DriftStatus);
+    return Task.CompletedTask;
+}
+
+static Task RegistryRejectsCertifiedWithoutHash()
+{
+    var registry = ValidateTarget(RegistryTarget(DatabaseCertificationStatuses.Certified));
+    True(!registry.IsValid);
+    True(registry.Errors.Any(item => item.EndsWith("_CERTIFIED_SCHEMA_HASH_REQUIRED", StringComparison.Ordinal)));
+    return Task.CompletedTask;
+}
+
+static Task RegistryRejectsInvalidHash()
+{
+    var registry = ValidateTarget(RegistryTarget(DatabaseCertificationStatuses.Certified, "not-a-sha256"));
+    True(!registry.IsValid);
+    True(registry.Errors.Any(item => item.EndsWith("_CERTIFIED_SCHEMA_HASH_INVALID", StringComparison.Ordinal)));
+    return Task.CompletedTask;
+}
+
+static Task RegistryRejectsInvalidEnvironment()
+{
+    var registry = ValidateTarget(RegistryTarget(DatabaseCertificationStatuses.BaselineRequired, environment: "DEV"));
+    True(!registry.IsValid);
+    True(registry.Errors.Any(item => item.EndsWith("_ENVIRONMENT_INVALID", StringComparison.Ordinal)));
+    return Task.CompletedTask;
+}
+
+static Task RegistryRejectsInvalidCertificationStatus()
+{
+    var registry = ValidateTarget(RegistryTarget("AUTO_CERTIFIED"));
+    True(!registry.IsValid);
+    True(registry.Errors.Any(item => item.EndsWith("_CERTIFICATION_STATUS_INVALID", StringComparison.Ordinal)));
+    return Task.CompletedTask;
+}
+
+static Task RegistryRejectsInvalidLifecycle()
+{
+    var registry = ValidateTarget(new DatabaseTarget
+    {
+        ApplicationId = "3602",
+        Environment = "TEST",
+        DatabaseName = "CICDV3",
+        Lifecycle = "LEGACY",
+        CertificationStatus = DatabaseCertificationStatuses.BaselineRequired
+    });
+    True(!registry.IsValid);
+    True(registry.Errors.Any(item => item.EndsWith("_LIFECYCLE_INVALID", StringComparison.Ordinal)));
+    return Task.CompletedTask;
+}
+
+static Task RegistryRejectsEmptyRequiredFields()
+{
+    var registry = ValidateTarget(new DatabaseTarget
+    {
+        ApplicationId = "",
+        Environment = "TEST",
+        DatabaseName = "",
+        Lifecycle = "EXISTING",
+        CertificationStatus = DatabaseCertificationStatuses.BaselineRequired
+    });
+    True(!registry.IsValid);
+    True(registry.Errors.Any(item => item.EndsWith("_APPLICATION_ID_REQUIRED", StringComparison.Ordinal)));
+    True(registry.Errors.Any(item => item.EndsWith("_DATABASE_NAME_REQUIRED", StringComparison.Ordinal)));
+    return Task.CompletedTask;
+}
+
+static Task RegistryRejectsContradictoryBaseline()
+{
+    var registry = ValidateTarget(RegistryTarget(
+        DatabaseCertificationStatuses.BaselineRequired, ""));
+    True(!registry.IsValid);
+    True(registry.Errors.Any(item => item.EndsWith("_BASELINE_CERTIFIED_HASH_CONTRADICTORY", StringComparison.Ordinal)));
+    return Task.CompletedTask;
+}
+
+static Task BaselineCandidateIsNeverCertified()
+{
+    var root = TempDirectory("baseline-candidate");
+    try
+    {
+        var observation = RegistryObservation();
+        var evaluation = EvaluateRegistry(RegistryTarget(DatabaseCertificationStatuses.BaselineRequired), observation);
+        var artifact = new DatabaseStateArtifactWriter().Write(root, observation, evaluation);
+        True(artifact.BaselineCandidatePath is not null);
+        var candidate = JsonDocument.Parse(File.ReadAllText(artifact.BaselineCandidatePath!));
+        Equal("NOT_CERTIFIED", candidate.RootElement.GetProperty("candidateStatus").GetString());
+        Equal(ObservedSchemaHash(), candidate.RootElement.GetProperty("observedSchemaHash").GetString());
+        True(!candidate.RootElement.TryGetProperty("certifiedSchemaHash", out _));
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task RegistryEvaluationDoesNotModifyRegistry()
+{
+    var root = TempDirectory("registry-immutable");
+    try
+    {
+        Directory.CreateDirectory(root);
+        var registryPath = Path.Combine(root, "targets.json");
+        File.WriteAllText(registryPath, JsonSerializer.Serialize(new DatabaseRegistryDocument
+        {
+            RegistryFormatVersion = 1,
+            Targets = [RegistryTarget(DatabaseCertificationStatuses.BaselineRequired)]
+        }, DatabaseStateJson.Indented));
+        var before = File.ReadAllBytes(registryPath);
+        var validation = DatabaseRegistryLoader.Load(registryPath, RegistryProvenance(
+            registryFileSha256: DatabaseRegistryLoader.ComputeFileSha256(registryPath)));
+        var observation = RegistryObservation();
+        var evaluation = new DatabaseStateEvaluator().Evaluate(validation, observation);
+        new DatabaseStateArtifactWriter().Write(Path.Combine(root, "artifact"), observation, evaluation);
+        SequenceEqual(before, File.ReadAllBytes(registryPath));
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task ObservedHashNeverReplacesCertifiedHash()
+{
+    var certified = new string('b', 64);
+    var target = RegistryTarget(DatabaseCertificationStatuses.Certified, certified);
+    var evaluation = EvaluateRegistry(target);
+    Equal(certified, target.CertifiedSchemaHash);
+    Equal(certified, evaluation.CertifiedSchemaHash);
+    Equal(ObservedSchemaHash(), evaluation.ObservedSchemaHash);
+    NotEqual(evaluation.CertifiedSchemaHash, evaluation.ObservedSchemaHash);
+    return Task.CompletedTask;
+}
+
+static Task DriftEvidenceIsHashOnly()
+{
+    var root = TempDirectory("drift-hash-only");
+    try
+    {
+        var observation = RegistryObservation();
+        var evaluation = EvaluateRegistry(
+            RegistryTarget(DatabaseCertificationStatuses.Certified, new string('b', 64)), observation);
+        var artifact = new DatabaseStateArtifactWriter().Write(root, observation, evaluation);
+        True(artifact.DriftAnalysisPath is not null);
+        var drift = JsonDocument.Parse(File.ReadAllText(artifact.DriftAnalysisPath!)).RootElement;
+        Equal("HASH_MISMATCH", drift.GetProperty("evidenceKind").GetString());
+        True(!drift.GetProperty("structuralDiffAvailable").GetBoolean());
+        True(!drift.TryGetProperty("changedObjects", out _));
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task RegistryCommitAppearsInEvidence()
+{
+    var root = TempDirectory("registry-commit-evidence");
+    try
+    {
+        var commit = new string('e', 40);
+        var observation = RegistryObservation();
+        var validation = DatabaseRegistryLoader.Validate(
+            RegistryDocument(RegistryTarget(DatabaseCertificationStatuses.BaselineRequired)),
+            RegistryProvenance(registryCommitSha: commit));
+        var evaluation = new DatabaseStateEvaluator().Evaluate(validation, observation);
+        var artifact = new DatabaseStateArtifactWriter().Write(root, observation, evaluation);
+        var evidence = JsonDocument.Parse(File.ReadAllText(artifact.RegistryEvaluationPath)).RootElement;
+        Equal(commit, evidence.GetProperty("registryProvenance").GetProperty("registryCommitSha").GetString());
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task RegistryFileShaMatchesBytes()
+{
+    var root = TempDirectory("registry-file-sha");
+    try
+    {
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, "targets.json");
+        File.WriteAllText(path, JsonSerializer.Serialize(
+            RegistryDocument(RegistryTarget(DatabaseCertificationStatuses.BaselineRequired)),
+            DatabaseStateJson.Indented));
+        var expected = DatabaseRegistryLoader.ComputeFileSha256(path);
+        var validation = DatabaseRegistryLoader.Load(path, RegistryProvenance(registryFileSha256: expected));
+        True(validation.IsValid);
+        Equal(expected, validation.RegistryProvenance!.RegistryFileSha256);
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task RegistryFileShaMismatchFailsClosed()
+{
+    var root = TempDirectory("registry-file-sha-mismatch");
+    try
+    {
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, "targets.json");
+        File.WriteAllText(path, JsonSerializer.Serialize(RegistryDocument(), DatabaseStateJson.Indented));
+        var validation = DatabaseRegistryLoader.Load(path, RegistryProvenance(registryFileSha256: new string('f', 64)));
+        True(!validation.IsValid);
+        True(validation.Errors.Contains("REGISTRY_FILE_SHA256_MISMATCH", StringComparer.Ordinal));
+        Equal(DatabaseGateStatuses.Blocked,
+            new DatabaseStateEvaluator().Evaluate(validation, RegistryObservation()).GateStatus);
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task RegistryContentChangesFileSha()
+{
+    var root = TempDirectory("registry-file-sha-change");
+    try
+    {
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, "targets.json");
+        File.WriteAllText(path, JsonSerializer.Serialize(RegistryDocument(), DatabaseStateJson.Indented));
+        var before = DatabaseRegistryLoader.ComputeFileSha256(path);
+        File.WriteAllText(path, JsonSerializer.Serialize(
+            RegistryDocument(RegistryTarget(DatabaseCertificationStatuses.BaselineRequired)),
+            DatabaseStateJson.Indented));
+        var after = DatabaseRegistryLoader.ComputeFileSha256(path);
+        NotEqual(before, after);
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task ObservedHashDoesNotChangeRegistryFileSha()
+{
+    var root = TempDirectory("observed-does-not-change-registry-sha");
+    try
+    {
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, "targets.json");
+        File.WriteAllText(path, JsonSerializer.Serialize(
+            RegistryDocument(RegistryTarget(DatabaseCertificationStatuses.BaselineRequired)),
+            DatabaseStateJson.Indented));
+        var fileSha = DatabaseRegistryLoader.ComputeFileSha256(path);
+        var validation = DatabaseRegistryLoader.Load(path, RegistryProvenance(registryFileSha256: fileSha));
+        var first = new DatabaseStateEvaluator().Evaluate(validation, RegistryObservation(new string('a', 64)));
+        var second = new DatabaseStateEvaluator().Evaluate(validation, RegistryObservation(new string('b', 64)));
+        NotEqual(first.ObservedSchemaHash, second.ObservedSchemaHash);
+        Equal(fileSha, first.RegistryProvenance!.RegistryFileSha256);
+        Equal(fileSha, second.RegistryProvenance!.RegistryFileSha256);
+        Equal(fileSha, DatabaseRegistryLoader.ComputeFileSha256(path));
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task BaselineCandidatePreservesProvenance()
+{
+    var root = TempDirectory("baseline-provenance");
+    try
+    {
+        var observation = RegistryObservation();
+        var evaluation = EvaluateRegistry(RegistryTarget(DatabaseCertificationStatuses.BaselineRequired), observation);
+        var artifact = new DatabaseStateArtifactWriter().Write(root, observation, evaluation);
+        var candidate = JsonDocument.Parse(File.ReadAllText(artifact.BaselineCandidatePath!)).RootElement;
+        Equal(1, candidate.GetProperty("registryFormatVersion").GetInt32());
+        Equal(evaluation.RegistryProvenance!.RegistryCommitSha,
+            candidate.GetProperty("registryProvenance").GetProperty("registryCommitSha").GetString());
+        Equal(evaluation.RegistryProvenance.RegistryFileSha256,
+            candidate.GetProperty("registryProvenance").GetProperty("registryFileSha256").GetString());
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task DriftEvidencePreservesProvenance()
+{
+    var root = TempDirectory("drift-provenance");
+    try
+    {
+        var observation = RegistryObservation();
+        var evaluation = EvaluateRegistry(
+            RegistryTarget(DatabaseCertificationStatuses.Certified, new string('b', 64)), observation);
+        var artifact = new DatabaseStateArtifactWriter().Write(root, observation, evaluation);
+        var drift = JsonDocument.Parse(File.ReadAllText(artifact.DriftAnalysisPath!)).RootElement;
+        Equal(1, drift.GetProperty("registryFormatVersion").GetInt32());
+        Equal(evaluation.RegistryProvenance!.RegistryCommitSha,
+            drift.GetProperty("registryProvenance").GetProperty("registryCommitSha").GetString());
+        Equal(evaluation.RegistryProvenance.RegistryFileSha256,
+            drift.GetProperty("registryProvenance").GetProperty("registryFileSha256").GetString());
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task MatchIsEligibleForSchemaDrift()
+{
+    var evaluation = EvaluateRegistry(RegistryTarget(DatabaseCertificationStatuses.Certified, ObservedSchemaHash()));
+    Equal(DatabaseGateStatuses.Eligible, evaluation.GateStatus);
+    Equal(DatabaseDriftStatuses.Match, evaluation.DriftStatus);
+    Equal("NONE", evaluation.DriftEvidenceKind);
+    True(!evaluation.BaselineCandidate);
+    return Task.CompletedTask;
+}
+
+static async Task CliDatabaseStateBaselineProducesEvidence()
+{
+    var root = TempDirectory("database-state-cli-baseline");
+    try
+    {
+        Directory.CreateDirectory(root);
+        var captureDirectory = Path.Combine(root, "capture-1");
+        new SchemaCaptureArtifactWriter().WriteCapture(
+            captureDirectory, "capture-1", CaptureSource(BaseSnapshot(includeIndex: true)));
+        var registryPath = Path.Combine(root, "targets.json");
+        File.WriteAllText(registryPath, JsonSerializer.Serialize(new DatabaseRegistryDocument
+        {
+            RegistryFormatVersion = 1,
+            Targets = [RegistryTarget(DatabaseCertificationStatuses.BaselineRequired, databaseName: "DatabaseForTests")]
+        }, DatabaseStateJson.Indented));
+        var registryBefore = File.ReadAllBytes(registryPath);
+        var resultPath = Path.Combine(root, "result.json");
+        var output = Path.Combine(root, "artifact");
+
+        var exit = await QualificationCli.RunAsync(DatabaseStateCliArguments(
+            registryPath, captureDirectory, output, resultPath));
+
+        Equal(0, exit);
+        var result = JsonDocument.Parse(File.ReadAllText(resultPath)).RootElement;
+        Equal("SUCCESS", result.GetProperty("status").GetString());
+        Equal(DatabaseDriftStatuses.BaselineRequired, result.GetProperty("driftStatus").GetString());
+        Equal(DatabaseGateStatuses.Blocked, result.GetProperty("gateStatus").GetString());
+        True(File.Exists(Path.Combine(output, "registry", "target.json")));
+        True(File.Exists(Path.Combine(output, "registry", "registry-evaluation.json")));
+        True(File.Exists(Path.Combine(output, "baseline", "baseline-candidate.json")));
+        SequenceEqual(registryBefore, File.ReadAllBytes(registryPath));
+    }
+    finally { DeleteTemp(root); }
+}
+
+static async Task CliDatabaseStateInvalidRegistryFailsClosed()
+{
+    var root = TempDirectory("database-state-cli-invalid");
+    try
+    {
+        Directory.CreateDirectory(root);
+        var captureDirectory = Path.Combine(root, "capture-1");
+        new SchemaCaptureArtifactWriter().WriteCapture(
+            captureDirectory, "capture-1", CaptureSource(BaseSnapshot(includeIndex: true)));
+        var registryPath = Path.Combine(root, "targets.json");
+        File.WriteAllText(registryPath, JsonSerializer.Serialize(new DatabaseRegistryDocument
+        {
+            RegistryFormatVersion = 1,
+            Targets = [RegistryTarget(DatabaseCertificationStatuses.Certified, databaseName: "DatabaseForTests")]
+        }, DatabaseStateJson.Indented));
+        var resultPath = Path.Combine(root, "result.json");
+        var output = Path.Combine(root, "artifact");
+
+        var exit = await QualificationCli.RunAsync(DatabaseStateCliArguments(
+            registryPath, captureDirectory, output, resultPath));
+
+        Equal(8, exit);
+        var result = JsonDocument.Parse(File.ReadAllText(resultPath)).RootElement;
+        Equal("FAIL_INVALID_REGISTRY", result.GetProperty("status").GetString());
+        Equal(DatabaseDriftStatuses.InvalidRegistry, result.GetProperty("driftStatus").GetString());
+        Equal(DatabaseGateStatuses.Blocked, result.GetProperty("gateStatus").GetString());
+        True(File.Exists(Path.Combine(output, "registry", "registry-evaluation.json")));
+        True(!Directory.Exists(Path.Combine(output, "baseline")));
+    }
+    finally { DeleteTemp(root); }
 }
 
 static Task AstEquivalentFormatting()
@@ -1187,6 +1671,60 @@ static SchemaCaptureSourceResult CaptureSource(
     MetricsDiagnosticCode = metricsDiagnosticCode
 };
 
+static string ObservedSchemaHash() => new('a', 64);
+
+static DatabaseTarget RegistryTarget(
+    string certificationStatus,
+    string? certifiedSchemaHash = null,
+    string environment = "TEST",
+    string databaseName = "CICDV3") => new()
+{
+    ApplicationId = "3602",
+    Environment = environment,
+    DatabaseName = databaseName,
+    Lifecycle = "EXISTING",
+    CertificationStatus = certificationStatus,
+    CertifiedSchemaHash = certifiedSchemaHash
+};
+
+static DatabaseRegistryDocument RegistryDocument(params DatabaseTarget[] targets) => new()
+{
+    RegistryFormatVersion = 1,
+    Targets = targets.ToList()
+};
+
+static RegistryProvenance RegistryProvenance(
+    string? registryFileSha256 = null,
+    string? registryCommitSha = null) => new()
+{
+    RegistryRepository = "infrastructure-services/workflow",
+    RegistryRef = "feature/db-schema-capture-test",
+    RegistryCommitSha = registryCommitSha ?? new string('d', 40),
+    RegistryFilePath = "database-registry/targets.json",
+    RegistryFileSha256 = registryFileSha256 ?? new string('c', 64)
+};
+
+static DatabaseStateObservation RegistryObservation(string? observedSchemaHash = null) => new()
+{
+    ApplicationId = "3602",
+    Environment = "TEST",
+    DatabaseName = "CICDV3",
+    ObservedSchemaHash = observedSchemaHash ?? ObservedSchemaHash(),
+    SchemaCoverage = "COMPLETE",
+    UnsupportedSchemaFeatures = [],
+    CaptureTimestampUtc = DateTimeOffset.Parse("2026-08-25T12:00:00Z"),
+    RunId = "123456",
+    RunAttempt = "1"
+};
+
+static DatabaseRegistryValidation ValidateTarget(DatabaseTarget target) =>
+    DatabaseRegistryLoader.Validate(RegistryDocument(target), RegistryProvenance());
+
+static DatabaseStateEvaluation EvaluateRegistry(
+    DatabaseTarget target,
+    DatabaseStateObservation? observation = null) =>
+    new DatabaseStateEvaluator().Evaluate(ValidateTarget(target), observation ?? RegistryObservation());
+
 static SchemaSnapshot AddCommentSnapshot(bool includeIndex, string type)
 {
     var snapshot = BaseSnapshot(includeIndex);
@@ -1252,6 +1790,28 @@ static string[] CliArguments(
     "--discovery-reason", discoveryReason, "--forward", paths.Forward, "--rollback", paths.Rollback,
     "--schema", paths.Schema, "--output", paths.Output, "--result", paths.Result
 ];
+
+static string[] DatabaseStateCliArguments(
+    string registry,
+    string capture,
+    string output,
+    string result)
+{
+    var provenance = RegistryProvenance(
+        registryFileSha256: DatabaseRegistryLoader.ComputeFileSha256(registry));
+    return
+    [
+        "evaluate-database-state", "--environment", "TEST", "--application-id", "3602",
+        "--registry", registry,
+        "--registry-repository", provenance.RegistryRepository,
+        "--registry-ref", provenance.RegistryRef,
+        "--registry-commit-sha", provenance.RegistryCommitSha,
+        "--registry-file-path", provenance.RegistryFilePath,
+        "--registry-file-sha256", provenance.RegistryFileSha256,
+        "--capture", capture, "--capture-timestamp-utc", "2026-08-25T12:00:00Z",
+        "--run-id", "123456", "--run-attempt", "1", "--output", output, "--result", result
+    ];
+}
 
 static string TempDirectory(string prefix) => Path.Combine(Path.GetTempPath(), prefix, Guid.NewGuid().ToString("N"));
 static void DeleteTemp(string path) { if (Directory.Exists(path)) Directory.Delete(path, recursive: true); }

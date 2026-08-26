@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using DatabaseReleaseQualification;
@@ -19,6 +20,7 @@ public static class QualificationCli
             "analyze" => AnalyzeAsync(args.Skip(1).ToArray()),
             "capture-schema" => CaptureSchemaAsync(args.Skip(1).ToArray()),
             "compare-schema-captures" => CompareSchemaCapturesAsync(args.Skip(1).ToArray()),
+            "evaluate-database-state" => EvaluateDatabaseStateAsync(args.Skip(1).ToArray()),
             _ => InvalidCommand()
         };
     }
@@ -222,6 +224,98 @@ public static class QualificationCli
         }
     }
 
+    private static Task<int> EvaluateDatabaseStateAsync(string[] args)
+    {
+        string? resultPath = null;
+        try
+        {
+            var options = Parse(args);
+            RequireTestEnvironment(options);
+            resultPath = Path.GetFullPath(Required(options, "result"));
+            var capture = SchemaCaptureArtifactWriter.ReadArtifact(RequiredDirectory(options, "capture"));
+            if (!DateTimeOffset.TryParse(
+                    Required(options, "capture-timestamp-utc"),
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                    out var captureTimestampUtc))
+            {
+                throw new ArgumentException("INVALID_CAPTURE_TIMESTAMP_UTC");
+            }
+
+            var observation = new DatabaseStateObservation
+            {
+                ApplicationId = SafeSegment(options, "application-id"),
+                Environment = Required(options, "environment").ToUpperInvariant(),
+                DatabaseName = capture.Metadata.DatabaseName,
+                ObservedSchemaHash = capture.SchemaHash,
+                SchemaCoverage = capture.Metadata.SchemaCoverage.ToString().ToUpperInvariant(),
+                UnsupportedSchemaFeatures = capture.Metadata.UnsupportedSchemaFeatures,
+                CaptureTimestampUtc = captureTimestampUtc,
+                RunId = SafeSegment(options, "run-id"),
+                RunAttempt = SafeSegment(options, "run-attempt")
+            };
+            var provenance = new RegistryProvenance
+            {
+                RegistryRepository = SafeRegistryRepository(options),
+                RegistryRef = SafeRegistryRef(options),
+                RegistryCommitSha = SafeCommitSha(options),
+                RegistryFilePath = SafeRegistryFilePath(options),
+                RegistryFileSha256 = SafeSha256(options, "registry-file-sha256")
+            };
+            var registry = DatabaseRegistryLoader.Load(
+                Path.GetFullPath(Required(options, "registry")), provenance);
+            var evaluation = new DatabaseStateEvaluator().Evaluate(registry, observation);
+            var artifact = new DatabaseStateArtifactWriter().Write(
+                Path.GetFullPath(Required(options, "output")), observation, evaluation);
+
+            WriteJsonResult(resultPath, new
+            {
+                status = evaluation.DriftStatus == DatabaseDriftStatuses.InvalidRegistry
+                    ? "FAIL_INVALID_REGISTRY"
+                    : "SUCCESS",
+                evaluation.ObservedSchemaHash,
+                evaluation.CertifiedSchemaHash,
+                evaluation.RegistryStatus,
+                evaluation.DriftStatus,
+                evaluation.GateStatus,
+                evaluation.Reason,
+                evaluation.RegistryFormatVersion,
+                evaluation.RegistryProvenance,
+                evaluation.BaselineCandidate,
+                evaluation.DriftDetected,
+                evaluation.DriftEvidenceKind,
+                evaluation.StructuralDiffAvailable,
+                artifact.TargetPath,
+                artifact.RegistryEvaluationPath,
+                artifact.BaselineCandidatePath,
+                artifact.DriftAnalysisPath
+            });
+            Console.WriteLine($"Database state evaluation completada: gate={evaluation.GateStatus}.");
+            return Task.FromResult(evaluation.DriftStatus == DatabaseDriftStatuses.InvalidRegistry ? 8 : 0);
+        }
+        catch (Exception exception)
+        {
+            var diagnostic = exception.GetType().Name;
+            if (!string.IsNullOrWhiteSpace(resultPath))
+            {
+                try
+                {
+                    WriteJsonResult(resultPath, new
+                    {
+                        status = "FAIL_DATABASE_STATE_EVALUATION",
+                        diagnosticCode = diagnostic
+                    });
+                }
+                catch
+                {
+                    // The primary sanitized failure remains authoritative.
+                }
+            }
+            Console.Error.WriteLine($"DATABASE_STATE_EVALUATION_FAILED:{diagnostic}");
+            return Task.FromResult(8);
+        }
+    }
+
     private static void RequireTestEnvironment(IReadOnlyDictionary<string, string> options)
     {
         if (!string.Equals(Required(options, "environment"), "TEST", StringComparison.OrdinalIgnoreCase))
@@ -312,5 +406,47 @@ public static class QualificationCli
             throw new ArgumentException($"INVALID_{key.ToUpperInvariant()}");
         }
         return value;
+    }
+
+    private static string SafeRegistryRepository(IReadOnlyDictionary<string, string> options)
+    {
+        var value = Required(options, "registry-repository");
+        if (!Regex.IsMatch(value, @"\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z", RegexOptions.CultureInvariant))
+            throw new ArgumentException("INVALID_REGISTRY_REPOSITORY");
+        return value;
+    }
+
+    private static string SafeRegistryRef(IReadOnlyDictionary<string, string> options)
+    {
+        var value = Required(options, "registry-ref");
+        if (!Regex.IsMatch(value, @"\A[A-Za-z0-9][A-Za-z0-9._/-]{0,255}\z", RegexOptions.CultureInvariant)
+            || value.Contains("..", StringComparison.Ordinal))
+            throw new ArgumentException("INVALID_REGISTRY_REF");
+        return value;
+    }
+
+    private static string SafeCommitSha(IReadOnlyDictionary<string, string> options)
+    {
+        var value = Required(options, "registry-commit-sha");
+        if (!Regex.IsMatch(value, @"\A(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\z", RegexOptions.CultureInvariant))
+            throw new ArgumentException("INVALID_REGISTRY_COMMIT_SHA");
+        return value.ToLowerInvariant();
+    }
+
+    private static string SafeRegistryFilePath(IReadOnlyDictionary<string, string> options)
+    {
+        var value = Required(options, "registry-file-path");
+        if (!Regex.IsMatch(value, @"\A[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\z", RegexOptions.CultureInvariant)
+            || value.Split('/').Any(segment => segment is "." or ".."))
+            throw new ArgumentException("INVALID_REGISTRY_FILE_PATH");
+        return value;
+    }
+
+    private static string SafeSha256(IReadOnlyDictionary<string, string> options, string key)
+    {
+        var value = Required(options, key);
+        if (!Regex.IsMatch(value, @"\A[0-9a-fA-F]{64}\z", RegexOptions.CultureInvariant))
+            throw new ArgumentException($"INVALID_{key.ToUpperInvariant()}");
+        return value.ToLowerInvariant();
     }
 }

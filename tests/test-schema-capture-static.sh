@@ -11,6 +11,7 @@ ENGINE="$ACTION_ROOT/tools/DatabaseReleaseQualification"
 READER="$ENGINE/SqlServerSchemaReader.cs"
 PROGRAM="$ENGINE/Program.cs"
 CAPTURE_MODEL="$ENGINE/SchemaCapture.cs"
+STATE_EVALUATOR="$ENGINE/DatabaseStateEvaluator.cs"
 MUTATING_PATTERN='(^|[^[:alnum:]_])(INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP|TRUNCATE|EXEC|EXECUTE)([^[:alnum:]_]|$)'
 
 if grep -Eiq 'connection-string|DB_CONNECTION|secret-value|password' "$ROOT_ACTION"; then
@@ -24,7 +25,19 @@ for required in \
   'run-schema-capture.sh' \
   'capture-1-hash:' \
   'capture-2-hash:' \
-  'metrics-availability:'
+  'metrics-availability:' \
+  'application-id:' \
+  'registry-file:' \
+  'registry-repository:' \
+  'registry-ref:' \
+  'registry-commit-sha:' \
+  'registry-file-path:' \
+  'registry-file-sha256:' \
+  'observed-schema-hash:' \
+  'certified-schema-hash:' \
+  'drift-status:' \
+  'gate-status:' \
+  'baseline-candidate:'
 do
   if ! grep -Fq "$required" "$CAPTURE_ACTION"; then
     echo "FAIL: falta contrato de schema-capture: $required"
@@ -76,6 +89,12 @@ if [[ "$(grep -Fc 'dotnet build ' "$CAPTURE_RUNNER")" -ne 1 ]] \
   exit 1
 fi
 
+if [[ "$(grep -Ec '^[[:space:]]*run_capture capture-[12] ' "$CAPTURE_RUNNER")" -ne 2 ]] \
+  || [[ "$(grep -Fc 'evaluate-database-state' "$CAPTURE_RUNNER")" -ne 1 ]]; then
+  echo 'FAIL: registry evaluation debe reutilizar dos captures y no ejecutar una tercera.'
+  exit 1
+fi
+
 for required_artifact in \
   'canonical-schema.json' \
   'schema.sha256' \
@@ -83,9 +102,13 @@ for required_artifact in \
   'impact-metrics.json' \
   'determinism.json' \
   'schema-diff.json' \
+  'target.json' \
+  'registry-evaluation.json' \
+  'baseline-candidate.json' \
+  'drift-analysis.json' \
   'summary.md'
 do
-  if ! grep -R -Fq "$required_artifact" "$ENGINE/SchemaCapture.cs" "$CAPTURE_RUNNER"; then
+  if ! grep -R -Fq "$required_artifact" "$ENGINE/SchemaCapture.cs" "$STATE_EVALUATOR" "$CAPTURE_RUNNER"; then
     echo "FAIL: falta artifact requerido: $required_artifact"
     exit 1
   fi
@@ -96,6 +119,32 @@ if grep -Eiq "$MUTATING_PATTERN" "$READER"; then
   grep -Ein "$MUTATING_PATTERN" "$READER" || true
   exit 1
 fi
+
+if grep -Eiq 'DB_CONNECTION|SqlConnection|SqlCommand|SqlDataReader|ExecuteReader|ExecuteScalar|ExecuteNonQuery' "$STATE_EVALUATOR"; then
+  echo 'FAIL: DatabaseStateEvaluator no puede abrir conexión ni ejecutar SQL.'
+  exit 1
+fi
+
+for immutable_contract in \
+  'REGISTRY_FILE_SHA256_AT_START' \
+  'REGISTRY_FILE_SHA256_AFTER' \
+  'REGISTRY_FILE_PATH_NORMALIZED' \
+  'REGISTRY_IMMUTABILITY_VIOLATION' \
+  'RegistryProvenance' \
+  'RegistryFormatVersion' \
+  'Registry format:' \
+  'Registry commit:' \
+  'REGISTRY_COMMIT_SHA:0:12' \
+  'REGISTRY_FILE_SHA256_MISMATCH' \
+  'NOT_CERTIFIED' \
+  'HASH_MISMATCH' \
+  'StructuralDiffAvailable = false'
+do
+  if ! grep -R -Fq "$immutable_contract" "$STATE_EVALUATOR" "$CAPTURE_RUNNER"; then
+    echo "FAIL: falta protección de registry/drift: $immutable_contract"
+    exit 1
+  fi
+done
 
 if grep -Eiq 'ExecuteNonQuery|MultipleActiveResultSets' "$READER" "$CAPTURE_RUNNER" "$CAPTURE_ACTION"; then
   echo 'FAIL: schema capture contiene API mutante o dependencia de MARS.'

@@ -6,7 +6,18 @@ NUGET_CONFIG="$GITHUB_ACTION_PATH/../tools/DatabaseReleaseQualification/NuGet.Co
 BUILD_DIRECTORY="$RUNNER_TEMP/database-schema-capture-engine-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}"
 RESULT_DIRECTORY="$RUNNER_TEMP/database-schema-capture-results-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}"
 DB_CONNECTION_VALUE="${DB_CONNECTION-}"
+APPLICATION_ID_VALUE="${APPLICATION_ID-}"
+REGISTRY_FILE_VALUE="${REGISTRY_FILE-}"
+REGISTRY_REPOSITORY_VALUE="${REGISTRY_REPOSITORY-}"
+REGISTRY_REF_VALUE="${REGISTRY_REF-}"
+REGISTRY_COMMIT_SHA_VALUE="${REGISTRY_COMMIT_SHA-}"
+REGISTRY_LOGICAL_FILE_PATH_VALUE="${REGISTRY_LOGICAL_FILE_PATH-}"
+REGISTRY_FILE_SHA256_VALUE="${REGISTRY_FILE_SHA256-}"
 unset DB_CONNECTION
+
+file_sha256() {
+  sha256sum "$1" | grep -Eo '[0-9a-fA-F]{64}' | head -n 1 | tr 'A-F' 'a-f'
+}
 
 if [[ "${ENVIRONMENT_NAME^^}" != "TEST" ]]; then
   echo "Schema capture rechazado: ambiente no permitido." >&2
@@ -19,11 +30,43 @@ else
   ARTIFACT_DIRECTORY="$GITHUB_WORKSPACE/$OUTPUT_DIRECTORY"
 fi
 
+if [[ ! "$APPLICATION_ID_VALUE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+  echo "Database state evaluation rechazada: application ID inválido o ausente." >&2
+  exit 2
+fi
+if [[ "$REGISTRY_FILE_VALUE" =~ ^[A-Za-z]:[\\/] ]] || [[ "$REGISTRY_FILE_VALUE" = /* ]]; then
+  REGISTRY_FILE_PATH="$REGISTRY_FILE_VALUE"
+else
+  REGISTRY_FILE_PATH="$GITHUB_WORKSPACE/$REGISTRY_FILE_VALUE"
+fi
+if [[ ! -f "$REGISTRY_FILE_PATH" ]]; then
+  echo "Database state evaluation rechazada: registry central no disponible." >&2
+  exit 2
+fi
+REGISTRY_FILE_PATH_NORMALIZED="${REGISTRY_FILE_PATH//\\//}"
+if [[ ! "$REGISTRY_REPOSITORY_VALUE" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+  || [[ ! "$REGISTRY_REF_VALUE" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$ ]] \
+  || [[ "$REGISTRY_REF_VALUE" == *..* ]] \
+  || [[ ! "$REGISTRY_COMMIT_SHA_VALUE" =~ ^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$ ]] \
+  || [[ ! "$REGISTRY_LOGICAL_FILE_PATH_VALUE" =~ ^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$ ]] \
+  || [[ "$REGISTRY_LOGICAL_FILE_PATH_VALUE" == *../* || "$REGISTRY_LOGICAL_FILE_PATH_VALUE" == */..* ]] \
+  || [[ "$REGISTRY_FILE_PATH_NORMALIZED" != */"$REGISTRY_LOGICAL_FILE_PATH_VALUE" ]] \
+  || [[ ! "$REGISTRY_FILE_SHA256_VALUE" =~ ^[0-9a-fA-F]{64}$ ]]; then
+  echo "Database state evaluation rechazada: provenance inválida o incompleta." >&2
+  exit 2
+fi
+REGISTRY_FILE_SHA256_AT_START="$(file_sha256 "$REGISTRY_FILE_PATH")"
+if [[ "$REGISTRY_FILE_SHA256_AT_START" != "${REGISTRY_FILE_SHA256_VALUE,,}" ]]; then
+  echo "Database state evaluation rechazada: registry file SHA256 no coincide." >&2
+  exit 2
+fi
+
 CAPTURE_1_DIRECTORY="$ARTIFACT_DIRECTORY/capture-1"
 CAPTURE_2_DIRECTORY="$ARTIFACT_DIRECTORY/capture-2"
 COMPARISON_DIRECTORY="$ARTIFACT_DIRECTORY/comparison"
 SUMMARY_FILE="$ARTIFACT_DIRECTORY/summary.md"
 mkdir -p "$ARTIFACT_DIRECTORY" "$RESULT_DIRECTORY" "$BUILD_DIRECTORY"
+CAPTURE_TIMESTAMP_UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
 safe_value() {
   local value="${1-}"
@@ -52,8 +95,37 @@ safe_diagnostic() {
   fi
 }
 
+safe_registry_status() {
+  local value="${1-INVALID_REGISTRY}"
+  if [[ "$value" =~ ^(BASELINE_REQUIRED|CERTIFIED|TARGET_NOT_REGISTERED|INVALID_REGISTRY)$ ]]; then
+    printf '%s' "$value"
+  else
+    printf '%s' 'INVALID_REGISTRY'
+  fi
+}
+
+safe_drift_status() {
+  local value="${1-INVALID_REGISTRY}"
+  if [[ "$value" =~ ^(BASELINE_REQUIRED|MATCH|DRIFT_DETECTED|TARGET_NOT_REGISTERED|INVALID_REGISTRY)$ ]]; then
+    printf '%s' "$value"
+  else
+    printf '%s' 'INVALID_REGISTRY'
+  fi
+}
+
+safe_gate_status() {
+  local value="${1-BLOCKED}"
+  if [[ "$value" =~ ^(ELIGIBLE|BLOCKED)$ ]]; then
+    printf '%s' "$value"
+  else
+    printf '%s' 'BLOCKED'
+  fi
+}
+
 write_outputs() {
   local status="$1" deterministic="$2" hash1="${3-}" hash2="${4-}" coverage="${5-}" metrics="${6-}"
+  local registry_status="${7-}" drift_status="${8-}" gate_status="${9-}" gate_reason="${10-}"
+  local baseline_candidate="${11-false}" observed_hash="${12-}" certified_hash="${13-}"
   {
     printf 'status=%s\n' "$status"
     printf 'deterministic=%s\n' "$deterministic"
@@ -62,6 +134,13 @@ write_outputs() {
     printf 'schema_coverage=%s\n' "$coverage"
     printf 'metrics_availability=%s\n' "$metrics"
     printf 'artifact_directory=%s\n' "$ARTIFACT_DIRECTORY"
+    printf 'observed_schema_hash=%s\n' "$observed_hash"
+    printf 'certified_schema_hash=%s\n' "$certified_hash"
+    printf 'registry_status=%s\n' "$registry_status"
+    printf 'drift_status=%s\n' "$drift_status"
+    printf 'gate_status=%s\n' "$gate_status"
+    printf 'gate_reason=%s\n' "$gate_reason"
+    printf 'baseline_candidate=%s\n' "$baseline_candidate"
   } >> "$GITHUB_OUTPUT"
 }
 
@@ -142,6 +221,8 @@ COMPARISON_RESULT="$RESULT_DIRECTORY/comparison-result.json"
 CAPTURE_1_LOG="$RESULT_DIRECTORY/capture-1-execution.log"
 CAPTURE_2_LOG="$RESULT_DIRECTORY/capture-2-execution.log"
 COMPARISON_LOG="$RESULT_DIRECTORY/comparison-execution.log"
+REGISTRY_EVALUATION_RESULT="$RESULT_DIRECTORY/registry-evaluation-result.json"
+REGISTRY_EVALUATION_LOG="$RESULT_DIRECTORY/registry-evaluation-execution.log"
 
 set +e
 run_capture capture-1 "$CAPTURE_1_DIRECTORY" "$CAPTURE_1_RESULT" "$CAPTURE_1_LOG"
@@ -196,6 +277,80 @@ SERVER_VERSION="$(safe_value "$(jq -r '.serverVersion // empty' "$CAPTURE_1_RESU
 SCHEMA_COVERAGE="$(safe_value "$(jq -r '.schemaCoverage // empty' "$CAPTURE_1_RESULT")")"
 METRICS_AVAILABILITY="$(safe_value "$(jq -r '.metricsAvailability // empty' "$CAPTURE_1_RESULT")")"
 
+REGISTRY_STATUS=''
+DRIFT_STATUS=''
+GATE_STATUS=''
+GATE_REASON=''
+BASELINE_CANDIDATE='false'
+OBSERVED_SCHEMA_HASH=''
+CERTIFIED_SCHEMA_HASH=''
+REGISTRY_EVALUATION_EXIT=0
+REGISTRY_FORMAT_VERSION=''
+REGISTRY_COMMIT_SHA=''
+
+if [[ $COMPARISON_EXIT -eq 0 && "$DETERMINISTIC" == 'true' ]]; then
+  set +e
+  dotnet "$BUILD_DIRECTORY/DatabaseReleaseQualification.dll" evaluate-database-state \
+    --environment TEST \
+    --application-id "$APPLICATION_ID_VALUE" \
+    --registry "$REGISTRY_FILE_PATH" \
+    --registry-repository "$REGISTRY_REPOSITORY_VALUE" \
+    --registry-ref "$REGISTRY_REF_VALUE" \
+    --registry-commit-sha "$REGISTRY_COMMIT_SHA_VALUE" \
+    --registry-file-path "$REGISTRY_LOGICAL_FILE_PATH_VALUE" \
+    --registry-file-sha256 "$REGISTRY_FILE_SHA256_AT_START" \
+    --capture "$CAPTURE_1_DIRECTORY" \
+    --capture-timestamp-utc "$CAPTURE_TIMESTAMP_UTC" \
+    --run-id "${GITHUB_RUN_ID:-local}" \
+    --run-attempt "${GITHUB_RUN_ATTEMPT:-0}" \
+    --output "$ARTIFACT_DIRECTORY" \
+    --result "$REGISTRY_EVALUATION_RESULT" >"$REGISTRY_EVALUATION_LOG" 2>&1
+  REGISTRY_EVALUATION_EXIT=$?
+  set -e
+  REGISTRY_FILE_SHA256_AFTER="$(file_sha256 "$REGISTRY_FILE_PATH")"
+
+  if [[ "$REGISTRY_FILE_SHA256_AT_START" != "$REGISTRY_FILE_SHA256_AFTER" ]]; then
+    echo 'Database Registry fue modificado durante una evaluación declarada read-only.' >&2
+    write_failure_summary FAIL_SCHEMA_CAPTURE REGISTRY_IMMUTABILITY_VIOLATION 9
+    exit 9
+  fi
+  if [[ ! -s "$REGISTRY_EVALUATION_RESULT" ]] || ! jq -e . "$REGISTRY_EVALUATION_RESULT" >/dev/null 2>&1; then
+    FAILURE_EXIT="$REGISTRY_EVALUATION_EXIT"
+    if [[ "$FAILURE_EXIT" -eq 0 ]]; then FAILURE_EXIT=8; fi
+    write_failure_summary FAIL_SCHEMA_CAPTURE DATABASE_STATE_EVALUATION_RESULT_UNAVAILABLE "$FAILURE_EXIT"
+    exit "$FAILURE_EXIT"
+  fi
+
+  REGISTRY_EVALUATION_STATUS="$(jq -r '.status // empty' "$REGISTRY_EVALUATION_RESULT")"
+  if [[ "$REGISTRY_EVALUATION_STATUS" != 'SUCCESS' && "$REGISTRY_EVALUATION_STATUS" != 'FAIL_INVALID_REGISTRY' ]]; then
+    FAILURE_EXIT="$REGISTRY_EVALUATION_EXIT"
+    if [[ "$FAILURE_EXIT" -eq 0 ]]; then FAILURE_EXIT=8; fi
+    FAILURE_DIAGNOSTIC="$(safe_diagnostic "$(jq -r '.diagnosticCode // "DATABASE_STATE_EVALUATION_FAILED"' "$REGISTRY_EVALUATION_RESULT")")"
+    write_failure_summary FAIL_SCHEMA_CAPTURE "$FAILURE_DIAGNOSTIC" "$FAILURE_EXIT"
+    exit "$FAILURE_EXIT"
+  fi
+
+  REGISTRY_STATUS="$(safe_registry_status "$(jq -r '.registryStatus // "INVALID_REGISTRY"' "$REGISTRY_EVALUATION_RESULT")")"
+  DRIFT_STATUS="$(safe_drift_status "$(jq -r '.driftStatus // "INVALID_REGISTRY"' "$REGISTRY_EVALUATION_RESULT")")"
+  GATE_STATUS="$(safe_gate_status "$(jq -r '.gateStatus // "BLOCKED"' "$REGISTRY_EVALUATION_RESULT")")"
+  GATE_REASON="$(safe_diagnostic "$(jq -r '.reason // "REGISTRY_VALIDATION_FAILED"' "$REGISTRY_EVALUATION_RESULT")")"
+  BASELINE_CANDIDATE="$(jq -r '.baselineCandidate // false' "$REGISTRY_EVALUATION_RESULT")"
+  if [[ "$BASELINE_CANDIDATE" != 'true' ]]; then BASELINE_CANDIDATE='false'; fi
+  OBSERVED_SCHEMA_HASH="$(jq -r '.observedSchemaHash // empty' "$REGISTRY_EVALUATION_RESULT")"
+  CERTIFIED_SCHEMA_HASH="$(jq -r '.certifiedSchemaHash // empty' "$REGISTRY_EVALUATION_RESULT")"
+  REGISTRY_FORMAT_VERSION="$(jq -r '.registryFormatVersion // empty' "$REGISTRY_EVALUATION_RESULT")"
+  REGISTRY_COMMIT_SHA="$(jq -r '.registryProvenance.registryCommitSha // empty' "$REGISTRY_EVALUATION_RESULT")"
+  if [[ ! "$OBSERVED_SCHEMA_HASH" =~ ^[0-9a-fA-F]{64}$ ]]; then OBSERVED_SCHEMA_HASH=''; fi
+  if [[ -n "$CERTIFIED_SCHEMA_HASH" && ! "$CERTIFIED_SCHEMA_HASH" =~ ^[0-9a-fA-F]{64}$ ]]; then CERTIFIED_SCHEMA_HASH=''; fi
+  if [[ "$REGISTRY_FORMAT_VERSION" != '1' ]]; then REGISTRY_FORMAT_VERSION=''; fi
+  if [[ ! "$REGISTRY_COMMIT_SHA" =~ ^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$ ]]; then REGISTRY_COMMIT_SHA=''; fi
+fi
+
+CERTIFIED_SCHEMA_HASH_SUMMARY="$CERTIFIED_SCHEMA_HASH"
+if [[ -z "$CERTIFIED_SCHEMA_HASH_SUMMARY" ]]; then CERTIFIED_SCHEMA_HASH_SUMMARY='null'; fi
+BASELINE_CANDIDATE_SUMMARY='NO'
+if [[ "$BASELINE_CANDIDATE" == 'true' ]]; then BASELINE_CANDIDATE_SUMMARY='YES — NOT CERTIFIED'; fi
+
 {
   echo '# Database Schema Capture — TEST'
   echo
@@ -219,16 +374,45 @@ METRICS_AVAILABILITY="$(safe_value "$(jq -r '.metricsAvailability // empty' "$CA
   else
     jq -r '.unsupportedSchemaFeatures[] | "- `\(.)`"' "$CAPTURE_1_RESULT"
   fi
+  if [[ -n "$REGISTRY_STATUS" ]]; then
+    echo
+    echo '## Database Registry / State'
+    echo
+    echo "- Application ID: \`$(safe_value "$APPLICATION_ID_VALUE")\`"
+    echo '- Environment: `TEST`'
+    echo "- Database: \`$DATABASE_NAME\`"
+    echo "- Observed Schema Hash: \`$OBSERVED_SCHEMA_HASH\`"
+    echo "- Certified Schema Hash: \`$CERTIFIED_SCHEMA_HASH_SUMMARY\`"
+    echo "- Certification Status: \`$REGISTRY_STATUS\`"
+    echo "- Drift Status: \`$DRIFT_STATUS\`"
+    echo "- Gate Status: \`$GATE_STATUS\`"
+    echo "- Reason: \`$GATE_REASON\`"
+    echo "- Baseline candidate: \`$BASELINE_CANDIDATE_SUMMARY\`"
+    if [[ -n "$REGISTRY_FORMAT_VERSION" ]]; then
+      echo "- Registry format: \`V$REGISTRY_FORMAT_VERSION\`"
+    fi
+    if [[ -n "$REGISTRY_COMMIT_SHA" ]]; then
+      echo "- Registry commit: \`${REGISTRY_COMMIT_SHA:0:12}\`"
+    fi
+    echo '- Gate scope: `SCHEMA_DRIFT_ONLY`'
+    echo '- Migration lineage/discovery: `SEPARATE_GATE_NOT_EVALUATED`'
+  fi
 } > "$SUMMARY_FILE"
 
 if [[ -n "${GITHUB_STEP_SUMMARY-}" ]]; then
   cat "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
 fi
-write_outputs "$STATUS" "$DETERMINISTIC" "$HASH_1" "$HASH_2" "$SCHEMA_COVERAGE" "$METRICS_AVAILABILITY"
+write_outputs "$STATUS" "$DETERMINISTIC" "$HASH_1" "$HASH_2" "$SCHEMA_COVERAGE" "$METRICS_AVAILABILITY" \
+  "$REGISTRY_STATUS" "$DRIFT_STATUS" "$GATE_STATUS" "$GATE_REASON" "$BASELINE_CANDIDATE" \
+  "$OBSERVED_SCHEMA_HASH" "$CERTIFIED_SCHEMA_HASH"
 
 if [[ $COMPARISON_EXIT -ne 0 ]]; then
   echo "Schema capture comparison failed: $STATUS / $DIAGNOSTIC" >&2
   exit "$COMPARISON_EXIT"
 fi
+if [[ $REGISTRY_EVALUATION_EXIT -ne 0 ]]; then
+  echo "Database state evaluation failed closed: $REGISTRY_STATUS / $GATE_REASON" >&2
+  exit "$REGISTRY_EVALUATION_EXIT"
+fi
 
-echo 'Schema capture TEST completado: hashes determinísticos.'
+echo "Schema capture TEST completado: hashes determinísticos; schema drift gate=$GATE_STATUS."

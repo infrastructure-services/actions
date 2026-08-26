@@ -40,3 +40,13 @@ Read-only protection is provided by all three layers:
 3. runtime and static guards that reject mutating SQL and non-query execution APIs.
 
 The connection string enters the capture process only through `DB_CONNECTION`. It is never accepted as a CLI argument and must not be written to logs, summaries or artifacts.
+
+## Database Registry evaluation
+
+After two deterministic captures, the action may read a central `targets.json` and evaluate schema drift without reconnecting to SQL Server. The registry is input-only: its bytes are checked before and after evaluation, and runtime evidence is written exclusively below the schema-capture artifact directory.
+
+Registry format V1 requires `registryFormatVersion=1`; missing or unknown versions fail closed. The workflow supplies repository, requested ref, actual checkout commit, logical file path, and the SHA256 of the exact registry file. The evaluator independently verifies the file hash and persists that shared `registryProvenance` in evaluation, baseline, and drift evidence.
+
+`observedSchemaHash` is evidence from the current capture. `certifiedSchemaHash` is an independently approved value from the versioned registry. The action never copies, promotes or writes the observed value into the certified field. A `BASELINE_REQUIRED` target produces `baseline-candidate.json` with `candidateStatus=NOT_CERTIFIED` and a blocked eligibility gate.
+
+Credential resolution remains intentionally outside Database Registry V1. A future `credentialRef` may replace the temporary workflow variable used by the pilot, but the registry evaluator neither reads nor stores connection data.

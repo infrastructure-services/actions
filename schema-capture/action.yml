@@ -17,6 +17,27 @@ inputs:
     description: Versión del SDK usada por el engine existente.
     required: false
     default: 10.0.x
+  application-id:
+    description: Application ID usado para resolver el DatabaseTarget central.
+    required: true
+  registry-file:
+    description: Path read-only al targets.json del Database Registry central.
+    required: true
+  registry-repository:
+    description: Owner/repository exacto del checkout usado como Database Registry.
+    required: true
+  registry-ref:
+    description: Ref solicitado para el checkout del Database Registry.
+    required: true
+  registry-commit-sha:
+    description: Commit exacto resuelto desde el checkout real del Database Registry.
+    required: true
+  registry-file-path:
+    description: Path lógico versionado del archivo dentro del repositorio del registry.
+    required: true
+  registry-file-sha256:
+    description: SHA256 exacto de los bytes de targets.json usados en la evaluación.
+    required: true
 
 outputs:
   status:
@@ -40,6 +61,27 @@ outputs:
   artifact-directory:
     description: Directorio local que debe publicar el workflow.
     value: ${{ steps.capture.outputs.artifact_directory }}
+  observed-schema-hash:
+    description: SHA256 observado; nunca se promueve automáticamente a certificado.
+    value: ${{ steps.capture.outputs.observed_schema_hash }}
+  certified-schema-hash:
+    description: SHA256 certificado en registry, vacío cuando todavía no existe.
+    value: ${{ steps.capture.outputs.certified_schema_hash }}
+  registry-status:
+    description: Estado de certificación o resolución del DatabaseTarget.
+    value: ${{ steps.capture.outputs.registry_status }}
+  drift-status:
+    description: BASELINE_REQUIRED, MATCH, DRIFT_DETECTED, TARGET_NOT_REGISTERED o INVALID_REGISTRY.
+    value: ${{ steps.capture.outputs.drift_status }}
+  gate-status:
+    description: ELIGIBLE o BLOCKED respecto exclusivamente de schema drift.
+    value: ${{ steps.capture.outputs.gate_status }}
+  gate-reason:
+    description: Razón estable y sanitizada del gate.
+    value: ${{ steps.capture.outputs.gate_reason }}
+  baseline-candidate:
+    description: true si se produjo evidencia NOT_CERTIFIED para onboarding.
+    value: ${{ steps.capture.outputs.baseline_candidate }}
 
 runs:
   using: composite
@@ -56,4 +98,11 @@ runs:
         DB_CONNECTION: ${{ inputs.connection-string }}
         ENVIRONMENT_NAME: ${{ inputs.environment-name }}
         OUTPUT_DIRECTORY: ${{ inputs.output-directory }}
+        APPLICATION_ID: ${{ inputs.application-id }}
+        REGISTRY_FILE: ${{ inputs.registry-file }}
+        REGISTRY_REPOSITORY: ${{ inputs.registry-repository }}
+        REGISTRY_REF: ${{ inputs.registry-ref }}
+        REGISTRY_COMMIT_SHA: ${{ inputs.registry-commit-sha }}
+        REGISTRY_LOGICAL_FILE_PATH: ${{ inputs.registry-file-path }}
+        REGISTRY_FILE_SHA256: ${{ inputs.registry-file-sha256 }}
       run: bash "$GITHUB_ACTION_PATH/run-schema-capture.sh"
