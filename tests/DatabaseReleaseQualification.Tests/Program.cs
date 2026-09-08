@@ -164,7 +164,38 @@ var tests = new (string Name, Func<Task> Run)[]
     ("estado histórico se recupera por certificationId", HistoricalStateCanBeLoadedById),
     ("current certified state devuelve el último record", CurrentCertifiedStateReturnsLatestRecord),
     ("Registry y Certified State Store permanecen separados", RegistryAndCertifiedStateStoreAreSeparated),
-    ("Certified State rechaza metadata sensible", CertifiedStateRejectsSensitiveMetadata)
+    ("Certified State rechaza metadata sensible", CertifiedStateRejectsSensitiveMetadata),
+    ("commit protocol crea primera certificación", CommitProtocolFirstCommit),
+    ("commit protocol crea sucesor válido", CommitProtocolValidSuccessor),
+    ("commit protocol reintento idéntico es idempotente", CommitProtocolIdempotentReplay),
+    ("commit protocol coordina candidatos concurrentes", CommitProtocolConcurrentCandidates),
+    ("commit protocol bloquea predecessor desactualizado", CommitProtocolStalePredecessor),
+    ("commit protocol bloquea evidencia alterada", CommitProtocolAlteredEvidence),
+    ("commit protocol bloquea qualification inválida", CommitProtocolInvalidQualification),
+    ("commit protocol bloquea approval insuficiente", CommitProtocolInsufficientApproval),
+    ("commit protocol recupera fallo antes del record", CommitProtocolFailureBeforeRecord),
+    ("commit protocol conserva record preparado antes del pointer", CommitProtocolFailureBeforePointer),
+    ("commit protocol recupera fallo parcial", CommitProtocolPartialFailureRetry),
+    ("commit protocol recupera confirmación perdida", CommitProtocolLostConfirmation),
+    ("commit protocol conserva orden de cadena", CommitProtocolChainOrder),
+    ("commit protocol preserva historia certificada", CommitProtocolPreservesCertifiedHistory),
+    ("record orphan no aparece en historia", CommitProtocolOrphanOutsideHistory),
+    ("record orphan no puede ser predecessor", CommitProtocolOrphanCannotBePredecessor),
+    ("commit protocol impide reemplazar evidencia", CommitProtocolEvidenceCannotBeReplaced),
+    ("commit protocol impide reemplazar record preparado", CommitProtocolPreparedRecordCannotBeReplaced),
+    ("commit protocol detecta operation id reutilizado", CommitProtocolOperationConflict),
+    ("commit protocol devuelve clones defensivos", CommitProtocolDefensiveClones),
+    ("commit protocol conserva store existente", CommitProtocolExistingStoreCompatibility),
+    ("request inválido prevalece sobre conflicto global", CommitProtocolValidationPrecedesEvidenceConflict),
+    ("receipt committed con certification id contradictorio bloquea", CommitProtocolReceiptCertificationIdIntegrity),
+    ("receipt committed con hash contradictorio bloquea", CommitProtocolReceiptHashIntegrity),
+    ("receipt committed con database identity contradictoria bloquea", CommitProtocolReceiptIdentityIntegrity),
+    ("receipt prepared contradictorio bloquea", CommitProtocolPreparedReceiptIntegrity),
+    ("estado previo a CAS queda confirmado", CommitProtocolBeforeCasFailureState),
+    ("excepción durante CAS queda indeterminada y recuperable", CommitProtocolCasExceptionState),
+    ("identificador legítimo con token no se rechaza", CommitProtocolLegitimateSensitiveSubstring),
+    ("fingerprint aplica exclusiones y sensibilidad semántica", CommitProtocolFingerprintSemantics),
+    ("Evidence ID conserva semántica case-sensitive", CommitProtocolEvidenceIdIsCaseSensitive)
 };
 
 var failed = 0;
@@ -2780,6 +2811,578 @@ static Task CertifiedStateRejectsSensitiveMetadata()
     return Task.CompletedTask;
 }
 
+static Task CommitProtocolFirstCommit()
+{
+    var fixture = CommitProtocolFixture();
+    var result = fixture.Protocol.Commit(fixture.Request);
+    Equal(CertificationCommitStatus.Committed, result.Status);
+    Equal(CommitOutcomeState.ConfirmedYes, result.RecordPersistence);
+    Equal(CommitOutcomeState.ConfirmedYes, result.PointerAdvance);
+    True(!result.RecoveryRequired);
+    Equal(1, fixture.Store.ListCertifiedHistory(fixture.Request.DatabaseIdentity).Count);
+    Equal(0, fixture.Store.PreparedRecordCount);
+    Equal(1, fixture.Store.ReceiptCount);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolValidSuccessor()
+{
+    var fixture = CommitProtocolFixture();
+    Equal(CertificationCommitStatus.Committed, fixture.Protocol.Commit(fixture.Request).Status);
+    var successor = SuccessorCommitRequest(fixture.Request.Candidate, fixture.Store.GetCurrentPointer(
+        fixture.Request.DatabaseIdentity)!, 2, "operation-002", "qualified-release-commit-002");
+    Equal(CertificationCommitStatus.Committed, fixture.Protocol.Commit(successor).Status);
+    Equal(2, fixture.Store.ListCertifiedHistory(successor.DatabaseIdentity).Count);
+    Equal(successor.Candidate.CertificationId,
+        fixture.Store.GetCurrentPointer(successor.DatabaseIdentity)!.CertificationId);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolIdempotentReplay()
+{
+    var fixture = CommitProtocolFixture();
+    Equal(CertificationCommitStatus.Committed, fixture.Protocol.Commit(fixture.Request).Status);
+    var replayRequest = CopyCommitRequest(fixture.Request,
+        evidence: fixture.Request.EvidenceReferences.Reverse().ToArray());
+    Equal(CertificationCommitProtocol.ComputeFingerprint(fixture.Request),
+        CertificationCommitProtocol.ComputeFingerprint(replayRequest));
+    var replay = fixture.Protocol.Commit(replayRequest);
+    Equal(CertificationCommitStatus.IdempotentReplay, replay.Status);
+    Equal(1, fixture.Store.ListCertifiedHistory(fixture.Request.DatabaseIdentity).Count);
+    Equal(1, fixture.Store.ReceiptCount);
+    return Task.CompletedTask;
+}
+
+static async Task CommitProtocolConcurrentCandidates()
+{
+    var store = new InMemoryCertificationCommitStore();
+    using var barrier = new Barrier(2);
+    var injector = new CommitBarrierFaultInjector(barrier);
+    var first = CommitProtocolRequest(1, "concurrent-operation-a", "concurrent-correlation-a");
+    var second = CommitProtocolRequest(2, "concurrent-operation-b", "concurrent-correlation-b");
+    var protocolA = new CertificationCommitProtocol(store, injector);
+    var protocolB = new CertificationCommitProtocol(store, injector);
+    var results = await Task.WhenAll(Task.Run(() => protocolA.Commit(first)),
+        Task.Run(() => protocolB.Commit(second)));
+    Equal(1, results.Count(result => result.Status == CertificationCommitStatus.Committed));
+    Equal(1, results.Count(result => result.Status == CertificationCommitStatus.ConcurrencyConflict));
+    var winner = results.Single(result => result.Status == CertificationCommitStatus.Committed);
+    var loser = results.Single(result => result.Status == CertificationCommitStatus.ConcurrencyConflict);
+    Equal(1, store.ListCertifiedHistory(first.DatabaseIdentity).Count);
+    Equal(1, store.PreparedRecordCount);
+    Equal(2, store.ReceiptCount);
+    Equal(CertificationCommitReceiptStatus.Committed, store.GetReceipt(winner.OperationId)!.Status);
+    Equal(CertificationCommitReceiptStatus.Prepared, store.GetReceipt(loser.OperationId)!.Status);
+    Equal(winner.CertificationId, store.GetCurrentPointer(first.DatabaseIdentity)!.CertificationId);
+    True(store.ListCertifiedHistory(first.DatabaseIdentity)
+        .All(record => record.CertificationId != loser.CertificationId));
+    True(store.GetCertifiedById(loser.CertificationId) is null);
+    var winnerRequest = winner.OperationId == first.OperationId ? first : second;
+    var loserRequest = loser.OperationId == first.OperationId ? first : second;
+    Equal(CertificationCommitStatus.IdempotentReplay,
+        new CertificationCommitProtocol(store).Commit(winnerRequest).Status);
+    Equal(CertificationCommitStatus.ConcurrencyConflict,
+        new CertificationCommitProtocol(store).Commit(loserRequest).Status);
+    Equal(1, store.ListCertifiedHistory(first.DatabaseIdentity).Count);
+}
+
+static Task CommitProtocolStalePredecessor()
+{
+    var fixture = CommitProtocolFixture();
+    fixture.Protocol.Commit(fixture.Request);
+    var stale = SuccessorCommitRequest(fixture.Request.Candidate,
+        new CertificationPointer(fixture.Request.DatabaseIdentity, fixture.Request.Candidate.CertificationId,
+            fixture.Request.Candidate.CertificationEvidenceHash, 99), 2, "stale-operation", "stale-release");
+    var result = fixture.Protocol.Commit(stale);
+    Equal(CertificationCommitStatus.PredecessorMismatch, result.Status);
+    AssertCommitCounts(fixture.Store, 1, 0, 1, fixture.Request.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolAlteredEvidence()
+{
+    var fixture = CommitProtocolFixture();
+    var altered = fixture.Request.Candidate with
+    {
+        LineageEvidence = fixture.Request.Candidate.LineageEvidence with
+            { EvidenceSha256 = new string('f', 64) }
+    };
+    var request = CopyCommitRequest(fixture.Request, candidate: altered,
+        evidence: CertificationCommitProtocol.CollectEvidence(altered));
+    var result = fixture.Protocol.Commit(request);
+    Equal(CertificationCommitStatus.EvidenceInconsistent, result.Status);
+    AssertCommitCounts(fixture.Store, 0, 0, 0, request.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolInvalidQualification()
+{
+    var fixture = CommitProtocolFixture();
+    var blocked = BlockedCertification(fixture.Request.Certification,
+        CertificationDecisionReasons.ReleaseQualificationGateNotPassed);
+    var result = fixture.Protocol.Commit(CopyCommitRequest(fixture.Request, certification: blocked));
+    Equal(CertificationCommitStatus.QualificationInvalid, result.Status);
+    AssertCommitCounts(fixture.Store, 0, 0, 0, fixture.Request.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolInsufficientApproval()
+{
+    var fixture = CommitProtocolFixture();
+    var blocked = BlockedCertification(fixture.Request.Certification,
+        CertificationDecisionReasons.RequiredApproverNotSatisfied);
+    var result = fixture.Protocol.Commit(CopyCommitRequest(fixture.Request, certification: blocked));
+    Equal(CertificationCommitStatus.ApprovalInsufficient, result.Status);
+    AssertCommitCounts(fixture.Store, 0, 0, 0, fixture.Request.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolFailureBeforeRecord()
+{
+    var store = new InMemoryCertificationCommitStore();
+    var request = CommitProtocolRequest();
+    var protocol = new CertificationCommitProtocol(store,
+        new InMemoryCertificationCommitFaultInjector(CertificationCommitFaultPoint.BeforeRecordPersistence));
+    var failed = protocol.Commit(request);
+    Equal(CertificationCommitStatus.FailedBeforeRecord, failed.Status);
+    Equal(CommitOutcomeState.ConfirmedNo, failed.RecordPersistence);
+    Equal(CommitOutcomeState.ConfirmedNo, failed.PointerAdvance);
+    AssertCommitCounts(store, 0, 0, 0, request.DatabaseIdentity);
+    var result = protocol.Commit(request);
+    Equal(CertificationCommitStatus.Committed, result.Status);
+    AssertCommitCounts(store, 1, 0, 1, request.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolFailureBeforePointer()
+{
+    var store = new InMemoryCertificationCommitStore();
+    var request = CommitProtocolRequest();
+    var protocol = new CertificationCommitProtocol(store,
+        new InMemoryCertificationCommitFaultInjector(
+            CertificationCommitFaultPoint.AfterRecordPersistenceBeforeCas));
+    var result = protocol.Commit(request);
+    Equal(CertificationCommitStatus.RecordPersistedPointerPending, result.Status);
+    Equal(CommitOutcomeState.ConfirmedYes, result.RecordPersistence);
+    Equal(CommitOutcomeState.ConfirmedNo, result.PointerAdvance);
+    AssertCommitCounts(store, 0, 1, 1, request.DatabaseIdentity);
+    True(store.GetCurrentPointer(request.DatabaseIdentity) is null);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolPartialFailureRetry()
+{
+    var store = new InMemoryCertificationCommitStore();
+    var request = CommitProtocolRequest();
+    var first = new CertificationCommitProtocol(store,
+        new InMemoryCertificationCommitFaultInjector(
+            CertificationCommitFaultPoint.AfterRecordPersistenceBeforeCas)).Commit(request);
+    Equal(CertificationCommitStatus.RecordPersistedPointerPending, first.Status);
+    var recovered = new CertificationCommitProtocol(store).Commit(request);
+    Equal(CertificationCommitStatus.RecoveredAndCommitted, recovered.Status);
+    AssertCommitCounts(store, 1, 0, 1, request.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolLostConfirmation()
+{
+    var store = new InMemoryCertificationCommitStore();
+    var request = CommitProtocolRequest();
+    var first = new CertificationCommitProtocol(store,
+        new InMemoryCertificationCommitFaultInjector(
+            CertificationCommitFaultPoint.AfterCasBeforeConfirmation)).Commit(request);
+    Equal(CertificationCommitStatus.IndeterminateFailure, first.Status);
+    Equal(CommitOutcomeState.ConfirmedYes, first.RecordPersistence);
+    Equal(CommitOutcomeState.ConfirmedYes, first.PointerAdvance);
+    True(first.RecoveryRequired);
+    var recovered = new CertificationCommitProtocol(store).Commit(request);
+    Equal(CertificationCommitStatus.RecoveredAndCommitted, recovered.Status);
+    AssertCommitCounts(store, 1, 0, 1, request.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolChainOrder()
+{
+    var fixture = CommitProtocolFixture();
+    fixture.Protocol.Commit(fixture.Request);
+    var second = SuccessorCommitRequest(fixture.Request.Candidate,
+        fixture.Store.GetCurrentPointer(fixture.Request.DatabaseIdentity)!, 2, "chain-operation-2", "chain-release-2");
+    fixture.Protocol.Commit(second);
+    var third = SuccessorCommitRequest(second.Candidate,
+        fixture.Store.GetCurrentPointer(second.DatabaseIdentity)!, 3, "chain-operation-3", "chain-release-3");
+    fixture.Protocol.Commit(third);
+    var history = fixture.Store.ListCertifiedHistory(third.DatabaseIdentity);
+    Equal(3, history.Count);
+    Equal(history[0].CertificationId, history[1].PreviousCertificationId);
+    Equal(history[1].CertificationId, history[2].PreviousCertificationId);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolPreservesCertifiedHistory()
+{
+    var fixture = CommitProtocolFixture();
+    fixture.Protocol.Commit(fixture.Request);
+    var returned = fixture.Store.ListCertifiedHistory(fixture.Request.DatabaseIdentity)[0];
+    returned.RunMetadata["runId"] = "caller-change";
+    NotEqual("caller-change", fixture.Store.ListCertifiedHistory(fixture.Request.DatabaseIdentity)[0]
+        .RunMetadata["runId"]);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolOrphanOutsideHistory()
+{
+    var store = new InMemoryCertificationCommitStore();
+    var request = CommitProtocolRequest();
+    var result = new CertificationCommitProtocol(store,
+        new InMemoryCertificationCommitFaultInjector(
+            CertificationCommitFaultPoint.AfterRecordPersistenceBeforeCas)).Commit(request);
+    Equal(CertificationCommitStatus.RecordPersistedPointerPending, result.Status);
+    Equal(0, store.ListCertifiedHistory(request.DatabaseIdentity).Count);
+    Equal(1, store.PreparedRecordCount);
+    True(store.GetCertifiedById(request.Candidate.CertificationId) is null);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolOrphanCannotBePredecessor()
+{
+    var store = new InMemoryCertificationCommitStore();
+    var orphan = CommitProtocolRequest();
+    new CertificationCommitProtocol(store,
+        new InMemoryCertificationCommitFaultInjector(
+            CertificationCommitFaultPoint.AfterRecordPersistenceBeforeCas)).Commit(orphan);
+    var fakePointer = new CertificationPointer(orphan.DatabaseIdentity, orphan.Candidate.CertificationId,
+        orphan.Candidate.CertificationEvidenceHash, 1);
+    var successor = SuccessorCommitRequest(orphan.Candidate, fakePointer, 2,
+        "orphan-successor-operation", "orphan-successor-release");
+    Equal(CertificationCommitStatus.PredecessorMismatch,
+        new CertificationCommitProtocol(store).Commit(successor).Status);
+    AssertCommitCounts(store, 0, 1, 1, orphan.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolEvidenceCannotBeReplaced()
+{
+    var inner = new InMemoryCertificationCommitStore();
+    var request = CommitProtocolRequest();
+    var store = new EvidenceConflictCommitStore(inner);
+    var result = new CertificationCommitProtocol(store).Commit(request);
+    Equal(CertificationCommitStatus.IntegrityViolation, result.Status);
+    Equal(0, store.MutationCalls);
+    AssertCommitCounts(inner, 0, 0, 0, request.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolOperationConflict()
+{
+    var store = new InMemoryCertificationCommitStore();
+    var first = CommitProtocolRequest();
+    new CertificationCommitProtocol(store,
+        new InMemoryCertificationCommitFaultInjector(
+            CertificationCommitFaultPoint.AfterRecordPersistenceBeforeCas)).Commit(first);
+    var different = CommitProtocolRequest(2, first.OperationId, "different-correlation");
+    var result = new CertificationCommitProtocol(store).Commit(different);
+    Equal(CertificationCommitStatus.IdempotencyConflict, result.Status);
+    AssertCommitCounts(store, 0, 1, 1, first.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolPreparedRecordCannotBeReplaced()
+{
+    var store = new InMemoryCertificationCommitStore();
+    var first = CommitProtocolRequest();
+    new CertificationCommitProtocol(store,
+        new InMemoryCertificationCommitFaultInjector(
+            CertificationCommitFaultPoint.AfterRecordPersistenceBeforeCas)).Commit(first);
+
+    var changedSchema = CanonicalWithComment(includeIndex: true);
+    var changedCertification = new CertificationDecisionEngine().Evaluate(new CertificationRequest
+    {
+        Origin = CertificationOrigin.BootstrapApproved,
+        DatabaseLifecycle = DatabaseLifecycles.Existing,
+        ObservedPreSchemaHash = changedSchema.Sha256,
+        DriftStatus = DatabaseDriftStatuses.BaselineRequired,
+        LineageStatus = "CONSISTENT",
+        CertificationApprovalGranted = CertificationApprovalRequirement.Human,
+        CertificationApprovalReference = "replacement-correlation"
+    });
+    var changedRecord = BuildCertifiedState(first.Candidate.CertificationId,
+        changedSchema, changedCertification);
+    var replacement = NewCommitRequest("replacement-operation", "replacement-correlation",
+        changedRecord, changedCertification, null);
+    var result = new CertificationCommitProtocol(store).Commit(replacement);
+    Equal(CertificationCommitStatus.IntegrityViolation, result.Status);
+    AssertCommitCounts(store, 0, 1, 1, first.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolDefensiveClones()
+{
+    var fixture = CommitProtocolFixture();
+    fixture.Protocol.Commit(fixture.Request);
+    var pointer = fixture.Store.GetCurrentPointer(fixture.Request.DatabaseIdentity)!;
+    var record = fixture.Store.GetCertifiedById(fixture.Request.Candidate.CertificationId)!;
+    record.RunMetadata["runId"] = "mutated";
+    var receipt = fixture.Store.GetReceipt(fixture.Request.OperationId)!;
+    True(pointer.DatabaseIdentity is not null && receipt.DatabaseIdentity is not null);
+    NotEqual("mutated", fixture.Store.GetCertifiedById(record.CertificationId)!.RunMetadata["runId"]);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolExistingStoreCompatibility()
+{
+    var existing = new InMemoryCertifiedStateStore();
+    var record = BuildBootstrapCertifiedState(CertificationId(1),
+        SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: false)));
+    Equal(CertifiedStateAppendStatus.Appended, existing.Append(record).Status);
+    Equal(record.CertificationId, existing.GetCurrent(record.DatabaseIdentity)!.CertificationId);
+    Equal(1, existing.ListHistory(record.DatabaseIdentity).Count);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolValidationPrecedesEvidenceConflict()
+{
+    var store = new InMemoryCertificationCommitStore();
+    var known = CommitProtocolRequest();
+    new CertificationCommitProtocol(store,
+        new InMemoryCertificationCommitFaultInjector(
+            CertificationCommitFaultPoint.AfterRecordPersistenceBeforeCas)).Commit(known);
+    var invalid = CommitProtocolRequest(2, "invalid operation with spaces", "invalid-correlation");
+    var evidence = invalid.EvidenceReferences.ToArray();
+    evidence[0] = evidence[0] with
+        { EvidenceId = known.EvidenceReferences[0].EvidenceId, EvidenceSha256 = new string('d', 64) };
+    var result = new CertificationCommitProtocol(store).Commit(
+        CopyCommitRequest(invalid, evidence: evidence));
+    Equal(CertificationCommitStatus.ValidationFailed, result.Status);
+    AssertCommitCounts(store, 0, 1, 1, known.DatabaseIdentity);
+    True(store.GetCurrentPointer(known.DatabaseIdentity) is null);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolReceiptCertificationIdIntegrity() => AssertContradictoryReceipt(
+    receipt => receipt with { CertificationId = CertificationId(9) }, committed: true);
+
+static Task CommitProtocolReceiptHashIntegrity() => AssertContradictoryReceipt(
+    receipt => receipt with { CertificationEvidenceHash = new string('f', 64) }, committed: true);
+
+static Task CommitProtocolReceiptIdentityIntegrity() => AssertContradictoryReceipt(
+    receipt => receipt with { DatabaseIdentity = new DatabaseIdentity("9999", "TEST", "OtherDb") },
+    committed: true);
+
+static Task CommitProtocolPreparedReceiptIntegrity() => AssertContradictoryReceipt(
+    receipt => receipt with { CertificationId = CertificationId(9) }, committed: false);
+
+static Task AssertContradictoryReceipt(
+    Func<CertificationCommitReceipt, CertificationCommitReceipt> corrupt,
+    bool committed)
+{
+    var inner = new InMemoryCertificationCommitStore();
+    var request = CommitProtocolRequest();
+    if (committed)
+        Equal(CertificationCommitStatus.Committed,
+            new CertificationCommitProtocol(inner).Commit(request).Status);
+    else
+        Equal(CertificationCommitStatus.RecordPersistedPointerPending,
+            new CertificationCommitProtocol(inner,
+                new InMemoryCertificationCommitFaultInjector(
+                    CertificationCommitFaultPoint.AfterRecordPersistenceBeforeCas)).Commit(request).Status);
+    var beforeCertified = inner.ListCertifiedHistory(request.DatabaseIdentity).Count;
+    var beforePrepared = inner.PreparedRecordCount;
+    var beforeReceipts = inner.ReceiptCount;
+    var store = new ReceiptOverrideCommitStore(inner, corrupt);
+    var result = new CertificationCommitProtocol(store).Commit(request);
+    Equal(CertificationCommitStatus.IntegrityViolation, result.Status);
+    Equal(0, store.MutationCalls);
+    AssertCommitCounts(inner, beforeCertified, beforePrepared, beforeReceipts, request.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolBeforeCasFailureState()
+{
+    var store = new InMemoryCertificationCommitStore();
+    var request = CommitProtocolRequest();
+    var result = new CertificationCommitProtocol(store,
+        new InMemoryCertificationCommitFaultInjector(
+            CertificationCommitFaultPoint.BeforeCompareAndSwap)).Commit(request);
+    Equal(CertificationCommitStatus.IndeterminateFailure, result.Status);
+    Equal(CommitOutcomeState.ConfirmedYes, result.RecordPersistence);
+    Equal(CommitOutcomeState.ConfirmedNo, result.PointerAdvance);
+    True(result.RecoveryRequired);
+    AssertCommitCounts(store, 0, 1, 1, request.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolCasExceptionState()
+{
+    var inner = new InMemoryCertificationCommitStore();
+    var request = CommitProtocolRequest();
+    var throwing = new ThrowAfterCasCommitStore(inner, "password=must-not-escape");
+    var result = new CertificationCommitProtocol(throwing).Commit(request);
+    Equal(CertificationCommitStatus.IndeterminateFailure, result.Status);
+    Equal(CommitOutcomeState.ConfirmedYes, result.RecordPersistence);
+    Equal(CommitOutcomeState.Unknown, result.PointerAdvance);
+    True(result.RecoveryRequired);
+    True(result.Reasons.Contains(nameof(InvalidOperationException)));
+    True(result.Reasons.All(reason => !reason.Contains("must-not-escape", StringComparison.Ordinal)));
+    Equal(1, inner.ListCertifiedHistory(request.DatabaseIdentity).Count);
+    var retry = new CertificationCommitProtocol(inner).Commit(request);
+    Equal(CertificationCommitStatus.RecoveredAndCommitted, retry.Status);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolLegitimateSensitiveSubstring()
+{
+    var fixture = CommitProtocolFixture();
+    var request = CopyCommitRequest(fixture.Request,
+        authorization: fixture.Request.Authorization with { ActorId = "tokenization-service" });
+    Equal(CertificationCommitStatus.Committed, fixture.Protocol.Commit(request).Status);
+    var receiptJson = JsonSerializer.Serialize(fixture.Store.GetReceipt(request.OperationId), JsonDefaults.Compact);
+    var resultJson = JsonSerializer.Serialize(fixture.Protocol.Commit(request), JsonDefaults.Compact);
+    True(!receiptJson.Contains("credential", StringComparison.OrdinalIgnoreCase));
+    True(!resultJson.Contains("password", StringComparison.OrdinalIgnoreCase));
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolFingerprintSemantics()
+{
+    var request = CommitProtocolRequest();
+    var baseline = CertificationCommitProtocol.ComputeFingerprint(request);
+    Equal(baseline, CertificationCommitProtocol.ComputeFingerprint(
+        CopyCommitRequest(request, requestedAtUtc: request.RequestedAtUtc.AddDays(5))));
+    var relocated = RelocateCertifiedStateEvidence(request.Candidate, "other-backend");
+    Equal(baseline, CertificationCommitProtocol.ComputeFingerprint(
+        CopyCommitRequest(request, candidate: relocated,
+            evidence: CertificationCommitProtocol.CollectEvidence(relocated))));
+    Equal(baseline, CertificationCommitProtocol.ComputeFingerprint(
+        CopyCommitRequest(request, evidence: request.EvidenceReferences.Reverse().ToArray())));
+    var upperHashes = request.EvidenceReferences.Select(e => e with
+        { EvidenceSha256 = e.EvidenceSha256.ToUpperInvariant() }).ToArray();
+    Equal(baseline, CertificationCommitProtocol.ComputeFingerprint(
+        CopyCommitRequest(request, evidence: upperHashes)));
+    var changedHash = request.EvidenceReferences.ToArray();
+    changedHash[0] = changedHash[0] with { EvidenceSha256 = new string('a', 64) };
+    NotEqual(baseline, CertificationCommitProtocol.ComputeFingerprint(
+        CopyCommitRequest(request, evidence: changedHash)));
+    NotEqual(baseline, CertificationCommitProtocol.ComputeFingerprint(CopyCommitRequest(request,
+        authorization: request.Authorization with { AuthorityReference = "other-authority" })));
+    NotEqual(baseline, CertificationCommitProtocol.ComputeFingerprint(CopyCommitRequest(request,
+        correlationId: "other-correlation")));
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolEvidenceIdIsCaseSensitive()
+{
+    var request = CommitProtocolRequest();
+    var changed = request.EvidenceReferences.ToArray();
+    changed[0] = changed[0] with { EvidenceId = changed[0].EvidenceId.ToUpperInvariant() };
+    NotEqual(CertificationCommitProtocol.ComputeFingerprint(request),
+        CertificationCommitProtocol.ComputeFingerprint(CopyCommitRequest(request, evidence: changed)));
+    Equal(CertificationCommitStatus.EvidenceInconsistent,
+        new CertificationCommitProtocol(new InMemoryCertificationCommitStore())
+            .Commit(CopyCommitRequest(request, evidence: changed)).Status);
+    return Task.CompletedTask;
+}
+
+static (InMemoryCertificationCommitStore Store, CertificationCommitProtocol Protocol,
+    CertificationCommitRequest Request) CommitProtocolFixture()
+{
+    var store = new InMemoryCertificationCommitStore();
+    return (store, new CertificationCommitProtocol(store), CommitProtocolRequest());
+}
+
+static CertificationCommitRequest CommitProtocolRequest(
+    int certificationNumber = 1,
+    string operationId = "operation-001",
+    string correlationId = "bootstrap-correlation-001")
+{
+    var schema = certificationNumber == 1
+        ? SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: false))
+        : CanonicalWithComment(includeIndex: certificationNumber % 2 == 0);
+    var certification = new CertificationDecisionEngine().Evaluate(new CertificationRequest
+    {
+        Origin = CertificationOrigin.BootstrapApproved,
+        DatabaseLifecycle = DatabaseLifecycles.Existing,
+        ObservedPreSchemaHash = schema.Sha256,
+        DriftStatus = DatabaseDriftStatuses.BaselineRequired,
+        LineageStatus = "CONSISTENT",
+        CertificationApprovalGranted = CertificationApprovalRequirement.Human,
+        CertificationApprovalReference = correlationId
+    });
+    var record = BuildCertifiedState(CertificationId(certificationNumber), schema, certification);
+    return NewCommitRequest(operationId, correlationId, record, certification, null);
+}
+
+static CertificationCommitRequest SuccessorCommitRequest(
+    CertifiedStateRecord previous,
+    CertificationPointer pointer,
+    int certificationNumber,
+    string operationId,
+    string releaseId)
+{
+    var schema = CanonicalWithComment(includeIndex: certificationNumber % 2 == 0);
+    var transition = QualifiedStateTransition(previous.CanonicalSchemaEvidence!, schema, releaseId);
+    var record = BuildCertifiedState(CertificationId(certificationNumber), schema,
+        transition.Certification, previous, transition.QualifiedRelease);
+    return NewCommitRequest(operationId, releaseId, record, transition.Certification,
+        new ExpectedCertificationPointer(pointer.CertificationId,
+            pointer.CertificationEvidenceHash, pointer.Version));
+}
+
+static CertificationCommitRequest NewCommitRequest(
+    string operationId,
+    string correlationId,
+    CertifiedStateRecord record,
+    CertificationResult certification,
+    ExpectedCertificationPointer? expected) => new()
+{
+    OperationId = operationId,
+    DatabaseIdentity = record.DatabaseIdentity,
+    ExpectedPredecessor = expected,
+    Candidate = record,
+    EvidenceReferences = CertificationCommitProtocol.CollectEvidence(record),
+    ReleaseOrCorrelationId = correlationId,
+    Authorization = new CommitAuthorizationContext("certification-engine", "policy-evaluation",
+        "CERTIFICATION_POLICY_V1", "authority-reference-001"),
+    Certification = certification,
+    RequestedAtUtc = DateTimeOffset.Parse("2026-09-07T12:00:00Z")
+};
+
+static CertificationCommitRequest CopyCommitRequest(
+    CertificationCommitRequest source,
+    CertifiedStateRecord? candidate = null,
+    IReadOnlyList<EvidenceReference>? evidence = null,
+    CertificationResult? certification = null,
+    CommitAuthorizationContext? authorization = null,
+    string? correlationId = null,
+    DateTimeOffset? requestedAtUtc = null) => new()
+{
+    OperationId = source.OperationId,
+    DatabaseIdentity = source.DatabaseIdentity,
+    ExpectedPredecessor = source.ExpectedPredecessor,
+    Candidate = candidate ?? source.Candidate,
+    EvidenceReferences = evidence ?? source.EvidenceReferences,
+    ReleaseOrCorrelationId = correlationId ?? source.ReleaseOrCorrelationId,
+    Authorization = authorization ?? source.Authorization,
+    Certification = certification ?? source.Certification,
+    RequestedAtUtc = requestedAtUtc ?? source.RequestedAtUtc.AddMinutes(1)
+};
+
+static CertificationResult BlockedCertification(CertificationResult source, string reason) => new()
+{
+    Decision = CertificationDecision.Blocked,
+    DecisionReason = reason,
+    Origin = source.Origin,
+    NextCertifiedSchemaHash = null,
+    Evidence = source.Evidence
+};
+
+static void AssertCommitCounts(InMemoryCertificationCommitStore store, int certified, int prepared,
+    int receipts, DatabaseIdentity identity)
+{
+    Equal(certified, store.ListCertifiedHistory(identity).Count);
+    Equal(prepared, store.PreparedRecordCount);
+    Equal(receipts, store.ReceiptCount);
+}
+
 static (InMemoryCertifiedStateStore Store, CertifiedStateRecord First, CanonicalSchema Schema,
     CertifiedStateAppendResult Append) FirstCertifiedStateFixture()
 {
@@ -3520,4 +4123,106 @@ internal sealed class FakeDataRollbackContract(DataRollbackValidity result) : ID
         return Task.CompletedTask;
     }
     public Task<DataRollbackValidity> ValidateRollbackDataAsync(CancellationToken cancellationToken = default) => Task.FromResult(result);
+}
+
+internal sealed class CommitBarrierFaultInjector(Barrier barrier) : ICertificationCommitFaultInjector
+{
+    public void ThrowIfArmed(CertificationCommitFaultPoint point)
+    {
+        if (point == CertificationCommitFaultPoint.BeforeCompareAndSwap)
+            barrier.SignalAndWait(TimeSpan.FromSeconds(10));
+    }
+}
+
+internal class DelegatingCommitStore(ICertificationCommitStore inner) : ICertificationCommitStore
+{
+    protected ICertificationCommitStore Inner { get; } = inner;
+    public virtual CertificationCommitReceipt? GetReceipt(string operationId) => Inner.GetReceipt(operationId);
+    public virtual bool HasEvidenceConflict(IReadOnlyList<EvidenceReference> evidenceReferences) =>
+        Inner.HasEvidenceConflict(evidenceReferences);
+    public virtual CertifiedStateRecord? GetPrepared(string certificationId) => Inner.GetPrepared(certificationId);
+    public virtual CertificationPointer? GetCurrentPointer(DatabaseIdentity databaseIdentity) =>
+        Inner.GetCurrentPointer(databaseIdentity);
+    public virtual PrepareRecordResult CreatePreparedIfAbsent(string operationId, string operationFingerprint,
+        CertifiedStateRecord record, IReadOnlyList<EvidenceReference> evidenceReferences) =>
+        Inner.CreatePreparedIfAbsent(operationId, operationFingerprint, record, evidenceReferences);
+    public virtual PointerCasResult CompareAndSwapCurrent(DatabaseIdentity databaseIdentity,
+        ExpectedCertificationPointer? expected, string operationId, string certificationId) =>
+        Inner.CompareAndSwapCurrent(databaseIdentity, expected, operationId, certificationId);
+    public virtual bool CompleteReceipt(string operationId, string operationFingerprint) =>
+        Inner.CompleteReceipt(operationId, operationFingerprint);
+    public virtual CertifiedStateRecord? GetCertifiedById(string certificationId) =>
+        Inner.GetCertifiedById(certificationId);
+    public virtual IReadOnlyList<CertifiedStateRecord> ListCertifiedHistory(DatabaseIdentity databaseIdentity) =>
+        Inner.ListCertifiedHistory(databaseIdentity);
+    public int PreparedRecordCount => Inner.PreparedRecordCount;
+    public int ReceiptCount => Inner.ReceiptCount;
+}
+
+internal sealed class ReceiptOverrideCommitStore(
+    ICertificationCommitStore inner,
+    Func<CertificationCommitReceipt, CertificationCommitReceipt> transform) : DelegatingCommitStore(inner)
+{
+    public int MutationCalls { get; private set; }
+
+    public override CertificationCommitReceipt? GetReceipt(string operationId)
+    {
+        var receipt = base.GetReceipt(operationId);
+        return receipt is null ? null : transform(receipt);
+    }
+
+    public override PrepareRecordResult CreatePreparedIfAbsent(string operationId, string operationFingerprint,
+        CertifiedStateRecord record, IReadOnlyList<EvidenceReference> evidenceReferences)
+    {
+        MutationCalls++;
+        return base.CreatePreparedIfAbsent(operationId, operationFingerprint, record, evidenceReferences);
+    }
+
+    public override PointerCasResult CompareAndSwapCurrent(DatabaseIdentity databaseIdentity,
+        ExpectedCertificationPointer? expected, string operationId, string certificationId)
+    {
+        MutationCalls++;
+        return base.CompareAndSwapCurrent(databaseIdentity, expected, operationId, certificationId);
+    }
+
+    public override bool CompleteReceipt(string operationId, string operationFingerprint)
+    {
+        MutationCalls++;
+        return base.CompleteReceipt(operationId, operationFingerprint);
+    }
+}
+
+internal sealed class ThrowAfterCasCommitStore(ICertificationCommitStore inner, string message)
+    : DelegatingCommitStore(inner)
+{
+    public override PointerCasResult CompareAndSwapCurrent(DatabaseIdentity databaseIdentity,
+        ExpectedCertificationPointer? expected, string operationId, string certificationId)
+    {
+        _ = base.CompareAndSwapCurrent(databaseIdentity, expected, operationId, certificationId);
+        throw new InvalidOperationException(message);
+    }
+}
+
+internal sealed class EvidenceConflictCommitStore(ICertificationCommitStore inner)
+    : DelegatingCommitStore(inner)
+{
+    public int MutationCalls { get; private set; }
+    public override bool HasEvidenceConflict(IReadOnlyList<EvidenceReference> evidenceReferences) => true;
+    public override PrepareRecordResult CreatePreparedIfAbsent(string operationId, string operationFingerprint,
+        CertifiedStateRecord record, IReadOnlyList<EvidenceReference> evidenceReferences)
+    {
+        MutationCalls++;
+        return base.CreatePreparedIfAbsent(operationId, operationFingerprint, record, evidenceReferences);
+    }
+    public override PointerCasResult CompareAndSwapCurrent(DatabaseIdentity databaseIdentity,
+        ExpectedCertificationPointer? expected, string operationId, string certificationId)
+    {
+        MutationCalls++;
+        return base.CompareAndSwapCurrent(databaseIdentity, expected, operationId, certificationId);
+    }
+    public override bool CompleteReceipt(string operationId, string operationFingerprint)
+    {
+        MutationCalls++;
+        return base.CompleteReceipt(operationId, operationFingerprint);
+    }
 }
