@@ -1,0 +1,4228 @@
+using System.Text.Json;
+using DatabaseReleaseQualification;
+
+var tests = new (string Name, Func<Task> Run)[]
+{
+    ("fingerprint estable ante distinto orden", FingerprintIgnoresOrder),
+    ("diferencia estructural cambia fingerprint", StructuralDifferenceChangesFingerprint),
+    ("métricas no contaminan fingerprint", MetricsDoNotChangeFingerprint),
+    ("dos captures equivalentes son determinísticos", EquivalentCapturesAreDeterministic),
+    ("captures estructuralmente distintas se bloquean", DifferentCapturesAreNondeterministic),
+    ("metadata de capture separa métricas no disponibles", UnavailableMetricsDoNotFailCapture),
+    ("discovery bloqueado permite capture pero no rehearsal", BlockedDiscoveryAllowsCaptureOnly),
+    ("falta de metadata se clasifica de forma estable", MetadataVisibilityFailureIsClassified),
+    ("fallo de conexión se clasifica de forma estable", ConnectionFailureIsClassified),
+    ("guard de schema capture admite solo SELECT", SchemaCaptureSqlGuard),
+    ("queries degradan por versión SQL Server", SqlServerVersionQueriesDegradeSafely),
+    ("CLI capture sin conexión falla antes de SQL", CliSchemaCaptureRequiresEnvironmentSecret),
+    ("CLI compare devuelve estado no determinístico", CliSchemaComparisonBlocksMismatch),
+    ("artifacts no conservan valores de identidad", SchemaCaptureArtifactsExcludeIdentityValue),
+    ("registry BASELINE_REQUIRED bloquea y pide candidate", RegistryBaselineRequired),
+    ("registryFormatVersion 1 es válido", RegistryFormatVersionOneIsValid),
+    ("registry sin versión es inválido", RegistryMissingFormatVersionIsInvalid),
+    ("registry con versión desconocida es inválido", RegistryUnknownFormatVersionIsInvalid),
+    ("registry CERTIFIED con hash igual produce MATCH", RegistryCertifiedMatch),
+    ("registry CERTIFIED con hash distinto detecta drift", RegistryCertifiedMismatch),
+    ("target no registrado queda bloqueado", RegistryTargetNotRegistered),
+    ("registry rechaza targets duplicados", RegistryRejectsDuplicateTargets),
+    ("registry rechaza CERTIFIED sin hash", RegistryRejectsCertifiedWithoutHash),
+    ("registry rechaza SHA256 inválido", RegistryRejectsInvalidHash),
+    ("registry rechaza environment inválido", RegistryRejectsInvalidEnvironment),
+    ("registry rechaza certificationStatus inválido", RegistryRejectsInvalidCertificationStatus),
+    ("registry rechaza lifecycle inválido", RegistryRejectsInvalidLifecycle),
+    ("registry rechaza campos obligatorios vacíos", RegistryRejectsEmptyRequiredFields),
+    ("registry rechaza baseline contradictorio", RegistryRejectsContradictoryBaseline),
+    ("baseline candidate nunca queda certificado", BaselineCandidateIsNeverCertified),
+    ("evaluación baseline no modifica registry", RegistryEvaluationDoesNotModifyRegistry),
+    ("observed hash nunca sustituye certified hash", ObservedHashNeverReplacesCertifiedHash),
+    ("evidencia de mismatch no inventa diff estructural", DriftEvidenceIsHashOnly),
+    ("registry commit aparece en evidencia", RegistryCommitAppearsInEvidence),
+    ("registry file SHA256 corresponde a bytes reales", RegistryFileShaMatchesBytes),
+    ("registry file SHA256 declarado incorrecto falla cerrado", RegistryFileShaMismatchFailsClosed),
+    ("cambiar targets cambia registry file SHA256", RegistryContentChangesFileSha),
+    ("cambiar observed no cambia registry file SHA256", ObservedHashDoesNotChangeRegistryFileSha),
+    ("baseline candidate conserva provenance", BaselineCandidatePreservesProvenance),
+    ("drift evidence conserva provenance", DriftEvidencePreservesProvenance),
+    ("MATCH sólo habilita gate de schema drift", MatchIsEligibleForSchemaDrift),
+    ("CLI baseline genera artifacts sin certificar", CliDatabaseStateBaselineProducesEvidence),
+    ("CLI registry inválido falla cerrado con evidencia", CliDatabaseStateInvalidRegistryFailsClosed),
+    ("AST reconoce formatos equivalentes", AstEquivalentFormatting),
+    ("AST resuelve aliases UPDATE y DELETE", AstResolvesAliases),
+    ("AST reconoce statements requeridos", AstRecognizesRequiredStatements),
+    ("AST conserva múltiples statements y comentarios", AstMultipleStatementsAndComments),
+    ("parse error nunca queda COMPLETE ni LOW", AstParseFailureNeverLow),
+    ("SQL no parseable no llega al rehearsal", UnparseableSqlDoesNotExecute),
+    ("dynamic SQL queda INSUFFICIENT y bloqueado", DynamicSqlIsBlocked),
+    ("target implícito queda PARTIAL y mínimo MEDIUM", ImplicitTargetIsNotSilentLow),
+    ("statement desconocido nunca queda LOW", UnknownStatementNeverLow),
+    ("rollback estructural puro es FULL_REVERSIBLE", PureSchemaRollbackIsValid),
+    ("DELETE con schema idéntico deja datos UNVERIFIED", DeleteDataRollbackIsUnverified),
+    ("DROP COLUMN recreada no recupera datos", DropColumnIsNotFullReversible),
+    ("data contract válido permite rollback completo", DataContractCanValidateRollback),
+    ("rollback que omite índice es INVALID", RollbackMissingIndex),
+    ("ALTER COLUMN detecta índice dependiente", IndexedColumnDependency),
+    ("ALTER COLUMN detecta FK desde tabla referenciada", ReferencedForeignKeyDependency),
+    ("rollback detecta índice creado por forward en POST1", Post1IndexDependencyDetected),
+    ("análisis POST1 reemplaza screening insuficiente de PRE", Post1AnalysisIsAuthoritative),
+    ("rollback detecta FK creada por forward en POST1", Post1ForeignKeyDependencyDetected),
+    ("rollback detecta constraint y computed dependency de POST1", Post1ConstraintAndComputedDependencyDetected),
+    ("riesgo POST1 eleva final y queda en attestation", Post1RiskRaisesFinalAndIsAttested),
+    ("rollback POST1 sin dependencias conserva LOW", Post1LowDependencyStaysLow),
+    ("confidence POST1 insuficiente bloquea antes del rollback", Post1InsufficientConfidenceBlocksRollback),
+    ("forward LOW y rollback HIGH produce HIGH", HighRollbackWins),
+    ("rollback de índice grande eleva rollbackRisk", LargeRollbackCostRaisesRollbackRisk),
+    ("dependency HIGH produce final HIGH", HighDependencyWins),
+    ("todas las dimensiones LOW producen LOW", AllLow),
+    ("rollback INVALID no puede continuar", InvalidRollbackCannotProceed),
+    ("reapply divergente bloquea", ReapplyMismatch),
+    ("discovery bloqueado no ejecuta nada", BlockedDiscoveryDoesNotExecute),
+    ("PROD no puede ejecutar rehearsal", ProdGuard),
+    ("scripts inmutables clonan bytes", ReleaseScriptIsImmutable),
+    ("payload no depende del ambiente", PayloadIdentityIgnoresEnvironment),
+    ("un byte distinto cambia payload", PayloadChangesWithScriptByte),
+    ("attestations varían sin cambiar payload", AttestationsAccumulateWithoutChangingPayload),
+    ("package usa hashes de schema explícitos", PackageUsesSchemaHashNames),
+    ("artefactos de schema no conservan definiciones sensibles", SchemaArtifactsDoNotExposeRawDefinitions),
+    ("run metadata rechaza claves sensibles", RunMetadataRejectsSensitiveKeys),
+    ("rollback INVALID no solicita aprobación DBA", InvalidRollbackDoesNotRequestApproval),
+    ("rollback VALID y HIGH requiere aprobación DBA", ValidHighRollbackRequiresApproval),
+    ("target TEST LOW más PROD HIGH produce HIGH", TargetHighWins),
+    ("release HIGH más target LOW permanece HIGH", QualifiedHighWins),
+    ("release LOW más target LOW permanece LOW", QualifiedAndTargetLowRemainLow),
+    ("FK y triggers contribuyen al target risk", TargetRelationshipsRaiseRisk),
+    ("coverage unsupported degrada confidence", UnsupportedCoverageDegradesConfidence),
+    ("feature unsupported relevante bloquea", RelevantUnsupportedFeatureBlocks),
+    ("CLI analyze-only genera payload y attestation", CliAnalyzeOnlyPackage),
+    ("CLI bloquea discovery inconsistente", CliBlocksInconsistentDiscovery),
+    ("sin Certified PRE no existe certificación automática", DerivedCertificationRequiresCertifiedPre),
+    ("cadena íntegra produce certificación derivada automática", DerivedCertificationIsAutomatic),
+    ("PRE con drift prohíbe certificación automática", PreDriftBlocksDerivedCertification),
+    ("POST distinto del qualified POST bloquea certificación", PostMismatchBlocksDerivedCertification),
+    ("LOW autorizado por policy certifica automáticamente", LowRiskExactDeploymentCertifiesAutomatically),
+    ("HIGH sin autorización DBA no certifica", HighRiskMissingDeploymentAuthorizationBlocks),
+    ("rollback INVALID bloquea incluso con autorización", InvalidRollbackCannotBeOverriddenByAuthorization),
+    ("cambio out-of-band requiere reconciliación", OutOfBandRequiresReconciliation),
+    ("bootstrap queda listo para aprobación humana", BootstrapIsReadyForHumanApproval),
+    ("transición automática genera evidencia completa", AutomaticCertificationEvidenceIsComplete),
+    ("payload ejecutado distinto bloquea transición derivada", ExactQualifiedReleaseIsRequired),
+    ("HIGH con autorización DBA certifica sin segunda aprobación", HighRiskAuthorizedDeploymentCertifiesAutomatically),
+    ("CICDV3 continúa bloqueada por lineage", Cicdv3BootstrapRemainsBlockedByLineage),
+    ("RESTORE_REQUIRED autorizado puede certificar", RestoreRequiredAuthorizedCertifiesAutomatically),
+    ("RESTORE_REQUIRED sin autorización queda bloqueado", RestoreRequiredWithoutAuthorizationBlocks),
+    ("qualification gate no aprobado bloquea certificación", QualificationGateFailureBlocks),
+    ("SQL DBA planned usa el mismo Database Release engine", PlannedDbaUsesSharedReleaseEngine),
+    ("DBA no puede declarar finalRisk", PlannedDbaCannotOverrideRisk),
+    ("DBA HIGH conserva policy normal", PlannedDbaHighUsesNormalPolicy),
+    ("DBA LOW elegible puede autorizarse automáticamente", PlannedDbaLowCanBeAutomatic),
+    ("DBA con rollback INVALID queda bloqueado", PlannedDbaInvalidRollbackBlocks),
+    ("una diferencia DBA aprobada queda lista para certificar", KnownDbaDifferenceIsReady),
+    ("approved más unexplained bloquea reconciliación", MixedReconciliationBlocks),
+    ("todas las diferencias explicadas quedan listas", AllExplainedDifferencesAreReady),
+    ("sin diferencias no hay reconciliación", NoDifferencesNeedsNoReconciliation),
+    ("approved out-of-band requiere reference y reason", ApprovedOutOfBandRequiresMetadata),
+    ("reconciliation no expone accept-all", ReconciliationHasNoAcceptAll),
+    ("evidencia conserva before y after por objeto", ReconciliationEvidencePreservesObjectFingerprints),
+    ("estado reconciliado usa canonical observado completo", ReconciledStateContainsApprovedDbaObject),
+    ("estado reconciliado no repite drift futuro", ReconciledStateDoesNotDriftAgain),
+    ("Existing EF certificado y consistente queda managed", ExistingEfOnboardingIsManaged),
+    ("Existing legacy SQL certificado queda managed", ExistingLegacySqlOnboardingIsManaged),
+    ("Existing EF con history sin repo queda bloqueado", ExistingEfHistoryWithoutRepoIsBlocked),
+    ("structural certificado no supera lineage bloqueado", CertifiedStructuralDoesNotOverrideBlockedLineage),
+    ("baseline candidate con lineage válido queda pending", CandidateWithValidLineageIsPending),
+    ("drift sin explicación bloquea onboarding", UnexplainedDriftBlocksOnboarding),
+    ("reconciliation lista aún no queda managed", ReadyReconciliationIsNotManaged),
+    ("reconciliation certificada restaura managed", CertifiedReconciliationRestoresManaged),
+    ("DBA planned no genera drift de onboarding", PlannedDbaDoesNotCreateOnboardingDrift),
+    ("DBA out-of-band rompe la cadena administrada", DbaOutOfBandBreaksManagedChain),
+    ("NEW controlled inicia certificación automática 001", NewControlledCanStartAutomaticCertification),
+    ("NEW sin PRE inicial validado no certifica", NewWithoutValidatedInitialPreIsBlocked),
+    ("NEW sin initial qualified release no queda managed", NewWithoutQualifiedInitialReleaseIsNotManaged),
+    ("CICDV3 permanece bloqueada por lineage", Cicdv3OnboardingRemainsBlocked),
+    ("rehearsal exige onboarding managed", RehearsalRequiresManagedOnboarding),
+    ("onboarding no decide risk ni aprobación DBA", OnboardingDoesNotDecideRiskApproval),
+    ("bootstrap Existing crea Certified State 001", BootstrapExistingCreatesFirstCertifiedState),
+    ("NEW controlled crea Certified State 001 por qualified release", NewControlledCreatesFirstCertifiedState),
+    ("Certified State 002 referencia correctamente 001", DerivedSecondStateReferencesFirst),
+    ("Certified State 003 referencia correctamente 002", DerivedThirdStateReferencesSecond),
+    ("previous certification incorrecta bloquea append", WrongPreviousCertificationBlocksAppend),
+    ("previous evidence hash incorrecto bloquea append", WrongPreviousEvidenceHashBlocksAppend),
+    ("evidencia semántica cambia certification evidence hash", SemanticEvidenceChangesCertificationHash),
+    ("locator operacional no cambia certification evidence hash", EvidenceLocatorDoesNotChangeCertificationHash),
+    ("hash de evidencia cambia identidad de certificación", EvidenceHashChangeAffectsCertificationIdentity),
+    ("canonical schema movido conserva certificación semántica", CanonicalSchemaLocatorDoesNotChangeCertification),
+    ("canonical schema con bytes distintos queda inválido", CanonicalSchemaDifferentBytesAreInvalid),
+    ("cadena histórica valida tras relocalizar evidencia", HistoryChainValidatesAfterEvidenceRelocation),
+    ("timestamp y run metadata no alteran hash semántico", VolatileRecordMetadataDoesNotChangeHash),
+    ("historia certificada es inmutable", HistoricalCertifiedStateIsImmutable),
+    ("certificationId duplicado queda prohibido", DuplicateCertificationIdIsBlocked),
+    ("database identity distinta rompe la cadena", DifferentDatabaseIdentityBlocksAppend),
+    ("segunda certificación initial queda prohibida", SecondInitialCertificationIsBlocked),
+    ("canonical schema hash inconsistente bloquea append", CanonicalSchemaMismatchBlocksAppend),
+    ("DBA planned genera certificación QUALIFIED_RELEASE normal", DbaPlannedCreatesNormalCertifiedState),
+    ("DBA reconciled genera certificación de reconciliation", DbaReconciledCreatesReconciliationCertifiedState),
+    ("Certified State conserva canonical schema completo", CertifiedStatePreservesCanonicalSchema),
+    ("estado histórico se recupera por certificationId", HistoricalStateCanBeLoadedById),
+    ("current certified state devuelve el último record", CurrentCertifiedStateReturnsLatestRecord),
+    ("Registry y Certified State Store permanecen separados", RegistryAndCertifiedStateStoreAreSeparated),
+    ("Certified State rechaza metadata sensible", CertifiedStateRejectsSensitiveMetadata),
+    ("commit protocol crea primera certificación", CommitProtocolFirstCommit),
+    ("commit protocol crea sucesor válido", CommitProtocolValidSuccessor),
+    ("commit protocol reintento idéntico es idempotente", CommitProtocolIdempotentReplay),
+    ("commit protocol coordina candidatos concurrentes", CommitProtocolConcurrentCandidates),
+    ("commit protocol bloquea predecessor desactualizado", CommitProtocolStalePredecessor),
+    ("commit protocol bloquea evidencia alterada", CommitProtocolAlteredEvidence),
+    ("commit protocol bloquea qualification inválida", CommitProtocolInvalidQualification),
+    ("commit protocol bloquea approval insuficiente", CommitProtocolInsufficientApproval),
+    ("commit protocol recupera fallo antes del record", CommitProtocolFailureBeforeRecord),
+    ("commit protocol conserva record preparado antes del pointer", CommitProtocolFailureBeforePointer),
+    ("commit protocol recupera fallo parcial", CommitProtocolPartialFailureRetry),
+    ("commit protocol recupera confirmación perdida", CommitProtocolLostConfirmation),
+    ("commit protocol conserva orden de cadena", CommitProtocolChainOrder),
+    ("commit protocol preserva historia certificada", CommitProtocolPreservesCertifiedHistory),
+    ("record orphan no aparece en historia", CommitProtocolOrphanOutsideHistory),
+    ("record orphan no puede ser predecessor", CommitProtocolOrphanCannotBePredecessor),
+    ("commit protocol impide reemplazar evidencia", CommitProtocolEvidenceCannotBeReplaced),
+    ("commit protocol impide reemplazar record preparado", CommitProtocolPreparedRecordCannotBeReplaced),
+    ("commit protocol detecta operation id reutilizado", CommitProtocolOperationConflict),
+    ("commit protocol devuelve clones defensivos", CommitProtocolDefensiveClones),
+    ("commit protocol conserva store existente", CommitProtocolExistingStoreCompatibility),
+    ("request inválido prevalece sobre conflicto global", CommitProtocolValidationPrecedesEvidenceConflict),
+    ("receipt committed con certification id contradictorio bloquea", CommitProtocolReceiptCertificationIdIntegrity),
+    ("receipt committed con hash contradictorio bloquea", CommitProtocolReceiptHashIntegrity),
+    ("receipt committed con database identity contradictoria bloquea", CommitProtocolReceiptIdentityIntegrity),
+    ("receipt prepared contradictorio bloquea", CommitProtocolPreparedReceiptIntegrity),
+    ("estado previo a CAS queda confirmado", CommitProtocolBeforeCasFailureState),
+    ("excepción durante CAS queda indeterminada y recuperable", CommitProtocolCasExceptionState),
+    ("identificador legítimo con token no se rechaza", CommitProtocolLegitimateSensitiveSubstring),
+    ("fingerprint aplica exclusiones y sensibilidad semántica", CommitProtocolFingerprintSemantics),
+    ("Evidence ID conserva semántica case-sensitive", CommitProtocolEvidenceIdIsCaseSensitive)
+};
+
+var failed = 0;
+foreach (var test in tests)
+{
+    try
+    {
+        await test.Run();
+        Console.WriteLine($"PASS: {test.Name}");
+    }
+    catch (Exception exception)
+    {
+        failed++;
+        Console.Error.WriteLine($"FAIL: {test.Name}: {exception.Message}");
+    }
+}
+Console.WriteLine($"Tests ejecutados: {tests.Length}; fallos: {failed}");
+return failed == 0 ? 0 : 1;
+
+static Task FingerprintIgnoresOrder()
+{
+    var first = BaseSnapshot(includeIndex: true);
+    var second = BaseSnapshot(includeIndex: true);
+    second.Objects.Reverse();
+    Equal(SchemaCanonicalizer.Canonicalize(first).Sha256, SchemaCanonicalizer.Canonicalize(second).Sha256);
+    return Task.CompletedTask;
+}
+
+static Task StructuralDifferenceChangesFingerprint()
+{
+    NotEqual(
+        SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: true)).Sha256,
+        SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: true, nullable: true)).Sha256);
+    return Task.CompletedTask;
+}
+
+static Task MetricsDoNotChangeFingerprint()
+{
+    Equal(
+        SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: true, rows: 10)).Sha256,
+        SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: true, rows: 99_000_000)).Sha256);
+    return Task.CompletedTask;
+}
+
+static Task EquivalentCapturesAreDeterministic()
+{
+    var root = TempDirectory("schema-capture-equivalent");
+    try
+    {
+        var writer = new SchemaCaptureArtifactWriter();
+        var first = writer.WriteCapture(Path.Combine(root, "capture-1"), "capture-1",
+            CaptureSource(BaseSnapshot(includeIndex: true)));
+        var reordered = BaseSnapshot(includeIndex: true);
+        reordered.Objects.Reverse();
+        var second = writer.WriteCapture(Path.Combine(root, "capture-2"), "capture-2",
+            CaptureSource(reordered));
+        var comparison = writer.CompareAndWrite(first, second, Path.Combine(root, "comparison"));
+        True(comparison.Deterministic);
+        Equal(SchemaCaptureStatuses.Success, comparison.Status);
+        Equal(first.SchemaHash, second.SchemaHash);
+        True(File.Exists(Path.Combine(root, "capture-1", "canonical-schema.json")));
+        True(File.Exists(Path.Combine(root, "capture-2", "metadata.json")));
+        True(File.Exists(Path.Combine(root, "capture-2", "impact-metrics.json")));
+        True(File.Exists(Path.Combine(root, "comparison", "determinism.json")));
+        True(File.Exists(Path.Combine(root, "comparison", "schema-diff.json")));
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task DifferentCapturesAreNondeterministic()
+{
+    var root = TempDirectory("schema-capture-different");
+    try
+    {
+        var writer = new SchemaCaptureArtifactWriter();
+        var first = writer.WriteCapture(Path.Combine(root, "capture-1"), "capture-1",
+            CaptureSource(BaseSnapshot(includeIndex: false)));
+        var second = writer.WriteCapture(Path.Combine(root, "capture-2"), "capture-2",
+            CaptureSource(BaseSnapshot(includeIndex: true)));
+        var comparison = writer.CompareAndWrite(first, second, Path.Combine(root, "comparison"));
+        True(!comparison.Deterministic);
+        Equal(SchemaCaptureStatuses.Nondeterministic, comparison.Status);
+        Equal("CONCURRENT_DDL_OR_NONDETERMINISTIC_CAPTURE", comparison.DiagnosticCode);
+        True(!comparison.SchemaDiff.IsEquivalent);
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task UnavailableMetricsDoNotFailCapture()
+{
+    var root = TempDirectory("schema-capture-no-metrics");
+    try
+    {
+        var snapshot = BaseSnapshot(includeIndex: true, rows: 100);
+        snapshot.ImpactMetrics.Clear();
+        var artifact = new SchemaCaptureArtifactWriter().WriteCapture(root, "capture-1",
+            CaptureSource(snapshot, MetricsAvailability.Unavailable, "SQL_229"));
+        Equal(SchemaCaptureStatuses.Success, artifact.Metadata.Status);
+        Equal(MetricsAvailability.Unavailable, artifact.Metadata.MetricsAvailability);
+        Equal("SQL_229", artifact.Metadata.MetricsDiagnosticCode);
+        Equal(SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: true, rows: 999)).Sha256, artifact.SchemaHash);
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static async Task BlockedDiscoveryAllowsCaptureOnly()
+{
+    True(SchemaCapturePolicy.AllowsReadOnlyCapture("BLOCKED_HISTORY_WITHOUT_REPO"));
+    var database = new FakeRehearsalDatabase();
+    var result = await new RehearsalEngine().QualifyAsync(
+        TestRelease(),
+        new DiscoveryGate { ConsistencyStatus = "BLOCKED", ConsistencyReason = "BLOCKED_HISTORY_WITHOUT_REPO" },
+        Forward(), Rollback(), database);
+    Equal("BLOCKED_DISCOVERY", result.QualificationStatus);
+    Equal(0, database.CaptureCount);
+    Equal(0, database.Executions.Count);
+}
+
+static Task MetadataVisibilityFailureIsClassified()
+{
+    var failure = SchemaCaptureErrorClassifier.Classify(
+        SchemaCapturePhase.MetadataVisibility, new InvalidOperationException("not emitted"));
+    Equal(SchemaCaptureStatuses.MetadataVisibility, failure.Status);
+    Equal("InvalidOperationException", failure.DiagnosticCode);
+    Equal(5, failure.ExitCode);
+    return Task.CompletedTask;
+}
+
+static Task ConnectionFailureIsClassified()
+{
+    var failure = SchemaCaptureErrorClassifier.Classify(
+        SchemaCapturePhase.OpenConnection, new InvalidOperationException("not emitted"));
+    Equal(SchemaCaptureStatuses.DatabaseUnreachable, failure.Status);
+    Equal("InvalidOperationException", failure.DiagnosticCode);
+    Equal(4, failure.ExitCode);
+    return Task.CompletedTask;
+}
+
+static Task SchemaCaptureSqlGuard()
+{
+    SqlServerSchemaReader.EnsureSelectOnlySql("SELECT DB_NAME();");
+    SqlServerSchemaReader.EnsureSelectOnlySql("WITH objects AS (SELECT 1 AS id) SELECT id FROM objects;");
+    foreach (var sql in new[]
+    {
+        "INSERT INTO dbo.T VALUES (1);", "UPDATE dbo.T SET A = 1;", "DELETE FROM dbo.T;",
+        "MERGE dbo.T AS target USING dbo.S AS source ON 1 = 0 WHEN NOT MATCHED THEN INSERT (A) VALUES (1);",
+        "CREATE TABLE dbo.T(A int);", "ALTER TABLE dbo.T ADD B int;", "DROP TABLE dbo.T;",
+        "TRUNCATE TABLE dbo.T;", "EXEC dbo.p;", "EXECUTE dbo.p;"
+    })
+    {
+        var blocked = false;
+        try { SqlServerSchemaReader.EnsureSelectOnlySql(sql); }
+        catch (InvalidOperationException) { blocked = true; }
+        True(blocked);
+    }
+    return Task.CompletedTask;
+}
+
+static Task SqlServerVersionQueriesDegradeSafely()
+{
+    var type = typeof(SqlServerSchemaReader);
+    var tablesMethod = type.GetMethod("TablesSql", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
+        ?? throw new InvalidOperationException("TablesSql not found.");
+    var featuresMethod = type.GetMethod("UnsupportedSchemaFeaturesSql", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
+        ?? throw new InvalidOperationException("UnsupportedSchemaFeaturesSql not found.");
+    string Tables(int version) => (string)(tablesMethod.Invoke(null, [version]) ?? "");
+    string Features(int version) => (string)(featuresMethod.Invoke(null, [version]) ?? "");
+
+    var version10Tables = Tables(10);
+    var version10Features = Features(10);
+    True(!version10Tables.Contains("temporal_type", StringComparison.Ordinal));
+    True(!version10Tables.Contains("is_memory_optimized", StringComparison.Ordinal));
+    True(!version10Features.Contains("sys.sequences", StringComparison.Ordinal));
+    True(!version10Features.Contains("temporal_type", StringComparison.Ordinal));
+
+    True(Tables(12).Contains("is_memory_optimized", StringComparison.Ordinal));
+    True(!Tables(12).Contains("temporal_type_desc", StringComparison.Ordinal));
+    True(Features(12).Contains("sys.sequences", StringComparison.Ordinal));
+    True(Features(13).Contains("temporal_type", StringComparison.Ordinal));
+    True(Features(14).Contains("is_node", StringComparison.Ordinal));
+    True(Features(16).Contains("ledger_type", StringComparison.Ordinal));
+
+    foreach (var sql in new[] { version10Tables, version10Features, Tables(12), Features(12), Tables(13), Features(13), Features(14), Features(16) })
+    {
+        SqlServerSchemaReader.EnsureSelectOnlySql(sql);
+    }
+    foreach (var field in type.GetFields(System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
+        .Where(field => field.FieldType == typeof(string) && field.Name.EndsWith("Sql", StringComparison.Ordinal)))
+    {
+        SqlServerSchemaReader.EnsureSelectOnlySql((string)(field.GetValue(null) ?? ""));
+    }
+    return Task.CompletedTask;
+}
+
+static async Task CliSchemaCaptureRequiresEnvironmentSecret()
+{
+    var root = TempDirectory("schema-capture-cli-missing-connection");
+    var previous = Environment.GetEnvironmentVariable("DB_CONNECTION");
+    try
+    {
+        Environment.SetEnvironmentVariable("DB_CONNECTION", null);
+        var resultPath = Path.Combine(root, "result.json");
+        var exit = await QualificationCli.RunAsync([
+            "capture-schema", "--environment", "TEST", "--capture-id", "capture-1",
+            "--output", Path.Combine(root, "capture-1"), "--result", resultPath
+        ]);
+        Equal(4, exit);
+        var result = JsonDocument.Parse(File.ReadAllText(resultPath));
+        Equal(SchemaCaptureStatuses.DatabaseUnreachable, result.RootElement.GetProperty("status").GetString());
+        Equal("DB_CONNECTION_REQUIRED", result.RootElement.GetProperty("diagnosticCode").GetString());
+        True(!Directory.Exists(Path.Combine(root, "capture-1")));
+    }
+    finally
+    {
+        Environment.SetEnvironmentVariable("DB_CONNECTION", previous);
+        DeleteTemp(root);
+    }
+}
+
+static async Task CliSchemaComparisonBlocksMismatch()
+{
+    var root = TempDirectory("schema-capture-cli-compare");
+    try
+    {
+        var writer = new SchemaCaptureArtifactWriter();
+        writer.WriteCapture(Path.Combine(root, "capture-1"), "capture-1", CaptureSource(BaseSnapshot(includeIndex: false)));
+        writer.WriteCapture(Path.Combine(root, "capture-2"), "capture-2", CaptureSource(BaseSnapshot(includeIndex: true)));
+        var resultPath = Path.Combine(root, "comparison-result.json");
+        var exit = await QualificationCli.RunAsync([
+            "compare-schema-captures", "--environment", "TEST",
+            "--capture-1", Path.Combine(root, "capture-1"), "--capture-2", Path.Combine(root, "capture-2"),
+            "--output", Path.Combine(root, "comparison"), "--result", resultPath
+        ]);
+        Equal(7, exit);
+        var result = JsonDocument.Parse(File.ReadAllText(resultPath));
+        Equal(SchemaCaptureStatuses.Nondeterministic, result.RootElement.GetProperty("status").GetString());
+        True(!result.RootElement.GetProperty("deterministic").GetBoolean());
+    }
+    finally { DeleteTemp(root); }
+}
+
+static Task SchemaCaptureArtifactsExcludeIdentityValue()
+{
+    var root = TempDirectory("schema-capture-no-identity-value");
+    const string sentinel = "Server=hidden;User Id=hidden;Password=never-persist-this";
+    var previous = Environment.GetEnvironmentVariable("DB_CONNECTION");
+    try
+    {
+        Environment.SetEnvironmentVariable("DB_CONNECTION", sentinel);
+        var artifact = new SchemaCaptureArtifactWriter().WriteCapture(
+            root, "capture-1", CaptureSource(BaseSnapshot(includeIndex: true)));
+        Equal("INSPECTION", artifact.Metadata.IdentityPurpose);
+        var evidence = string.Join("\n", Directory.GetFiles(root).Select(File.ReadAllText));
+        True(!evidence.Contains(sentinel, StringComparison.Ordinal));
+        True(!evidence.Contains("never-persist-this", StringComparison.Ordinal));
+    }
+    finally
+    {
+        Environment.SetEnvironmentVariable("DB_CONNECTION", previous);
+        DeleteTemp(root);
+    }
+    return Task.CompletedTask;
+}
+
+static Task RegistryBaselineRequired()
+{
+    var evaluation = EvaluateRegistry(RegistryTarget(DatabaseCertificationStatuses.BaselineRequired));
+    Equal(DatabaseCertificationStatuses.BaselineRequired, evaluation.RegistryStatus);
+    Equal(DatabaseDriftStatuses.BaselineRequired, evaluation.DriftStatus);
+    Equal(DatabaseGateStatuses.Blocked, evaluation.GateStatus);
+    Equal(DatabaseStateReasons.OnboardingBaselineRequired, evaluation.Reason);
+    True(evaluation.BaselineCandidate);
+    True(evaluation.CertifiedSchemaHash is null);
+    return Task.CompletedTask;
+}
+
+static Task RegistryFormatVersionOneIsValid()
+{
+    var registry = DatabaseRegistryLoader.Validate(RegistryDocument(), RegistryProvenance());
+    True(registry.IsValid);
+    Equal(1, registry.Registry!.RegistryFormatVersion);
+    return Task.CompletedTask;
+}
+
+static Task RegistryMissingFormatVersionIsInvalid()
+{
+    var registry = DatabaseRegistryLoader.Validate(
+        new DatabaseRegistryDocument { Targets = [] }, RegistryProvenance());
+    True(!registry.IsValid);
+    True(registry.Errors.Contains("REGISTRY_FORMAT_VERSION_INVALID", StringComparer.Ordinal));
+    Equal(DatabaseDriftStatuses.InvalidRegistry,
+        new DatabaseStateEvaluator().Evaluate(registry, RegistryObservation()).DriftStatus);
+    return Task.CompletedTask;
+}
+
+static Task RegistryUnknownFormatVersionIsInvalid()
+{
+    var registry = DatabaseRegistryLoader.Validate(new DatabaseRegistryDocument
+    {
+        RegistryFormatVersion = 2,
+        Targets = []
+    }, RegistryProvenance());
+    True(!registry.IsValid);
+    True(registry.Errors.Contains("REGISTRY_FORMAT_VERSION_INVALID", StringComparer.Ordinal));
+    Equal(DatabaseGateStatuses.Blocked,
+        new DatabaseStateEvaluator().Evaluate(registry, RegistryObservation()).GateStatus);
+    return Task.CompletedTask;
+}
+
+static Task RegistryCertifiedMatch()
+{
+    var evaluation = EvaluateRegistry(RegistryTarget(DatabaseCertificationStatuses.Certified, ObservedSchemaHash()));
+    Equal(DatabaseDriftStatuses.Match, evaluation.DriftStatus);
+    Equal(DatabaseGateStatuses.Eligible, evaluation.GateStatus);
+    Equal(DatabaseStateReasons.SchemaHashMatch, evaluation.Reason);
+    True(!evaluation.DriftDetected);
+    return Task.CompletedTask;
+}
+
+static Task RegistryCertifiedMismatch()
+{
+    var evaluation = EvaluateRegistry(RegistryTarget(DatabaseCertificationStatuses.Certified, new string('b', 64)));
+    Equal(DatabaseDriftStatuses.DriftDetected, evaluation.DriftStatus);
+    Equal(DatabaseGateStatuses.Blocked, evaluation.GateStatus);
+    Equal(DatabaseStateReasons.CertifiedSchemaHashMismatch, evaluation.Reason);
+    True(evaluation.DriftDetected);
+    Equal("HASH_MISMATCH", evaluation.DriftEvidenceKind);
+    True(!evaluation.StructuralDiffAvailable);
+    return Task.CompletedTask;
+}
+
+static Task RegistryTargetNotRegistered()
+{
+    var registry = DatabaseRegistryLoader.Validate(RegistryDocument(), RegistryProvenance());
+    var evaluation = new DatabaseStateEvaluator().Evaluate(registry, RegistryObservation());
+    Equal(DatabaseDriftStatuses.TargetNotRegistered, evaluation.RegistryStatus);
+    Equal(DatabaseDriftStatuses.TargetNotRegistered, evaluation.DriftStatus);
+    Equal(DatabaseGateStatuses.Blocked, evaluation.GateStatus);
+    Equal(DatabaseStateReasons.TargetNotRegistered, evaluation.Reason);
+    return Task.CompletedTask;
+}
+
+static Task RegistryRejectsDuplicateTargets()
+{
+    var registry = DatabaseRegistryLoader.Validate(new DatabaseRegistryDocument
+    {
+        RegistryFormatVersion = 1,
+        Targets =
+        [
+            RegistryTarget(DatabaseCertificationStatuses.BaselineRequired),
+            RegistryTarget(DatabaseCertificationStatuses.BaselineRequired)
+        ]
+    }, RegistryProvenance());
+    True(!registry.IsValid);
+    True(registry.Errors.Any(item => item.EndsWith("_DUPLICATE_TARGET", StringComparison.Ordinal)));
+    Equal(DatabaseDriftStatuses.InvalidRegistry,
+        new DatabaseStateEvaluator().Evaluate(registry, RegistryObservation()).DriftStatus);
+    return Task.CompletedTask;
+}
+
+static Task RegistryRejectsCertifiedWithoutHash()
+{
+    var registry = ValidateTarget(RegistryTarget(DatabaseCertificationStatuses.Certified));
+    True(!registry.IsValid);
+    True(registry.Errors.Any(item => item.EndsWith("_CERTIFIED_SCHEMA_HASH_REQUIRED", StringComparison.Ordinal)));
+    return Task.CompletedTask;
+}
+
+static Task RegistryRejectsInvalidHash()
+{
+    var registry = ValidateTarget(RegistryTarget(DatabaseCertificationStatuses.Certified, "not-a-sha256"));
+    True(!registry.IsValid);
+    True(registry.Errors.Any(item => item.EndsWith("_CERTIFIED_SCHEMA_HASH_INVALID", StringComparison.Ordinal)));
+    return Task.CompletedTask;
+}
+
+static Task RegistryRejectsInvalidEnvironment()
+{
+    var registry = ValidateTarget(RegistryTarget(DatabaseCertificationStatuses.BaselineRequired, environment: "DEV"));
+    True(!registry.IsValid);
+    True(registry.Errors.Any(item => item.EndsWith("_ENVIRONMENT_INVALID", StringComparison.Ordinal)));
+    return Task.CompletedTask;
+}
+
+static Task RegistryRejectsInvalidCertificationStatus()
+{
+    var registry = ValidateTarget(RegistryTarget("AUTO_CERTIFIED"));
+    True(!registry.IsValid);
+    True(registry.Errors.Any(item => item.EndsWith("_CERTIFICATION_STATUS_INVALID", StringComparison.Ordinal)));
+    return Task.CompletedTask;
+}
+
+static Task RegistryRejectsInvalidLifecycle()
+{
+    var registry = ValidateTarget(new DatabaseTarget
+    {
+        ApplicationId = "3602",
+        Environment = "TEST",
+        DatabaseName = "CICDV3",
+        Lifecycle = "LEGACY",
+        CertificationStatus = DatabaseCertificationStatuses.BaselineRequired
+    });
+    True(!registry.IsValid);
+    True(registry.Errors.Any(item => item.EndsWith("_LIFECYCLE_INVALID", StringComparison.Ordinal)));
+    return Task.CompletedTask;
+}
+
+static Task RegistryRejectsEmptyRequiredFields()
+{
+    var registry = ValidateTarget(new DatabaseTarget
+    {
+        ApplicationId = "",
+        Environment = "TEST",
+        DatabaseName = "",
+        Lifecycle = "EXISTING",
+        CertificationStatus = DatabaseCertificationStatuses.BaselineRequired
+    });
+    True(!registry.IsValid);
+    True(registry.Errors.Any(item => item.EndsWith("_APPLICATION_ID_REQUIRED", StringComparison.Ordinal)));
+    True(registry.Errors.Any(item => item.EndsWith("_DATABASE_NAME_REQUIRED", StringComparison.Ordinal)));
+    return Task.CompletedTask;
+}
+
+static Task RegistryRejectsContradictoryBaseline()
+{
+    var registry = ValidateTarget(RegistryTarget(
+        DatabaseCertificationStatuses.BaselineRequired, ""));
+    True(!registry.IsValid);
+    True(registry.Errors.Any(item => item.EndsWith("_BASELINE_CERTIFIED_HASH_CONTRADICTORY", StringComparison.Ordinal)));
+    return Task.CompletedTask;
+}
+
+static Task BaselineCandidateIsNeverCertified()
+{
+    var root = TempDirectory("baseline-candidate");
+    try
+    {
+        var observation = RegistryObservation();
+        var evaluation = EvaluateRegistry(RegistryTarget(DatabaseCertificationStatuses.BaselineRequired), observation);
+        var artifact = new DatabaseStateArtifactWriter().Write(root, observation, evaluation);
+        True(artifact.BaselineCandidatePath is not null);
+        var candidate = JsonDocument.Parse(File.ReadAllText(artifact.BaselineCandidatePath!));
+        Equal("NOT_CERTIFIED", candidate.RootElement.GetProperty("candidateStatus").GetString());
+        Equal(ObservedSchemaHash(), candidate.RootElement.GetProperty("observedSchemaHash").GetString());
+        True(!candidate.RootElement.TryGetProperty("certifiedSchemaHash", out _));
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task RegistryEvaluationDoesNotModifyRegistry()
+{
+    var root = TempDirectory("registry-immutable");
+    try
+    {
+        Directory.CreateDirectory(root);
+        var registryPath = Path.Combine(root, "targets.json");
+        File.WriteAllText(registryPath, JsonSerializer.Serialize(new DatabaseRegistryDocument
+        {
+            RegistryFormatVersion = 1,
+            Targets = [RegistryTarget(DatabaseCertificationStatuses.BaselineRequired)]
+        }, DatabaseStateJson.Indented));
+        var before = File.ReadAllBytes(registryPath);
+        var validation = DatabaseRegistryLoader.Load(registryPath, RegistryProvenance(
+            registryFileSha256: DatabaseRegistryLoader.ComputeFileSha256(registryPath)));
+        var observation = RegistryObservation();
+        var evaluation = new DatabaseStateEvaluator().Evaluate(validation, observation);
+        new DatabaseStateArtifactWriter().Write(Path.Combine(root, "artifact"), observation, evaluation);
+        SequenceEqual(before, File.ReadAllBytes(registryPath));
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task ObservedHashNeverReplacesCertifiedHash()
+{
+    var certified = new string('b', 64);
+    var target = RegistryTarget(DatabaseCertificationStatuses.Certified, certified);
+    var evaluation = EvaluateRegistry(target);
+    Equal(certified, target.CertifiedSchemaHash);
+    Equal(certified, evaluation.CertifiedSchemaHash);
+    Equal(ObservedSchemaHash(), evaluation.ObservedSchemaHash);
+    NotEqual(evaluation.CertifiedSchemaHash, evaluation.ObservedSchemaHash);
+    return Task.CompletedTask;
+}
+
+static Task DriftEvidenceIsHashOnly()
+{
+    var root = TempDirectory("drift-hash-only");
+    try
+    {
+        var observation = RegistryObservation();
+        var evaluation = EvaluateRegistry(
+            RegistryTarget(DatabaseCertificationStatuses.Certified, new string('b', 64)), observation);
+        var artifact = new DatabaseStateArtifactWriter().Write(root, observation, evaluation);
+        True(artifact.DriftAnalysisPath is not null);
+        var drift = JsonDocument.Parse(File.ReadAllText(artifact.DriftAnalysisPath!)).RootElement;
+        Equal("HASH_MISMATCH", drift.GetProperty("evidenceKind").GetString());
+        True(!drift.GetProperty("structuralDiffAvailable").GetBoolean());
+        True(!drift.TryGetProperty("changedObjects", out _));
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task RegistryCommitAppearsInEvidence()
+{
+    var root = TempDirectory("registry-commit-evidence");
+    try
+    {
+        var commit = new string('e', 40);
+        var observation = RegistryObservation();
+        var validation = DatabaseRegistryLoader.Validate(
+            RegistryDocument(RegistryTarget(DatabaseCertificationStatuses.BaselineRequired)),
+            RegistryProvenance(registryCommitSha: commit));
+        var evaluation = new DatabaseStateEvaluator().Evaluate(validation, observation);
+        var artifact = new DatabaseStateArtifactWriter().Write(root, observation, evaluation);
+        var evidence = JsonDocument.Parse(File.ReadAllText(artifact.RegistryEvaluationPath)).RootElement;
+        Equal(commit, evidence.GetProperty("registryProvenance").GetProperty("registryCommitSha").GetString());
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task RegistryFileShaMatchesBytes()
+{
+    var root = TempDirectory("registry-file-sha");
+    try
+    {
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, "targets.json");
+        File.WriteAllText(path, JsonSerializer.Serialize(
+            RegistryDocument(RegistryTarget(DatabaseCertificationStatuses.BaselineRequired)),
+            DatabaseStateJson.Indented));
+        var expected = DatabaseRegistryLoader.ComputeFileSha256(path);
+        var validation = DatabaseRegistryLoader.Load(path, RegistryProvenance(registryFileSha256: expected));
+        True(validation.IsValid);
+        Equal(expected, validation.RegistryProvenance!.RegistryFileSha256);
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task RegistryFileShaMismatchFailsClosed()
+{
+    var root = TempDirectory("registry-file-sha-mismatch");
+    try
+    {
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, "targets.json");
+        File.WriteAllText(path, JsonSerializer.Serialize(RegistryDocument(), DatabaseStateJson.Indented));
+        var validation = DatabaseRegistryLoader.Load(path, RegistryProvenance(registryFileSha256: new string('f', 64)));
+        True(!validation.IsValid);
+        True(validation.Errors.Contains("REGISTRY_FILE_SHA256_MISMATCH", StringComparer.Ordinal));
+        Equal(DatabaseGateStatuses.Blocked,
+            new DatabaseStateEvaluator().Evaluate(validation, RegistryObservation()).GateStatus);
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task RegistryContentChangesFileSha()
+{
+    var root = TempDirectory("registry-file-sha-change");
+    try
+    {
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, "targets.json");
+        File.WriteAllText(path, JsonSerializer.Serialize(RegistryDocument(), DatabaseStateJson.Indented));
+        var before = DatabaseRegistryLoader.ComputeFileSha256(path);
+        File.WriteAllText(path, JsonSerializer.Serialize(
+            RegistryDocument(RegistryTarget(DatabaseCertificationStatuses.BaselineRequired)),
+            DatabaseStateJson.Indented));
+        var after = DatabaseRegistryLoader.ComputeFileSha256(path);
+        NotEqual(before, after);
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task ObservedHashDoesNotChangeRegistryFileSha()
+{
+    var root = TempDirectory("observed-does-not-change-registry-sha");
+    try
+    {
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, "targets.json");
+        File.WriteAllText(path, JsonSerializer.Serialize(
+            RegistryDocument(RegistryTarget(DatabaseCertificationStatuses.BaselineRequired)),
+            DatabaseStateJson.Indented));
+        var fileSha = DatabaseRegistryLoader.ComputeFileSha256(path);
+        var validation = DatabaseRegistryLoader.Load(path, RegistryProvenance(registryFileSha256: fileSha));
+        var first = new DatabaseStateEvaluator().Evaluate(validation, RegistryObservation(new string('a', 64)));
+        var second = new DatabaseStateEvaluator().Evaluate(validation, RegistryObservation(new string('b', 64)));
+        NotEqual(first.ObservedSchemaHash, second.ObservedSchemaHash);
+        Equal(fileSha, first.RegistryProvenance!.RegistryFileSha256);
+        Equal(fileSha, second.RegistryProvenance!.RegistryFileSha256);
+        Equal(fileSha, DatabaseRegistryLoader.ComputeFileSha256(path));
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task BaselineCandidatePreservesProvenance()
+{
+    var root = TempDirectory("baseline-provenance");
+    try
+    {
+        var observation = RegistryObservation();
+        var evaluation = EvaluateRegistry(RegistryTarget(DatabaseCertificationStatuses.BaselineRequired), observation);
+        var artifact = new DatabaseStateArtifactWriter().Write(root, observation, evaluation);
+        var candidate = JsonDocument.Parse(File.ReadAllText(artifact.BaselineCandidatePath!)).RootElement;
+        Equal(1, candidate.GetProperty("registryFormatVersion").GetInt32());
+        Equal(evaluation.RegistryProvenance!.RegistryCommitSha,
+            candidate.GetProperty("registryProvenance").GetProperty("registryCommitSha").GetString());
+        Equal(evaluation.RegistryProvenance.RegistryFileSha256,
+            candidate.GetProperty("registryProvenance").GetProperty("registryFileSha256").GetString());
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task DriftEvidencePreservesProvenance()
+{
+    var root = TempDirectory("drift-provenance");
+    try
+    {
+        var observation = RegistryObservation();
+        var evaluation = EvaluateRegistry(
+            RegistryTarget(DatabaseCertificationStatuses.Certified, new string('b', 64)), observation);
+        var artifact = new DatabaseStateArtifactWriter().Write(root, observation, evaluation);
+        var drift = JsonDocument.Parse(File.ReadAllText(artifact.DriftAnalysisPath!)).RootElement;
+        Equal(1, drift.GetProperty("registryFormatVersion").GetInt32());
+        Equal(evaluation.RegistryProvenance!.RegistryCommitSha,
+            drift.GetProperty("registryProvenance").GetProperty("registryCommitSha").GetString());
+        Equal(evaluation.RegistryProvenance.RegistryFileSha256,
+            drift.GetProperty("registryProvenance").GetProperty("registryFileSha256").GetString());
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task MatchIsEligibleForSchemaDrift()
+{
+    var evaluation = EvaluateRegistry(RegistryTarget(DatabaseCertificationStatuses.Certified, ObservedSchemaHash()));
+    Equal(DatabaseGateStatuses.Eligible, evaluation.GateStatus);
+    Equal(DatabaseDriftStatuses.Match, evaluation.DriftStatus);
+    Equal("NONE", evaluation.DriftEvidenceKind);
+    True(!evaluation.BaselineCandidate);
+    return Task.CompletedTask;
+}
+
+static async Task CliDatabaseStateBaselineProducesEvidence()
+{
+    var root = TempDirectory("database-state-cli-baseline");
+    try
+    {
+        Directory.CreateDirectory(root);
+        var captureDirectory = Path.Combine(root, "capture-1");
+        new SchemaCaptureArtifactWriter().WriteCapture(
+            captureDirectory, "capture-1", CaptureSource(BaseSnapshot(includeIndex: true)));
+        var registryPath = Path.Combine(root, "targets.json");
+        File.WriteAllText(registryPath, JsonSerializer.Serialize(new DatabaseRegistryDocument
+        {
+            RegistryFormatVersion = 1,
+            Targets = [RegistryTarget(DatabaseCertificationStatuses.BaselineRequired, databaseName: "DatabaseForTests")]
+        }, DatabaseStateJson.Indented));
+        var registryBefore = File.ReadAllBytes(registryPath);
+        var resultPath = Path.Combine(root, "result.json");
+        var output = Path.Combine(root, "artifact");
+
+        var exit = await QualificationCli.RunAsync(DatabaseStateCliArguments(
+            registryPath, captureDirectory, output, resultPath));
+
+        Equal(0, exit);
+        var result = JsonDocument.Parse(File.ReadAllText(resultPath)).RootElement;
+        Equal("SUCCESS", result.GetProperty("status").GetString());
+        Equal(DatabaseDriftStatuses.BaselineRequired, result.GetProperty("driftStatus").GetString());
+        Equal(DatabaseGateStatuses.Blocked, result.GetProperty("gateStatus").GetString());
+        True(File.Exists(Path.Combine(output, "registry", "target.json")));
+        True(File.Exists(Path.Combine(output, "registry", "registry-evaluation.json")));
+        True(File.Exists(Path.Combine(output, "baseline", "baseline-candidate.json")));
+        SequenceEqual(registryBefore, File.ReadAllBytes(registryPath));
+    }
+    finally { DeleteTemp(root); }
+}
+
+static async Task CliDatabaseStateInvalidRegistryFailsClosed()
+{
+    var root = TempDirectory("database-state-cli-invalid");
+    try
+    {
+        Directory.CreateDirectory(root);
+        var captureDirectory = Path.Combine(root, "capture-1");
+        new SchemaCaptureArtifactWriter().WriteCapture(
+            captureDirectory, "capture-1", CaptureSource(BaseSnapshot(includeIndex: true)));
+        var registryPath = Path.Combine(root, "targets.json");
+        File.WriteAllText(registryPath, JsonSerializer.Serialize(new DatabaseRegistryDocument
+        {
+            RegistryFormatVersion = 1,
+            Targets = [RegistryTarget(DatabaseCertificationStatuses.Certified, databaseName: "DatabaseForTests")]
+        }, DatabaseStateJson.Indented));
+        var resultPath = Path.Combine(root, "result.json");
+        var output = Path.Combine(root, "artifact");
+
+        var exit = await QualificationCli.RunAsync(DatabaseStateCliArguments(
+            registryPath, captureDirectory, output, resultPath));
+
+        Equal(8, exit);
+        var result = JsonDocument.Parse(File.ReadAllText(resultPath)).RootElement;
+        Equal("FAIL_INVALID_REGISTRY", result.GetProperty("status").GetString());
+        Equal(DatabaseDriftStatuses.InvalidRegistry, result.GetProperty("driftStatus").GetString());
+        Equal(DatabaseGateStatuses.Blocked, result.GetProperty("gateStatus").GetString());
+        True(File.Exists(Path.Combine(output, "registry", "registry-evaluation.json")));
+        True(!Directory.Exists(Path.Combine(output, "baseline")));
+    }
+    finally { DeleteTemp(root); }
+}
+
+static Task AstEquivalentFormatting()
+{
+    var analyzer = new SqlScriptAnalyzer();
+    var snapshot = BaseSnapshot(includeIndex: true);
+    var forms = new[]
+    {
+        "ALTER TABLE dbo.Orden ALTER COLUMN Fecha datetime2 NOT NULL;",
+        "alter\n table [dbo].[Orden]\n alter column [Fecha] datetime2 not null;",
+        "/* qualification */ AlTeR TABLE \"dbo\".\"Orden\" ALTER COLUMN \"Fecha\" datetime2 NOT NULL;"
+    };
+    var operations = forms.Select(sql => analyzer.Analyze("forward", sql, snapshot).Operations.Single()).ToArray();
+    True(operations.All(operation => operation.Operation == "ALTER_COLUMN"));
+    True(operations.All(operation => operation.Schema == "dbo" && operation.Object == "Orden" && operation.Column == "Fecha"));
+    True(operations.All(operation => operation.TargetResolved));
+    return Task.CompletedTask;
+}
+
+static Task AstResolvesAliases()
+{
+    var analyzer = new SqlScriptAnalyzer();
+    var snapshot = BaseSnapshot(includeIndex: false);
+    var update = analyzer.Analyze("forward",
+        "UPDATE o SET Fecha = SYSUTCDATETIME() FROM [dbo].[Orden] AS o WHERE o.Fecha IS NULL;", snapshot);
+    var delete = analyzer.Analyze("rollback",
+        "DELETE o FROM [dbo].[Orden] AS o WHERE o.Fecha IS NULL;", snapshot);
+    foreach (var operation in update.Operations.Concat(delete.Operations))
+    {
+        Equal("dbo", operation.Schema);
+        Equal("Orden", operation.Object);
+        True(operation.TargetResolved);
+    }
+    Equal(AnalysisConfidence.Complete, update.Confidence);
+    Equal(AnalysisConfidence.Complete, delete.Confidence);
+    return Task.CompletedTask;
+}
+
+static Task AstRecognizesRequiredStatements()
+{
+    const string sql = """
+        CREATE TABLE [dbo].[AstT] ([Id] int NOT NULL, CONSTRAINT [PK_AstT] PRIMARY KEY ([Id]));
+        ALTER TABLE dbo.AstT ADD [Name] nvarchar(50) NULL;
+        ALTER TABLE dbo.AstT ALTER COLUMN [Name] nvarchar(100) NULL;
+        ALTER TABLE dbo.AstT DROP CONSTRAINT PK_AstT;
+        ALTER TABLE dbo.AstT DROP COLUMN [Name];
+        CREATE INDEX IX_AstT_Id ON dbo.AstT(Id);
+        ALTER INDEX IX_AstT_Id ON dbo.AstT REBUILD;
+        DROP INDEX IX_AstT_Id ON dbo.AstT;
+        GO
+        CREATE VIEW dbo.V_AstT AS SELECT Id FROM dbo.AstT;
+        GO
+        ALTER VIEW dbo.V_AstT AS SELECT Id FROM dbo.AstT;
+        GO
+        DROP VIEW dbo.V_AstT;
+        GO
+        CREATE TRIGGER dbo.TR_AstT ON dbo.AstT AFTER INSERT AS SELECT 1;
+        GO
+        ALTER TRIGGER dbo.TR_AstT ON dbo.AstT AFTER INSERT AS SELECT 1;
+        GO
+        DROP TRIGGER dbo.TR_AstT;
+        GO
+        INSERT INTO dbo.AstT(Id) VALUES (1);
+        UPDATE a SET Id = 2 FROM dbo.AstT AS a WHERE a.Id = 1;
+        DELETE a FROM dbo.AstT AS a WHERE a.Id = 2;
+        MERGE dbo.AstT AS target USING (SELECT 3 AS Id) AS source ON target.Id = source.Id
+          WHEN NOT MATCHED THEN INSERT (Id) VALUES (source.Id);
+        TRUNCATE TABLE dbo.AstT;
+        EXEC dbo.usp_Ast;
+        DROP TABLE dbo.AstT;
+        """;
+    var analysis = new SqlScriptAnalyzer().Analyze("forward", sql, BaseSnapshot(includeIndex: false));
+    var operations = analysis.Operations.Select(operation => operation.Operation).ToHashSet(StringComparer.Ordinal);
+    foreach (var expected in new[]
+    {
+        "CREATE_TABLE", "ADD_COLUMN", "ADD_CONSTRAINT", "ALTER_COLUMN", "DROP_CONSTRAINT", "DROP_COLUMN",
+        "CREATE_INDEX", "REBUILD_INDEX", "DROP_INDEX", "CREATE_VIEW", "ALTER_VIEW", "DROP_VIEW",
+        "CREATE_TRIGGER", "ALTER_TRIGGER", "DROP_TRIGGER", "INSERT_DATA", "UPDATE_DATA", "DELETE_DATA",
+        "MERGE_DATA", "TRUNCATE_TABLE", "EXECUTE", "DROP_TABLE"
+    }) True(operations.Contains(expected));
+    Equal(AnalysisConfidence.Insufficient, analysis.Confidence);
+    return Task.CompletedTask;
+}
+
+static Task AstMultipleStatementsAndComments()
+{
+    var analysis = new SqlScriptAnalyzer().Analyze("forward", """
+        -- harmless comment containing DROP TABLE dbo.Secret
+        ALTER TABLE [dbo].[Orden] ADD [A] int NULL;
+        /* multiline UPDATE dbo.Secret SET x = 1 */
+        ALTER TABLE [dbo].[Orden] ADD [B] int NULL;
+        """, BaseSnapshot(includeIndex: false));
+    Equal(2, analysis.Operations.Count(operation => operation.Operation == "ADD_COLUMN"));
+    Equal(2, analysis.StatementCount);
+    Equal(AnalysisConfidence.Complete, analysis.Confidence);
+    return Task.CompletedTask;
+}
+
+static Task AstParseFailureNeverLow()
+{
+    var snapshot = BaseSnapshot(includeIndex: false);
+    var analysis = new SqlScriptAnalyzer().Analyze("forward", "ALTER TABLE dbo.Orden ALTER COLUMN ;", snapshot);
+    True(analysis.ParseErrors.Count > 0);
+    Equal(AnalysisConfidence.Insufficient, analysis.Confidence);
+    var risk = RiskFor(analysis, SelectAnalysis(snapshot));
+    Equal(RiskLevel.High, risk.FinalRisk);
+    True(risk.AutoPromotionBlocked);
+    return Task.CompletedTask;
+}
+
+static async Task UnparseableSqlDoesNotExecute()
+{
+    var database = new FakeRehearsalDatabase(BaseSnapshot(includeIndex: false));
+    var result = await new RehearsalEngine().QualifyAsync(TestRelease(), ConsistentDiscovery(),
+        ReleaseScript.FromText("forward", "ALTER TABLE dbo.Orden ADD ["), Rollback(), database);
+    Equal("BLOCKED_ANALYSIS_CONFIDENCE", result.QualificationStatus);
+    Equal(1, database.CaptureCount);
+    Equal(0, database.Executions.Count);
+}
+
+static Task DynamicSqlIsBlocked()
+{
+    var snapshot = BaseSnapshot(includeIndex: false);
+    var analysis = new SqlScriptAnalyzer().Analyze("forward", "EXEC(N'DELETE FROM dbo.Orden');", snapshot);
+    True(analysis.Operations.Any(operation => operation.Operation == "EXECUTE_DYNAMIC_SQL"));
+    Equal(AnalysisConfidence.Insufficient, analysis.Confidence);
+    var risk = RiskFor(analysis, SelectAnalysis(snapshot));
+    Equal(RiskLevel.High, risk.FinalRisk);
+    True(risk.AutoPromotionBlocked);
+    return Task.CompletedTask;
+}
+
+static Task ImplicitTargetIsNotSilentLow()
+{
+    var snapshot = BaseSnapshot(includeIndex: false);
+    var analysis = new SqlScriptAnalyzer().Analyze("forward", "ALTER TABLE Orden ADD X int NULL;", snapshot);
+    Equal(AnalysisConfidence.Partial, analysis.Confidence);
+    True(analysis.Operations.Any(operation => !operation.TargetResolved));
+    Equal(RiskLevel.Medium, RiskFor(analysis, SelectAnalysis(snapshot)).FinalRisk);
+    return Task.CompletedTask;
+}
+
+static Task UnknownStatementNeverLow()
+{
+    var snapshot = BaseSnapshot(includeIndex: false);
+    var analysis = new SqlScriptAnalyzer().Analyze("forward", "BACKUP DATABASE Demo TO DISK = 'x.bak';", snapshot);
+    True(analysis.UnknownStatementTypes.Count > 0);
+    True(analysis.Operations.Any(operation => operation.Operation == "UNKNOWN_SQL"));
+    Equal(AnalysisConfidence.Insufficient, analysis.Confidence);
+    Equal(RiskLevel.High, RiskFor(analysis, SelectAnalysis(snapshot)).FinalRisk);
+    return Task.CompletedTask;
+}
+
+static async Task PureSchemaRollbackIsValid()
+{
+    var pre = BaseSnapshot(includeIndex: true);
+    var post = AddCommentSnapshot(includeIndex: true, "nvarchar(50)");
+    var database = new FakeRehearsalDatabase(pre, post, pre, post);
+    var result = await new RehearsalEngine().QualifyAsync(
+        TestRelease(), ConsistentDiscovery(), Forward(), Rollback(), database);
+    Equal("QUALIFIED", result.QualificationStatus);
+    Equal(SchemaRollbackValidity.Valid, result.SchemaRollbackValidity);
+    Equal(DataRollbackValidity.NotApplicable, result.DataRollbackValidity);
+    Equal(RollbackCapability.FullReversible, result.RollbackCapability);
+    True(result.RollbackCertified && result.ReapplyCertified && result.CanProceed);
+    Equal(3, database.Executions.Count);
+}
+
+static async Task DeleteDataRollbackIsUnverified()
+{
+    var schema = BaseSnapshot(includeIndex: false);
+    var database = new FakeRehearsalDatabase(schema, schema, schema);
+    var result = await new RehearsalEngine().QualifyAsync(
+        TestRelease(), ConsistentDiscovery(),
+        ReleaseScript.FromText("forward", "DELETE FROM dbo.Orden;"),
+        ReleaseScript.FromText("rollback", "INSERT INTO dbo.Orden(Fecha) VALUES (SYSUTCDATETIME());"),
+        database);
+    Equal(SchemaRollbackValidity.Valid, result.SchemaRollbackValidity);
+    Equal(DataRollbackValidity.Unverified, result.DataRollbackValidity);
+    Equal(RollbackCapability.RestoreRequired, result.RollbackCapability);
+    Equal("BLOCKED_DATA_ROLLBACK_UNVERIFIED", result.QualificationStatus);
+    True(!result.RollbackCertified && !result.CanProceed);
+    Equal(2, database.Executions.Count);
+}
+
+static async Task DropColumnIsNotFullReversible()
+{
+    var pre = BaseSnapshot(includeIndex: false);
+    var post = SnapshotWithoutFecha();
+    var database = new FakeRehearsalDatabase(pre, post, pre);
+    var result = await new RehearsalEngine().QualifyAsync(
+        TestRelease(), ConsistentDiscovery(),
+        ReleaseScript.FromText("forward", "ALTER TABLE dbo.Orden DROP COLUMN Fecha;"),
+        ReleaseScript.FromText("rollback", "ALTER TABLE dbo.Orden ADD Fecha datetime2 NOT NULL;"),
+        database);
+    Equal(SchemaRollbackValidity.Valid, result.SchemaRollbackValidity);
+    Equal(DataRollbackValidity.Unverified, result.DataRollbackValidity);
+    Equal(RollbackCapability.RestoreRequired, result.RollbackCapability);
+    True(!result.RollbackCertified);
+}
+
+static async Task DataContractCanValidateRollback()
+{
+    var schema = BaseSnapshot(includeIndex: false);
+    var database = new FakeRehearsalDatabase(schema, schema, schema, schema);
+    var validator = new FakeDataRollbackContract(DataRollbackValidity.Valid);
+    var result = await new RehearsalEngine().QualifyAsync(
+        TestRelease(), ConsistentDiscovery(),
+        ReleaseScript.FromText("forward", "UPDATE dbo.Orden SET Fecha = SYSUTCDATETIME();"),
+        ReleaseScript.FromText("rollback", "UPDATE dbo.Orden SET Fecha = '2020-01-01';"),
+        database, validator);
+    True(validator.PreCaptured);
+    Equal(DataRollbackValidity.Valid, result.DataRollbackValidity);
+    Equal(RollbackCapability.FullReversible, result.RollbackCapability);
+    True(result.RollbackCertified && result.CanProceed);
+}
+
+static async Task RollbackMissingIndex()
+{
+    var pre = BaseSnapshot(includeIndex: true);
+    var post = AddCommentSnapshot(includeIndex: true, "nvarchar(50)");
+    var incompletePre = BaseSnapshot(includeIndex: false);
+    var database = new FakeRehearsalDatabase(pre, post, incompletePre);
+    var result = await new RehearsalEngine().QualifyAsync(
+        TestRelease(), ConsistentDiscovery(), Forward(), Rollback(), database);
+    Equal("BLOCKED_SCHEMA_ROLLBACK_MISMATCH", result.QualificationStatus);
+    Equal(SchemaRollbackValidity.Invalid, result.SchemaRollbackValidity);
+    True(result.RollbackDiff is { IsEquivalent: false });
+    Equal(2, database.Executions.Count);
+}
+
+static Task IndexedColumnDependency()
+{
+    var analysis = new SqlScriptAnalyzer().Analyze("rollback",
+        "ALTER TABLE dbo.Orden ALTER COLUMN Fecha datetime2 NOT NULL;", BaseSnapshot(includeIndex: true));
+    True(analysis.Findings.Any(finding => finding.DependencyType == "index-column"
+        && finding.DependentObject == "IX_Orden_Fecha" && finding.Severity == FindingSeverity.Blocking));
+    return Task.CompletedTask;
+}
+
+static Task ReferencedForeignKeyDependency()
+{
+    var snapshot = BaseSnapshot(includeIndex: false);
+    snapshot.Objects.Add(Object("foreign-key-column", "dbo", "OrdenLinea", "FK_OrdenLinea_Orden:0001",
+        ("foreignKey", "FK_OrdenLinea_Orden"), ("column", "OrdenFecha"),
+        ("referencedSchema", "dbo"), ("referencedTable", "Orden"), ("referencedColumn", "Fecha")));
+    var analysis = new SqlScriptAnalyzer().Analyze("forward",
+        "ALTER TABLE dbo.Orden ALTER COLUMN Fecha datetime2 NOT NULL;", snapshot);
+    True(analysis.Findings.Any(finding => finding.DependencyType == "foreign-key-column"
+        && finding.DependentObject == "FK_OrdenLinea_Orden" && finding.Severity == FindingSeverity.Blocking));
+    return Task.CompletedTask;
+}
+
+static async Task Post1IndexDependencyDetected()
+{
+    var result = await RunPost1IndexScenario();
+    var evidence = result.AnalysisEvidence ?? throw new InvalidOperationException("Missing analysis evidence.");
+    True(evidence.RollbackAgainstPost1!.Findings.Any(finding =>
+        finding.DependencyType == "index-column" && finding.DependentObject == "IX_Orden_Fecha"));
+    True(result.ExecutionAudit.Contains("ROLLBACK_ANALYSIS_BASIS:POST1"));
+}
+
+static async Task Post1AnalysisIsAuthoritative()
+{
+    var result = await RunPost1IndexScenario();
+    var evidence = result.AnalysisEvidence ?? throw new InvalidOperationException("Missing analysis evidence.");
+    True(!evidence.PreliminaryRollbackAgainstPre.Findings.Any(finding => finding.DependentObject == "IX_Orden_Fecha"));
+    True(evidence.RollbackAgainstPost1!.Findings.Any(finding => finding.DependentObject == "IX_Orden_Fecha"));
+    True(ReferenceEquals(evidence.EffectiveDependencyAnalysis.Rollback, evidence.RollbackAgainstPost1));
+    Equal("POST1", evidence.RollbackAnalysisBasis);
+}
+
+static async Task Post1ForeignKeyDependencyDetected()
+{
+    var pre = BaseSnapshot(includeIndex: false);
+    var post = BaseSnapshot(includeIndex: false);
+    post.Objects.Add(Object("foreign-key-column", "dbo", "OrdenLinea", "FK_OrdenLinea_Orden:0001",
+        ("foreignKey", "FK_OrdenLinea_Orden"), ("column", "OrdenFecha"),
+        ("referencedSchema", "dbo"), ("referencedTable", "Orden"), ("referencedColumn", "Fecha")));
+    var database = new FakeRehearsalDatabase(pre, post, post);
+    var result = await new RehearsalEngine().QualifyAsync(TestRelease(), ConsistentDiscovery(),
+        ReleaseScript.FromText("forward", "ALTER TABLE dbo.OrdenLinea ADD CONSTRAINT FK_OrdenLinea_Orden FOREIGN KEY (OrdenFecha) REFERENCES dbo.Orden(Fecha);"),
+        ReleaseScript.FromText("rollback", "ALTER TABLE dbo.Orden ALTER COLUMN Fecha datetime2 NULL;"), database);
+    var postAnalysis = result.AnalysisEvidence?.RollbackAgainstPost1
+        ?? throw new InvalidOperationException("Missing POST1 rollback analysis.");
+    True(postAnalysis.Findings.Any(finding => finding.DependencyType == "foreign-key-column"
+        && finding.DependentObject == "FK_OrdenLinea_Orden"));
+}
+
+static async Task Post1ConstraintAndComputedDependencyDetected()
+{
+    var pre = BaseSnapshot(includeIndex: false);
+    var post = BaseSnapshot(includeIndex: false);
+    post.Objects.Add(Object("check-constraint", "dbo", "Orden", "CK_Orden_Fecha",
+        ("column", "Fecha"), ("definitionSha256", Hashing.Sha256("Fecha IS NOT NULL"))));
+    post.Objects.Add(Object("schema-dependency", "dbo", "OrdenCalculada", "COMPUTED:dbo:Orden:Fecha",
+        ("referencingType", "COMPUTED_COLUMN"), ("referencedSchema", "dbo"),
+        ("referencedEntity", "Orden"), ("referencedColumn", "Fecha"), ("schemaBound", "true")));
+    var database = new FakeRehearsalDatabase(pre, post, post);
+    var result = await new RehearsalEngine().QualifyAsync(TestRelease(), ConsistentDiscovery(),
+        ReleaseScript.FromText("forward", "ALTER TABLE dbo.Orden ADD CONSTRAINT CK_Orden_Fecha CHECK (Fecha IS NOT NULL);"),
+        ReleaseScript.FromText("rollback", "ALTER TABLE dbo.Orden ALTER COLUMN Fecha datetime2 NULL;"), database);
+    var findings = result.AnalysisEvidence?.RollbackAgainstPost1?.Findings
+        ?? throw new InvalidOperationException("Missing POST1 rollback findings.");
+    True(findings.Any(finding => finding.DependencyType == "check-constraint"));
+    True(findings.Any(finding => finding.DependencyType == "schema-dependency"));
+}
+
+static async Task Post1RiskRaisesFinalAndIsAttested()
+{
+    var pre = BaseSnapshot(includeIndex: false);
+    var post = BaseSnapshot(includeIndex: false);
+    post.Objects.Add(Object("view", "dbo", "", "V_Orden", ("schemaBound", "true"),
+        ("definitionSha256", Hashing.Sha256("SELECT Fecha FROM dbo.Orden"))));
+    post.Objects.Add(Object("schema-dependency", "dbo", "V_Orden", "VIEW:dbo:Orden:Fecha",
+        ("referencingType", "VIEW"), ("referencedSchema", "dbo"),
+        ("referencedEntity", "Orden"), ("referencedColumn", "Fecha"), ("schemaBound", "true")));
+    var forward = ReleaseScript.FromText("forward", "CREATE VIEW dbo.V_Orden AS SELECT Fecha FROM dbo.Orden;");
+    var rollback = ReleaseScript.FromText("rollback", "ALTER TABLE dbo.Orden ALTER COLUMN Fecha datetime2 NULL;");
+    var database = new FakeRehearsalDatabase(pre, post, post);
+    var result = await new RehearsalEngine().QualifyAsync(
+        TestRelease(), ConsistentDiscovery(), forward, rollback, database);
+    var evidence = result.AnalysisEvidence ?? throw new InvalidOperationException("Missing POST1 risk evidence.");
+    Equal(RiskLevel.Low, evidence.PreliminaryRisk.ForwardRisk);
+    Equal(RiskLevel.Low, evidence.PreliminaryRisk.RollbackDependencyRisk);
+    Equal(RiskLevel.High, evidence.QualificationRisk!.RollbackDependencyRisk);
+    Equal(RiskLevel.High, evidence.QualificationRisk.FinalRisk);
+    True(evidence.QualificationRisk.RequiresDbaApproval);
+
+    var root = TempDirectory("db-release-post1-attestation");
+    try
+    {
+        var package = new ReleasePackageWriter().Write(root, "run-post1", TestRelease(), forward, rollback, pre,
+            evidence.PreliminaryDependencyAnalysis, evidence.PreliminaryRisk, result);
+        var attestation = JsonDocument.Parse(File.ReadAllText(
+            Path.Combine(package.AttestationDirectory, "qualification-attestation.json")));
+        Equal("POST1", attestation.RootElement.GetProperty("rollbackAnalysisBasis").GetString());
+        Equal("HIGH", attestation.RootElement.GetProperty("rollbackDependencyRisk").GetString());
+        Equal("HIGH", attestation.RootElement.GetProperty("finalRisk").GetString());
+        True(!attestation.RootElement.GetProperty("requiresDbaApproval").GetBoolean());
+        Equal("INVALID", attestation.RootElement.GetProperty("schemaRollbackValidity").GetString());
+        True(File.Exists(Path.Combine(package.AttestationDirectory, "post1-rollback-analysis.json")));
+        var effectiveDependency = JsonDocument.Parse(File.ReadAllText(
+            Path.Combine(package.AttestationDirectory, "dependency-analysis.json")));
+        True(effectiveDependency.RootElement.GetProperty("rollback").GetProperty("findings").GetArrayLength() > 0);
+        SequenceEqual(forward.Bytes, File.ReadAllBytes(Path.Combine(package.PayloadDirectory, "forward.sql")));
+        SequenceEqual(rollback.Bytes, File.ReadAllBytes(Path.Combine(package.PayloadDirectory, "rollback.sql")));
+    }
+    finally { DeleteTemp(root); }
+}
+
+static async Task Post1LowDependencyStaysLow()
+{
+    var schema = BaseSnapshot(includeIndex: false);
+    var database = new FakeRehearsalDatabase(schema, schema, schema, schema);
+    var result = await new RehearsalEngine().QualifyAsync(TestRelease(), ConsistentDiscovery(),
+        ReleaseScript.FromText("forward", "SELECT 1;"), ReleaseScript.FromText("rollback", "SELECT 1;"), database);
+    Equal("QUALIFIED", result.QualificationStatus);
+    Equal(RiskLevel.Low, result.AnalysisEvidence!.QualificationRisk!.RollbackDependencyRisk);
+    Equal(RiskLevel.Low, result.AnalysisEvidence.QualificationRisk.FinalRisk);
+}
+
+static async Task Post1InsufficientConfidenceBlocksRollback()
+{
+    var pre = BaseSnapshot(includeIndex: false);
+    var post = BaseSnapshot(includeIndex: false);
+    post.UnsupportedSchemaFeatures.Add("columnstore-index-options");
+    post.Objects.Add(Object("unsupported-schema-feature", "dbo", "", "Orden.IX_Orden_CS",
+        ("feature", "columnstore-index-options")));
+    var database = new FakeRehearsalDatabase(pre, post);
+    var result = await new RehearsalEngine().QualifyAsync(TestRelease(), ConsistentDiscovery(),
+        ReleaseScript.FromText("forward", "CREATE COLUMNSTORE INDEX IX_Orden_CS ON dbo.Orden(Fecha);"),
+        ReleaseScript.FromText("rollback", "ALTER TABLE dbo.Orden ALTER COLUMN Fecha datetime2 NULL;"), database);
+    Equal("BLOCKED_POST1_ROLLBACK_ANALYSIS_CONFIDENCE", result.QualificationStatus);
+    Equal(AnalysisConfidence.Insufficient, result.AnalysisEvidence!.RollbackAgainstPost1!.Confidence);
+    Equal(1, database.Executions.Count);
+    Equal("forward", database.Executions[0].Role);
+}
+
+static Task HighRollbackWins()
+{
+    var snapshot = BaseSnapshot(includeIndex: false);
+    var risk = AnalyzeRisk(snapshot, "SELECT 1;", "DROP TABLE dbo.Orden;");
+    Equal(RiskLevel.Low, risk.ForwardRisk);
+    Equal(RiskLevel.High, risk.RollbackRisk);
+    Equal(RiskLevel.High, risk.FinalRisk);
+    return Task.CompletedTask;
+}
+
+static Task LargeRollbackCostRaisesRollbackRisk()
+{
+    var snapshot = BaseSnapshot(includeIndex: false, indexMb: 180_000m);
+    var risk = AnalyzeRisk(snapshot, "SELECT 1;", "CREATE INDEX IX_BIG ON dbo.Orden(Fecha);");
+    Equal(RiskLevel.High, risk.RollbackRisk);
+    Equal(RiskLevel.High, risk.OperationalRisk);
+    Equal(RiskLevel.High, risk.FinalRisk);
+    return Task.CompletedTask;
+}
+
+static Task HighDependencyWins()
+{
+    var snapshot = BaseSnapshot(includeIndex: true);
+    var risk = AnalyzeRisk(snapshot, "ALTER TABLE dbo.Orden ALTER COLUMN Fecha datetime2 NOT NULL;", "SELECT 1;");
+    Equal(RiskLevel.High, risk.DependencyRisk);
+    Equal(RiskLevel.High, risk.FinalRisk);
+    return Task.CompletedTask;
+}
+
+static Task AllLow()
+{
+    var risk = AnalyzeRisk(BaseSnapshot(includeIndex: false),
+        "ALTER TABLE dbo.Orden ADD Comentario nvarchar(50) NULL;", "SELECT 1;");
+    Equal(RiskLevel.Low, risk.ForwardRisk);
+    Equal(RiskLevel.Low, risk.RollbackRisk);
+    Equal(RiskLevel.Low, risk.DependencyRisk);
+    Equal(RiskLevel.Low, risk.DataRisk);
+    Equal(RiskLevel.Low, risk.OperationalRisk);
+    Equal(RiskLevel.Low, risk.FinalRisk);
+    return Task.CompletedTask;
+}
+
+static Task InvalidRollbackCannotProceed()
+{
+    var result = new RehearsalResult
+    {
+        QualificationStatus = "QUALIFIED",
+        SchemaRollbackValidity = SchemaRollbackValidity.Invalid,
+        DataRollbackValidity = DataRollbackValidity.NotApplicable,
+        RollbackCapability = RollbackCapability.FullReversible,
+        ForwardCertified = true,
+        RollbackCertified = true,
+        ReapplyCertified = true
+    };
+    True(!result.CanProceed);
+    return Task.CompletedTask;
+}
+
+static async Task ReapplyMismatch()
+{
+    var pre = BaseSnapshot(includeIndex: true);
+    var post1 = AddCommentSnapshot(includeIndex: true, "nvarchar(50)");
+    var post2 = AddCommentSnapshot(includeIndex: true, "nvarchar(60)");
+    var database = new FakeRehearsalDatabase(pre, post1, pre, post2);
+    var result = await new RehearsalEngine().QualifyAsync(
+        TestRelease(), ConsistentDiscovery(), Forward(), Rollback(), database);
+    Equal("BLOCKED_REAPPLY_MISMATCH", result.QualificationStatus);
+    Equal(SchemaRollbackValidity.Valid, result.SchemaRollbackValidity);
+    True(!result.ReapplyCertified);
+}
+
+static async Task BlockedDiscoveryDoesNotExecute()
+{
+    var database = new FakeRehearsalDatabase();
+    var result = await new RehearsalEngine().QualifyAsync(
+        TestRelease(),
+        new DiscoveryGate { ConsistencyStatus = "BLOCKED", ConsistencyReason = "BLOCKED_HISTORY_WITHOUT_REPO" },
+        Forward(), Rollback(), database);
+    Equal("BLOCKED_DISCOVERY", result.QualificationStatus);
+    Equal(0, database.CaptureCount);
+    Equal(0, database.Executions.Count);
+}
+
+static async Task ProdGuard()
+{
+    var database = new FakeRehearsalDatabase();
+    var result = await new RehearsalEngine().QualifyAsync(
+        TestRelease("PROD"), ConsistentDiscovery(), Forward(), Rollback(), database);
+    Equal("BLOCKED_PROD_REHEARSAL", result.QualificationStatus);
+    Equal(0, database.CaptureCount);
+    Equal(0, database.Executions.Count);
+}
+
+static Task ReleaseScriptIsImmutable()
+{
+    var source = new byte[] { 1, 2, 3 };
+    var script = new ReleaseScript("forward", source);
+    var expectedHash = script.Sha256;
+    source[0] = 9;
+    var exposed = script.Bytes;
+    exposed[1] = 9;
+    Equal(expectedHash, script.Sha256);
+    SequenceEqual(new byte[] { 1, 2, 3 }, script.Bytes);
+    return Task.CompletedTask;
+}
+
+static Task PayloadIdentityIgnoresEnvironment()
+{
+    var forward = Forward();
+    var rollback = Rollback();
+    var test = ReleasePayloadBuilder.Build(TestRelease("TEST"), forward, rollback);
+    var qa = ReleasePayloadBuilder.Build(TestRelease("QA"), forward, rollback);
+    var prod = ReleasePayloadBuilder.Build(TestRelease("PROD"), forward, rollback);
+    Equal(test.PayloadHash, qa.PayloadHash);
+    Equal(test.PayloadHash, prod.PayloadHash);
+    Equal(test.ForwardHash, prod.ForwardHash);
+    Equal(test.RollbackHash, prod.RollbackHash);
+    return Task.CompletedTask;
+}
+
+static Task PayloadChangesWithScriptByte()
+{
+    var release = TestRelease();
+    var first = ReleasePayloadBuilder.Build(release, new ReleaseScript("forward", [1, 2, 3]), Rollback());
+    var second = ReleasePayloadBuilder.Build(release, new ReleaseScript("forward", [1, 2, 4]), Rollback());
+    NotEqual(first.ForwardHash, second.ForwardHash);
+    NotEqual(first.PayloadHash, second.PayloadHash);
+    return Task.CompletedTask;
+}
+
+static Task AttestationsAccumulateWithoutChangingPayload()
+{
+    var root = TempDirectory("db-release-attestations");
+    try
+    {
+        var snapshot = BaseSnapshot(includeIndex: false);
+        var forward = Forward();
+        var rollback = Rollback();
+        var dependency = AnalyzePair(snapshot, forward.Text, rollback.Text);
+        var lowRisk = new RiskEngine().Evaluate(dependency, snapshot);
+        var rehearsal = AnalyzedResult(snapshot);
+        var writer = new ReleasePackageWriter();
+        var test = writer.Write(root, "run-test", TestRelease("TEST"), forward, rollback, snapshot,
+            dependency, lowRisk, rehearsal, new Dictionary<string, string> { ["run"] = "test" });
+        var qa = writer.Write(root, "run-qa", TestRelease("QA"), forward, rollback, snapshot,
+            dependency, lowRisk, rehearsal, new Dictionary<string, string> { ["run"] = "qa" });
+        Equal(test.PayloadHash, qa.PayloadHash);
+        Equal(test.PayloadDirectory, qa.PayloadDirectory);
+        NotEqual(test.AttestationDirectory, qa.AttestationDirectory);
+        True(File.Exists(Path.Combine(test.AttestationDirectory, "qualification-attestation.json")));
+        True(File.Exists(Path.Combine(qa.AttestationDirectory, "qualification-attestation.json")));
+        SequenceEqual(forward.Bytes, File.ReadAllBytes(Path.Combine(test.PayloadDirectory, "forward.sql")));
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task PackageUsesSchemaHashNames()
+{
+    var root = TempDirectory("db-release-schema-hash");
+    try
+    {
+        var snapshot = BaseSnapshot(includeIndex: false);
+        var dependency = AnalyzePair(snapshot, Forward().Text, Rollback().Text);
+        var result = new ReleasePackageWriter().Write(root, "run-1", TestRelease(), Forward(), Rollback(), snapshot,
+            dependency, new RiskEngine().Evaluate(dependency, snapshot), AnalyzedResult(snapshot));
+        True(File.Exists(Path.Combine(result.AttestationDirectory, "pre-schema.sha256")));
+        True(!File.Exists(Path.Combine(result.AttestationDirectory, "pre-state.sha256")));
+        True(!File.Exists(Path.Combine(result.PayloadDirectory, "metadata.json")));
+        True(File.Exists(Path.Combine(result.PayloadDirectory, "payload.json")));
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task SchemaArtifactsDoNotExposeRawDefinitions()
+{
+    const string sensitiveDefinition = "SELECT 'Password=forbidden-artifact-value' AS Value;";
+    var root = TempDirectory("db-release-safe-schema-artifact");
+    try
+    {
+        var snapshot = BaseSnapshot(includeIndex: false);
+        snapshot.Objects.Add(Object("view", "dbo", "", "SafeView", ("definition", sensitiveDefinition)));
+        var canonical = SchemaCanonicalizer.Canonicalize(snapshot);
+        True(!canonical.Json.Contains("forbidden-artifact-value", StringComparison.Ordinal));
+        True(canonical.Json.Contains("definitionSha256", StringComparison.Ordinal));
+
+        var dependency = AnalyzePair(snapshot, Forward().Text, Rollback().Text);
+        var result = new ReleasePackageWriter().Write(root, "run-safe-artifact", TestRelease(), Forward(), Rollback(),
+            snapshot, dependency, new RiskEngine().Evaluate(dependency, snapshot), AnalyzedResult(snapshot));
+        foreach (var file in Directory.EnumerateFiles(result.AttestationDirectory, "*", SearchOption.AllDirectories))
+            True(!File.ReadAllText(file).Contains("forbidden-artifact-value", StringComparison.Ordinal));
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task RunMetadataRejectsSensitiveKeys()
+{
+    var root = TempDirectory("db-release-sensitive-run-metadata");
+    try
+    {
+        var snapshot = BaseSnapshot(includeIndex: false);
+        var dependency = AnalyzePair(snapshot, Forward().Text, Rollback().Text);
+        var rejected = false;
+        try
+        {
+            _ = new ReleasePackageWriter().Write(root, "run-sensitive", TestRelease(), Forward(), Rollback(),
+                snapshot, dependency, new RiskEngine().Evaluate(dependency, snapshot), AnalyzedResult(snapshot),
+                new Dictionary<string, string> { ["connectionString"] = "TopSecret" });
+        }
+        catch (InvalidOperationException exception)
+        {
+            Equal("RUN_METADATA_SENSITIVE_KEY_REJECTED", exception.Message);
+            rejected = true;
+        }
+        True(rejected);
+        foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+            True(!File.ReadAllText(file).Contains("TopSecret", StringComparison.Ordinal));
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task InvalidRollbackDoesNotRequestApproval()
+{
+    var root = TempDirectory("db-release-invalid");
+    try
+    {
+        var snapshot = BaseSnapshot(includeIndex: false);
+        var dependency = AnalyzePair(snapshot, "SELECT 1;", "DROP TABLE dbo.Orden;");
+        var risk = new RiskEngine().Evaluate(dependency, snapshot);
+        True(risk.RequiresDbaApproval);
+        var rehearsal = new RehearsalResult
+        {
+            QualificationStatus = "BLOCKED_SCHEMA_ROLLBACK_MISMATCH",
+            SchemaRollbackValidity = SchemaRollbackValidity.Invalid,
+            DataRollbackValidity = DataRollbackValidity.NotApplicable,
+            RollbackCapability = RollbackCapability.Unknown,
+            ForwardCertified = true,
+            RollbackCertified = false,
+            ReapplyCertified = false,
+            Pre = SchemaCanonicalizer.Canonicalize(snapshot)
+        };
+        var package = new ReleasePackageWriter().Write(root, "run-invalid", TestRelease(),
+            ReleaseScript.FromText("forward", "SELECT 1;"), ReleaseScript.FromText("rollback", "DROP TABLE dbo.Orden;"),
+            snapshot, dependency, risk, rehearsal);
+        var attestation = JsonDocument.Parse(File.ReadAllText(Path.Combine(package.AttestationDirectory, "qualification-attestation.json")));
+        True(!attestation.RootElement.GetProperty("requiresDbaApproval").GetBoolean());
+        Equal("INVALID", attestation.RootElement.GetProperty("schemaRollbackValidity").GetString());
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task ValidHighRollbackRequiresApproval()
+{
+    var root = TempDirectory("db-release-valid-high");
+    try
+    {
+        var snapshot = BaseSnapshot(includeIndex: false, indexMb: 180_000m);
+        var forward = ReleaseScript.FromText("forward", "SELECT 1;");
+        var rollback = ReleaseScript.FromText("rollback", "CREATE INDEX IX_BIG ON dbo.Orden(Fecha);");
+        var dependency = AnalyzePair(snapshot, forward.Text, rollback.Text);
+        var risk = new RiskEngine().Evaluate(dependency, snapshot);
+        Equal(RiskLevel.High, risk.FinalRisk);
+        var rehearsal = new RehearsalResult
+        {
+            QualificationStatus = "QUALIFIED",
+            SchemaRollbackValidity = SchemaRollbackValidity.Valid,
+            DataRollbackValidity = DataRollbackValidity.NotApplicable,
+            RollbackCapability = RollbackCapability.FullReversible,
+            ForwardCertified = true,
+            RollbackCertified = true,
+            ReapplyCertified = true,
+            Pre = SchemaCanonicalizer.Canonicalize(snapshot)
+        };
+        var package = new ReleasePackageWriter().Write(root, "run-valid-high", TestRelease(), forward, rollback,
+            snapshot, dependency, risk, rehearsal);
+        var attestation = JsonDocument.Parse(File.ReadAllText(
+            Path.Combine(package.AttestationDirectory, "qualification-attestation.json")));
+        True(attestation.RootElement.GetProperty("requiresDbaApproval").GetBoolean());
+        Equal("VALID", attestation.RootElement.GetProperty("schemaRollbackValidity").GetString());
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task TargetHighWins()
+{
+    var preflight = new TargetEnvironmentPreflight
+    {
+        Environment = "PROD",
+        ImpactMetrics = [Metric(rows: 20_000_000, reservedMb: 100)]
+    };
+    var result = new TargetRiskEngine().Combine(RiskLevel.Low, preflight);
+    Equal(RiskLevel.High, result.TargetPreflightRisk);
+    Equal(RiskLevel.High, result.FinalTargetRisk);
+    return Task.CompletedTask;
+}
+
+static Task QualifiedHighWins()
+{
+    var result = new TargetRiskEngine().Combine(RiskLevel.High,
+        new TargetEnvironmentPreflight { Environment = "PROD", ImpactMetrics = [Metric(rows: 1, reservedMb: 1)] });
+    Equal(RiskLevel.Low, result.TargetPreflightRisk);
+    Equal(RiskLevel.High, result.FinalTargetRisk);
+    return Task.CompletedTask;
+}
+
+static Task QualifiedAndTargetLowRemainLow()
+{
+    var result = new TargetRiskEngine().Combine(RiskLevel.Low,
+        new TargetEnvironmentPreflight { Environment = "PROD", ImpactMetrics = [Metric(rows: 1, reservedMb: 1)] });
+    Equal(RiskLevel.Low, result.TargetPreflightRisk);
+    Equal(RiskLevel.Low, result.FinalTargetRisk);
+    return Task.CompletedTask;
+}
+
+static Task TargetRelationshipsRaiseRisk()
+{
+    var result = new TargetRiskEngine().Combine(RiskLevel.Low,
+        new TargetEnvironmentPreflight
+        {
+            Environment = "PROD",
+            ImpactMetrics = [Metric(rows: 1, reservedMb: 1, foreignKeys: 60, triggers: 41)]
+        });
+    Equal(RiskLevel.High, result.TargetPreflightRisk);
+    Equal(RiskLevel.High, result.FinalTargetRisk);
+    return Task.CompletedTask;
+}
+
+static Task UnsupportedCoverageDegradesConfidence()
+{
+    var snapshot = BaseSnapshot(includeIndex: false);
+    snapshot.UnsupportedSchemaFeatures.Add("partition-function-definition");
+    var analysis = new SqlScriptAnalyzer().Analyze("forward", "ALTER TABLE dbo.Orden ADD X int NULL;", snapshot);
+    Equal(SchemaCoverage.Partial, snapshot.SchemaCoverage);
+    Equal(AnalysisConfidence.Partial, analysis.Confidence);
+    Equal(RiskLevel.Medium, RiskFor(analysis, SelectAnalysis(snapshot)).FinalRisk);
+    return Task.CompletedTask;
+}
+
+static Task RelevantUnsupportedFeatureBlocks()
+{
+    var snapshot = BaseSnapshot(includeIndex: false);
+    snapshot.UnsupportedSchemaFeatures.Add("data-compression");
+    snapshot.Objects.Add(Object("unsupported-schema-feature", "dbo", "", "Orden", ("feature", "data-compression")));
+    var analysis = new SqlScriptAnalyzer().Analyze("forward",
+        "ALTER TABLE dbo.Orden ALTER COLUMN Fecha datetime2 NOT NULL;", snapshot);
+    Equal(AnalysisConfidence.Insufficient, analysis.Confidence);
+    var risk = RiskFor(analysis, SelectAnalysis(snapshot));
+    Equal(RiskLevel.High, risk.FinalRisk);
+    True(risk.AutoPromotionBlocked);
+    return Task.CompletedTask;
+}
+
+static async Task CliAnalyzeOnlyPackage()
+{
+    var root = TempDirectory("db-release-cli");
+    try
+    {
+        var paths = WriteCliFixtures(root);
+        var exit = await QualificationCli.RunAsync(CliArguments(paths, "CONSISTENT", "CONSISTENT_EXISTING_SQL"));
+        Equal(0, exit);
+        var result = JsonDocument.Parse(File.ReadAllText(paths.Result));
+        Equal("ANALYZED_NOT_REHEARSED", result.RootElement.GetProperty("qualificationStatus").GetString());
+        True(File.Exists(Path.Combine(result.RootElement.GetProperty("payloadDirectory").GetString()!, "forward.sql")));
+        True(File.Exists(Path.Combine(result.RootElement.GetProperty("attestationDirectory").GetString()!, "qualification-attestation.json")));
+    }
+    finally { DeleteTemp(root); }
+}
+
+static async Task CliBlocksInconsistentDiscovery()
+{
+    var root = TempDirectory("db-release-cli-blocked");
+    try
+    {
+        var paths = WriteCliFixtures(root);
+        var exit = await QualificationCli.RunAsync(CliArguments(paths, "BLOCKED", "BLOCKED_HISTORY_WITHOUT_REPO"));
+        Equal(4, exit);
+        var result = JsonDocument.Parse(File.ReadAllText(paths.Result));
+        Equal("BLOCKED_DISCOVERY", result.RootElement.GetProperty("qualificationStatus").GetString());
+    }
+    finally { DeleteTemp(root); }
+}
+
+static Task DerivedCertificationRequiresCertifiedPre()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(includeCertifiedPre: false));
+    Equal(CertificationDecision.Blocked, result.Decision);
+    Equal(CertificationDecisionReasons.CertifiedPreRequired, result.DecisionReason);
+    True(!result.Evidence.AutomaticEligible);
+    True(!result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task DerivedCertificationIsAutomatic()
+{
+    var result = new CertificationDecisionEngine().Evaluate(DerivedCertificationRequest());
+    Equal(CertificationDecision.Automatic, result.Decision);
+    Equal(CertificationOrigin.QualifiedRelease, result.Origin);
+    Equal(CertificationDecisionReasons.QualifiedReleaseTransition, result.DecisionReason);
+    Equal(CertificationPostHash(), result.NextCertifiedSchemaHash);
+    True(result.Evidence.ChainOfTrustIntact);
+    True(result.Evidence.AutomaticEligible);
+    True(result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task PreDriftBlocksDerivedCertification()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(observedPreSchemaHash: new string('9', 64)));
+    Equal(CertificationDecision.Blocked, result.Decision);
+    Equal(CertificationDecisionReasons.PreStateDriftDetected, result.DecisionReason);
+    True(!result.Evidence.PreMatchesCertified);
+    True(!result.Evidence.AutomaticEligible);
+    return Task.CompletedTask;
+}
+
+static Task PostMismatchBlocksDerivedCertification()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(observedPostSchemaHash: new string('8', 64)));
+    Equal(CertificationDecision.Blocked, result.Decision);
+    Equal(CertificationDecisionReasons.QualifiedPostMismatch, result.DecisionReason);
+    True(!result.Evidence.PostMatchesQualified);
+    True(!result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task LowRiskExactDeploymentCertifiesAutomatically()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(finalRisk: RiskLevel.Low));
+    Equal(CertificationDecision.Automatic, result.Decision);
+    True(result.Evidence.ExactQualifiedRelease);
+    Equal(DeploymentAuthorizationRequirement.AutomaticPolicy,
+        result.Evidence.DeploymentAuthorizationRequirement);
+    Equal(DeploymentAuthorizationDecision.Authorized,
+        result.Evidence.DeploymentAuthorizationDecision);
+    Equal(CertificationApprovalRequirement.None, result.Evidence.CertificationApprovalRequired);
+    return Task.CompletedTask;
+}
+
+static Task HighRiskMissingDeploymentAuthorizationBlocks()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(
+            finalRisk: RiskLevel.High,
+            authorizationRequirement: DeploymentAuthorizationRequirement.DbaApproval,
+            authorizationDecision: DeploymentAuthorizationDecision.NotAuthorized,
+            includeAuthorizationReference: false));
+    Equal(CertificationDecision.Blocked, result.Decision);
+    Equal(CertificationDecisionReasons.DeploymentAuthorizationRequired, result.DecisionReason);
+    True(!result.Evidence.AutomaticEligible);
+    True(!result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task InvalidRollbackCannotBeOverriddenByAuthorization()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(
+            finalRisk: RiskLevel.High,
+            schemaRollbackValidity: SchemaRollbackValidity.Invalid,
+            authorizationRequirement: DeploymentAuthorizationRequirement.DbaApproval,
+            authorizationDecision: DeploymentAuthorizationDecision.Authorized));
+    Equal(CertificationDecision.Blocked, result.Decision);
+    Equal(CertificationDecisionReasons.InvalidRollback, result.DecisionReason);
+    True(!result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task OutOfBandRequiresReconciliation()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(outOfBandChangeDetected: true));
+    Equal(CertificationDecision.Blocked, result.Decision);
+    Equal(CertificationDecisionReasons.DriftReconciliationRequired, result.DecisionReason);
+    Equal(CertificationOrigin.QualifiedRelease, result.Origin);
+    True(!result.Evidence.ChainOfTrustIntact);
+    return Task.CompletedTask;
+}
+
+static Task BootstrapIsReadyForHumanApproval()
+{
+    var result = new CertificationDecisionEngine().Evaluate(BootstrapCertificationRequest());
+    Equal(CertificationDecision.ReadyForHumanApproval, result.Decision);
+    Equal(CertificationOrigin.BootstrapApproved, result.Origin);
+    Equal(CertificationDecisionReasons.InitialBaselineApproval, result.DecisionReason);
+    Equal(CertificationApprovalRequirement.Human,
+        result.Evidence.CertificationApprovalRequired);
+    True(!result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task AutomaticCertificationEvidenceIsComplete()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(
+            finalRisk: RiskLevel.High,
+            authorizationRequirement: DeploymentAuthorizationRequirement.DbaApproval,
+            authorizationDecision: DeploymentAuthorizationDecision.Authorized));
+    var json = JsonDocument.Parse(JsonSerializer.Serialize(result.Evidence, JsonDefaults.Compact)).RootElement;
+    Equal(1, json.GetProperty("formatVersion").GetInt32());
+    Equal("DEPLOYMENT_POLICY_V1", json.GetProperty("policyId").GetString());
+    Equal("QUALIFIED_RELEASE", json.GetProperty("origin").GetString());
+    Equal("AUTOMATIC", json.GetProperty("decision").GetString());
+    Equal("QUALIFIED_RELEASE_TRANSITION", json.GetProperty("decisionReason").GetString());
+    Equal(CertificationPreHash(), json.GetProperty("previousCertifiedSchemaHash").GetString());
+    Equal(CertificationPreHash(), json.GetProperty("observedPreSchemaHash").GetString());
+    Equal(CertificationPostHash(), json.GetProperty("qualifiedPostSchemaHash").GetString());
+    Equal(CertificationPostHash(), json.GetProperty("observedPostSchemaHash").GetString());
+    Equal(CertificationPostHash(), json.GetProperty("nextCertifiedSchemaHash").GetString());
+    Equal(CertificationPayloadHash(), json.GetProperty("qualifiedPayloadHash").GetString());
+    Equal(CertificationPayloadHash(), json.GetProperty("executedPayloadHash").GetString());
+    Equal(CertificationForwardHash(), json.GetProperty("qualifiedForwardHash").GetString());
+    Equal(CertificationForwardHash(), json.GetProperty("executedForwardHash").GetString());
+    Equal(CertificationRollbackHash(), json.GetProperty("qualifiedRollbackHash").GetString());
+    Equal(CertificationRollbackHash(), json.GetProperty("verifiedRollbackHash").GetString());
+    True(json.GetProperty("exactQualifiedRelease").GetBoolean());
+    True(json.GetProperty("executionSucceeded").GetBoolean());
+    True(json.GetProperty("postMatchesQualified").GetBoolean());
+    True(json.GetProperty("chainOfTrustIntact").GetBoolean());
+    True(json.GetProperty("automaticEligible").GetBoolean());
+    Equal("HIGH", json.GetProperty("finalRisk").GetString());
+    Equal("DBA_APPROVAL", json.GetProperty("deploymentAuthorizationRequirement").GetString());
+    Equal("AUTHORIZED", json.GetProperty("deploymentAuthorizationDecision").GetString());
+    Equal("CHG-FIXTURE-001", json.GetProperty("authorizationReference").GetString());
+    True(json.GetProperty("releaseQualificationGatePassed").GetBoolean());
+    Equal("NONE", json.GetProperty("certificationApprovalRequired").GetString());
+    Equal("VALID", json.GetProperty("schemaRollbackValidity").GetString());
+    Equal("NOT_APPLICABLE", json.GetProperty("dataRollbackValidity").GetString());
+    Equal("FULL_REVERSIBLE", json.GetProperty("rollbackCapability").GetString());
+    return Task.CompletedTask;
+}
+
+static Task ExactQualifiedReleaseIsRequired()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(executedPayloadHash: new string('7', 64)));
+    Equal(CertificationDecision.Blocked, result.Decision);
+    Equal(CertificationDecisionReasons.ExactQualifiedReleaseRequired, result.DecisionReason);
+    True(!result.Evidence.ExactQualifiedRelease);
+    True(!result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task HighRiskAuthorizedDeploymentCertifiesAutomatically()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(
+            finalRisk: RiskLevel.High,
+            authorizationRequirement: DeploymentAuthorizationRequirement.DbaApproval,
+            authorizationDecision: DeploymentAuthorizationDecision.Authorized));
+    Equal(CertificationDecision.Automatic, result.Decision);
+    Equal(CertificationDecisionReasons.QualifiedReleaseTransition, result.DecisionReason);
+    Equal(DeploymentAuthorizationRequirement.DbaApproval,
+        result.Evidence.DeploymentAuthorizationRequirement);
+    Equal("CHG-FIXTURE-001", result.Evidence.AuthorizationReference);
+    Equal(CertificationApprovalRequirement.None, result.Evidence.CertificationApprovalRequired);
+    True(result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task Cicdv3BootstrapRemainsBlockedByLineage()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        BootstrapCertificationRequest(lineageStatus: "BLOCKED_HISTORY_WITHOUT_REPO"));
+    Equal(CertificationDecision.Blocked, result.Decision);
+    Equal(CertificationDecisionReasons.LineageNotEligible, result.DecisionReason);
+    True(!result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task RestoreRequiredAuthorizedCertifiesAutomatically()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(
+            finalRisk: RiskLevel.High,
+            rollbackCapability: RollbackCapability.RestoreRequired,
+            authorizationRequirement: DeploymentAuthorizationRequirement.DbaApproval,
+            authorizationDecision: DeploymentAuthorizationDecision.Authorized));
+    Equal(CertificationDecision.Automatic, result.Decision);
+    Equal(CertificationOrigin.QualifiedRelease, result.Origin);
+    Equal(RollbackCapability.RestoreRequired, result.Evidence.RollbackCapability);
+    Equal(DeploymentAuthorizationDecision.Authorized,
+        result.Evidence.DeploymentAuthorizationDecision);
+    True(result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task RestoreRequiredWithoutAuthorizationBlocks()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(
+            finalRisk: RiskLevel.High,
+            rollbackCapability: RollbackCapability.RestoreRequired,
+            authorizationRequirement: DeploymentAuthorizationRequirement.DbaApproval,
+            authorizationDecision: DeploymentAuthorizationDecision.NotAuthorized,
+            includeAuthorizationReference: false));
+    Equal(CertificationDecision.Blocked, result.Decision);
+    Equal(CertificationDecisionReasons.DeploymentAuthorizationRequired, result.DecisionReason);
+    True(!result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task QualificationGateFailureBlocks()
+{
+    var result = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(releaseQualificationGatePassed: false));
+    Equal(CertificationDecision.Blocked, result.Decision);
+    Equal(CertificationDecisionReasons.ReleaseQualificationGateNotPassed, result.DecisionReason);
+    True(!result.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task PlannedDbaUsesSharedReleaseEngine()
+{
+    var snapshot = BaseSnapshot(includeIndex: false);
+    var forward = ReleaseScript.FromText("forward", "CREATE INDEX IX_DBA ON dbo.Orden(Fecha);");
+    var rollback = ReleaseScript.FromText("rollback", "DROP INDEX IX_DBA ON dbo.Orden;");
+    var dbaRelease = PlannedDbaRelease();
+    var applicationRelease = TestRelease();
+    var dbaAnalysis = AnalyzePair(snapshot, forward.Text, rollback.Text);
+    var applicationAnalysis = AnalyzePair(snapshot, forward.Text, rollback.Text);
+    var dbaRisk = new RiskEngine().Evaluate(dbaAnalysis, snapshot);
+    var applicationRisk = new RiskEngine().Evaluate(applicationAnalysis, snapshot);
+    var payload = ReleasePayloadBuilder.Build(dbaRelease, forward, rollback);
+
+    Equal(applicationRisk.FinalRisk, dbaRisk.FinalRisk);
+    Equal(applicationRisk.DependencyRisk, dbaRisk.DependencyRisk);
+    Equal("SQL", payload.SourceKind);
+    Equal(DatabaseChangeOrigins.Dba, payload.ChangeOrigin);
+    Equal(DatabaseChangePaths.PlannedRelease, payload.ChangePath);
+    Equal("CHG-DBA-001", payload.ChangeReference);
+    Equal("Crear índice operativo planificado", payload.ChangeReason);
+    True(typeof(ReleaseDescriptor).GetProperty("DbaRisk") is null);
+    True(applicationRelease.ChangeOrigin == DatabaseChangeOrigins.Application);
+    return Task.CompletedTask;
+}
+
+static Task PlannedDbaCannotOverrideRisk()
+{
+    var snapshot = BaseSnapshot(includeIndex: false);
+    var risk = AnalyzeRisk(snapshot, "DROP TABLE dbo.Orden;", "CREATE TABLE dbo.Orden(Id int);");
+    Equal(RiskLevel.High, risk.FinalRisk);
+    True(typeof(ReleaseDescriptor).GetProperty("FinalRisk") is null);
+    True(typeof(ReleasePayloadMetadata).GetProperty("FinalRisk") is null);
+    Equal(DatabaseChangeOrigins.Dba, PlannedDbaRelease().ChangeOrigin);
+    return Task.CompletedTask;
+}
+
+static Task PlannedDbaHighUsesNormalPolicy()
+{
+    var snapshot = BaseSnapshot(includeIndex: false);
+    var risk = AnalyzeRisk(snapshot, "DROP TABLE dbo.Orden;", "CREATE TABLE dbo.Orden(Id int);");
+    Equal(RiskLevel.High, risk.FinalRisk);
+    True(risk.RequiresDbaApproval);
+    var payload = ReleasePayloadBuilder.Build(
+        PlannedDbaRelease(),
+        ReleaseScript.FromText("forward", "DROP TABLE dbo.Orden;"),
+        ReleaseScript.FromText("rollback", "CREATE TABLE dbo.Orden(Id int);"));
+    Equal(DatabaseChangeOrigins.Dba, payload.ChangeOrigin);
+    return Task.CompletedTask;
+}
+
+static Task PlannedDbaLowCanBeAutomatic()
+{
+    var snapshot = BaseSnapshot(includeIndex: false);
+    var risk = AnalyzeRisk(snapshot, "SELECT 1;", "SELECT 1;");
+    Equal(RiskLevel.Low, risk.FinalRisk);
+    True(!risk.RequiresDbaApproval);
+    var certification = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(finalRisk: risk.FinalRisk));
+    Equal(CertificationDecision.Automatic, certification.Decision);
+    Equal(DeploymentAuthorizationRequirement.AutomaticPolicy,
+        certification.Evidence.DeploymentAuthorizationRequirement);
+    return Task.CompletedTask;
+}
+
+static Task PlannedDbaInvalidRollbackBlocks()
+{
+    var release = PlannedDbaRelease();
+    var certification = new CertificationDecisionEngine().Evaluate(
+        DerivedCertificationRequest(
+            finalRisk: RiskLevel.High,
+            schemaRollbackValidity: SchemaRollbackValidity.Invalid,
+            authorizationRequirement: DeploymentAuthorizationRequirement.DbaApproval,
+            authorizationDecision: DeploymentAuthorizationDecision.Authorized));
+    Equal(DatabaseChangeOrigins.Dba, release.ChangeOrigin);
+    Equal(CertificationDecision.Blocked, certification.Decision);
+    Equal(CertificationDecisionReasons.InvalidRollback, certification.DecisionReason);
+    return Task.CompletedTask;
+}
+
+static Task KnownDbaDifferenceIsReady()
+{
+    var (certified, observed) = ReconciliationSchemas(oneDifference: true);
+    var difference = StructuralDifferenceBuilder.Build(certified, observed).Single();
+    var result = new ReconciliationEvaluator().Evaluate(
+        ReconciliationContextFixture(CertificationOrigin.BreakGlassReconciliation),
+        certified,
+        observed,
+        [ApproveDba(difference)]);
+    Equal(ReconciliationStatus.ReadyForCertification, result.ReconciliationStatus);
+    Equal(1, result.ApprovedDifferenceCount);
+    Equal(0, result.UnexplainedDifferenceCount);
+    Equal(CertificationOrigin.BreakGlassReconciliation, result.Evidence.CertificationOrigin);
+    True(result.ReconciledCanonicalStateCandidate is not null);
+    return Task.CompletedTask;
+}
+
+static Task MixedReconciliationBlocks()
+{
+    var (certified, observed) = ReconciliationSchemas(oneDifference: false);
+    var differences = StructuralDifferenceBuilder.Build(certified, observed);
+    var result = new ReconciliationEvaluator().Evaluate(
+        ReconciliationContextFixture(CertificationOrigin.BreakGlassReconciliation),
+        certified,
+        observed,
+        [ApproveDba(differences[0])]);
+    Equal(2, differences.Count);
+    Equal(ReconciliationStatus.Blocked, result.ReconciliationStatus);
+    Equal(1, result.ApprovedDifferenceCount);
+    Equal(1, result.UnexplainedDifferenceCount);
+    True(result.BlockingReasons.Any(reason => reason.StartsWith("UNEXPLAINED_DIFFERENCE:", StringComparison.Ordinal)));
+    True(result.ReconciledCanonicalStateCandidate is null);
+    return Task.CompletedTask;
+}
+
+static Task AllExplainedDifferencesAreReady()
+{
+    var (certified, observed) = ReconciliationSchemas(oneDifference: false);
+    var differences = StructuralDifferenceBuilder.Build(certified, observed);
+    var dispositions = new[]
+    {
+        ApproveDba(differences[0]),
+        new ReconciliationDisposition
+        {
+            DifferenceId = differences[1].DifferenceId,
+            Classification = ReconciliationClassification.Expected,
+            ChangeOrigin = DatabaseChangeOrigins.Application,
+            Reference = "release-expected-002",
+            Reason = "Cambio estructural esperado por release calificada"
+        }
+    };
+    var result = new ReconciliationEvaluator().Evaluate(
+        ReconciliationContextFixture(CertificationOrigin.DriftReconciliation),
+        certified,
+        observed,
+        dispositions);
+    Equal(ReconciliationStatus.ReadyForCertification, result.ReconciliationStatus);
+    Equal(2, result.ApprovedDifferenceCount);
+    Equal(0, result.UnexplainedDifferenceCount);
+    return Task.CompletedTask;
+}
+
+static Task NoDifferencesNeedsNoReconciliation()
+{
+    var canonical = SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: false));
+    var result = new ReconciliationEvaluator().Evaluate(
+        ReconciliationContextFixture(CertificationOrigin.DriftReconciliation),
+        canonical,
+        canonical);
+    Equal(ReconciliationStatus.NoDifferences, result.ReconciliationStatus);
+    Equal(0, result.Items.Count);
+    Equal(0, result.ApprovedDifferenceCount);
+    Equal(0, result.UnexplainedDifferenceCount);
+    True(result.ReconciledCanonicalStateCandidate is null);
+    return Task.CompletedTask;
+}
+
+static Task ApprovedOutOfBandRequiresMetadata()
+{
+    var (certified, observed) = ReconciliationSchemas(oneDifference: true);
+    var difference = StructuralDifferenceBuilder.Build(certified, observed).Single();
+    var result = new ReconciliationEvaluator().Evaluate(
+        ReconciliationContextFixture(CertificationOrigin.BreakGlassReconciliation),
+        certified,
+        observed,
+        [new ReconciliationDisposition
+        {
+            DifferenceId = difference.DifferenceId,
+            Classification = ReconciliationClassification.ApprovedOutOfBand,
+            ChangeOrigin = DatabaseChangeOrigins.Dba
+        }]);
+    Equal(ReconciliationStatus.Blocked, result.ReconciliationStatus);
+    True(result.BlockingReasons.Any(reason => reason.StartsWith(
+        "APPROVED_OUT_OF_BAND_METADATA_REQUIRED:", StringComparison.Ordinal)));
+    Equal(1, result.UnexplainedDifferenceCount);
+    return Task.CompletedTask;
+}
+
+static Task ReconciliationHasNoAcceptAll()
+{
+    var exposedTypes = new[]
+    {
+        typeof(ReconciliationEvaluator),
+        typeof(ReconciliationContext),
+        typeof(ReconciliationDisposition),
+        typeof(ReconciliationResult),
+        typeof(ReconciliationEvidence)
+    };
+    True(exposedTypes.SelectMany(type => type.GetProperties())
+        .All(property => !property.Name.Contains("AcceptAll", StringComparison.OrdinalIgnoreCase)));
+    return Task.CompletedTask;
+}
+
+static Task ReconciliationEvidencePreservesObjectFingerprints()
+{
+    var certified = SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: false, nullable: false));
+    var observed = SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: false, nullable: true));
+    var difference = StructuralDifferenceBuilder.Build(certified, observed).Single();
+    var result = new ReconciliationEvaluator().Evaluate(
+        ReconciliationContextFixture(CertificationOrigin.DriftReconciliation),
+        certified,
+        observed,
+        [new ReconciliationDisposition
+        {
+            DifferenceId = difference.DifferenceId,
+            Classification = ReconciliationClassification.Expected,
+            ChangeOrigin = DatabaseChangeOrigins.Application,
+            Reference = "release-expected-003",
+            Reason = "Nullability esperada por qualified release"
+        }]);
+    var item = result.Evidence.Items.Single();
+    Equal("column|dbo|Orden|Fecha", item.ObjectIdentity);
+    Equal("column", item.ObjectType);
+    Equal(ReconciliationChangeType.Modified, item.ChangeType);
+    True(item.BeforeFingerprint?.Length == 64);
+    True(item.AfterFingerprint?.Length == 64);
+    NotEqual(item.BeforeFingerprint, item.AfterFingerprint);
+    return Task.CompletedTask;
+}
+
+static Task ReconciledStateContainsApprovedDbaObject()
+{
+    var (certified, observed) = ReconciliationSchemas(oneDifference: true);
+    var difference = StructuralDifferenceBuilder.Build(certified, observed).Single();
+    var result = new ReconciliationEvaluator().Evaluate(
+        ReconciliationContextFixture(CertificationOrigin.BreakGlassReconciliation),
+        certified,
+        observed,
+        [ApproveDba(difference)]);
+    var candidate = result.ReconciledCanonicalStateCandidate!;
+    Equal(observed.Sha256, candidate.Sha256);
+    True(candidate.Document.Objects.Any(item => item.Identity == difference.ObjectIdentity));
+    True(typeof(ReconciliationResult).GetProperties()
+        .All(property => !property.Name.Contains("Exclusion", StringComparison.OrdinalIgnoreCase)));
+    return Task.CompletedTask;
+}
+
+static Task ReconciledStateDoesNotDriftAgain()
+{
+    var (certified, observed) = ReconciliationSchemas(oneDifference: true);
+    var difference = StructuralDifferenceBuilder.Build(certified, observed).Single();
+    var reconciliation = new ReconciliationEvaluator().Evaluate(
+        ReconciliationContextFixture(CertificationOrigin.BreakGlassReconciliation),
+        certified,
+        observed,
+        [ApproveDba(difference)]);
+    var futureDiff = SchemaComparer.Compare(reconciliation.ReconciledCanonicalStateCandidate!, observed);
+    True(futureDiff.IsEquivalent);
+    return Task.CompletedTask;
+}
+
+static Task ExistingEfOnboardingIsManaged()
+{
+    var result = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("EXISTING_EF", "EF"),
+        CertifiedMatchingState());
+    Equal(StructuralOnboardingState.Certified, result.StructuralState);
+    Equal(LineageOnboardingState.ConsistentEf, result.LineageState);
+    Equal(ReconciliationOnboardingState.Match, result.ReconciliationState);
+    Equal(CertificationOnboardingState.Certified, result.CertificationState);
+    Equal(OverallOnboardingStatus.Managed, result.OverallOnboardingStatus);
+    True(result.DeploymentEligibility);
+    True(result.RehearsalEligibility);
+    return Task.CompletedTask;
+}
+
+static Task ExistingLegacySqlOnboardingIsManaged()
+{
+    var result = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("EXISTING_SQL", "SQL"),
+        CertifiedMatchingState());
+    Equal(LineageOnboardingState.LegacySql, result.LineageState);
+    Equal(OverallOnboardingStatus.Managed, result.OverallOnboardingStatus);
+    True(result.IsManaged);
+    True(!result.Reasons.Contains(DatabaseOnboardingReasons.LineageDivergent));
+    return Task.CompletedTask;
+}
+
+static Task ExistingEfHistoryWithoutRepoIsBlocked()
+{
+    var result = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("BLOCKED", "UNKNOWN", "BLOCKED", "BLOCKED_HISTORY_WITHOUT_REPO"),
+        BaselineCandidateState());
+    Equal(StructuralOnboardingState.Candidate, result.StructuralState);
+    Equal(LineageOnboardingState.BlockedHistoryWithoutRepo, result.LineageState);
+    Equal(OverallOnboardingStatus.Blocked, result.OverallOnboardingStatus);
+    True(result.Reasons.Contains(DatabaseOnboardingReasons.LineageBlockedHistoryWithoutRepo));
+    True(!result.DeploymentEligibility);
+    return Task.CompletedTask;
+}
+
+static Task CertifiedStructuralDoesNotOverrideBlockedLineage()
+{
+    var result = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("BLOCKED", "UNKNOWN", "BLOCKED", "BLOCKED_HISTORY_WITHOUT_REPO"),
+        CertifiedMatchingState());
+    Equal(StructuralOnboardingState.Certified, result.StructuralState);
+    Equal(OverallOnboardingStatus.Blocked, result.OverallOnboardingStatus);
+    True(!result.RehearsalEligibility);
+    True(result.Reasons.Contains(DatabaseOnboardingReasons.LineageBlockedHistoryWithoutRepo));
+    return Task.CompletedTask;
+}
+
+static Task CandidateWithValidLineageIsPending()
+{
+    var result = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("EXISTING_EF", "EF"),
+        BaselineCandidateState());
+    Equal(StructuralOnboardingState.Candidate, result.StructuralState);
+    Equal(OverallOnboardingStatus.Pending, result.OverallOnboardingStatus);
+    True(result.Reasons.Contains(DatabaseOnboardingReasons.BaselineNotCertified));
+    True(result.Reasons.Contains(DatabaseOnboardingReasons.ExistingBootstrapRequired));
+    True(!result.DeploymentEligibility);
+    True(!result.RehearsalEligibility);
+    return Task.CompletedTask;
+}
+
+static Task UnexplainedDriftBlocksOnboarding()
+{
+    var result = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("EXISTING_SQL", "SQL"),
+        CertifiedDriftedState());
+    Equal(StructuralOnboardingState.Certified, result.StructuralState);
+    Equal(ReconciliationOnboardingState.Blocked, result.ReconciliationState);
+    Equal(OverallOnboardingStatus.Blocked, result.OverallOnboardingStatus);
+    True(result.Reasons.Contains(DatabaseOnboardingReasons.UnexplainedDrift));
+    return Task.CompletedTask;
+}
+
+static Task ReadyReconciliationIsNotManaged()
+{
+    var fixture = ReadyReconciliationFixture();
+    var result = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("EXISTING_SQL", "SQL"),
+        fixture.State,
+        fixture.Reconciliation);
+    Equal(ReconciliationOnboardingState.ReadyForCertification, result.ReconciliationState);
+    Equal(OverallOnboardingStatus.Blocked, result.OverallOnboardingStatus);
+    True(result.Reasons.Contains(DatabaseOnboardingReasons.ReconciliationPending));
+    True(!result.DeploymentEligibility);
+    return Task.CompletedTask;
+}
+
+static Task CertifiedReconciliationRestoresManaged()
+{
+    var fixture = ReadyReconciliationFixture();
+    var certification = ReconciliationCertification(
+        fixture.Certified.Sha256,
+        fixture.Observed.Sha256);
+    True(certification.ProducesCertifiedState);
+    var result = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("EXISTING_SQL", "SQL"),
+        fixture.State,
+        fixture.Reconciliation,
+        certification);
+    Equal(StructuralOnboardingState.Certified, result.StructuralState);
+    Equal(ReconciliationOnboardingState.Reconciled, result.ReconciliationState);
+    Equal(CertificationOnboardingState.Certified, result.CertificationState);
+    Equal(OverallOnboardingStatus.Managed, result.OverallOnboardingStatus);
+    True(result.RehearsalEligibility);
+    return Task.CompletedTask;
+}
+
+static Task PlannedDbaDoesNotCreateOnboardingDrift()
+{
+    var release = PlannedDbaRelease();
+    var result = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("EXISTING_SQL", "SQL"),
+        CertifiedMatchingState());
+    Equal(DatabaseChangeOrigins.Dba, release.ChangeOrigin);
+    Equal(DatabaseChangePaths.PlannedRelease, release.ChangePath);
+    Equal(ReconciliationOnboardingState.Match, result.ReconciliationState);
+    Equal(OverallOnboardingStatus.Managed, result.OverallOnboardingStatus);
+    True(typeof(DatabaseOnboardingRequest).GetProperty("ChangeOrigin") is null);
+    return Task.CompletedTask;
+}
+
+static Task DbaOutOfBandBreaksManagedChain()
+{
+    var outOfBand = new ReleaseDescriptor
+    {
+        ReleaseId = "dba-break-glass-001",
+        Environment = "TEST",
+        SourceKind = "SQL",
+        Scenario = "EXISTING_SQL",
+        DatabaseLifecycle = DatabaseLifecycles.Existing,
+        ChangeOrigin = DatabaseChangeOrigins.Dba,
+        ChangePath = DatabaseChangePaths.OutOfBand,
+        ChangeReference = "INC-001",
+        ChangeReason = "Cambio operacional de emergencia"
+    };
+    var result = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("EXISTING_SQL", "SQL"),
+        CertifiedDriftedState());
+    Equal(DatabaseChangePaths.OutOfBand, outOfBand.ChangePath);
+    Equal(ReconciliationOnboardingState.Blocked, result.ReconciliationState);
+    Equal(OverallOnboardingStatus.Blocked, result.OverallOnboardingStatus);
+    True(result.Reasons.Contains(DatabaseOnboardingReasons.UnexplainedDrift));
+    return Task.CompletedTask;
+}
+
+static Task NewControlledCanStartAutomaticCertification()
+{
+    var certification = new CertificationDecisionEngine().Evaluate(
+        NewControlledCertificationRequest(qualifiedRelease: true));
+    Equal(CertificationDecision.Automatic, certification.Decision);
+    Equal(CertificationOrigin.QualifiedRelease, certification.Origin);
+    Equal(CertificationDecisionReasons.QualifiedInitialReleaseTransition, certification.DecisionReason);
+    True(certification.Evidence.ControlledInitialCertification);
+    True(certification.Evidence.InitialPreMatchesQualified);
+    True(certification.Evidence.ChainOfTrustIntact);
+
+    var state = EvaluateRegistry(
+        RegistryTarget(DatabaseCertificationStatuses.BaselineRequired,
+            lifecycle: DatabaseLifecycles.New),
+        RegistryObservation(CertificationPostHash()));
+    var onboarding = EvaluateOnboarding(
+        DatabaseLifecycles.New,
+        LineageAssessment("NEW_EF", "EF"),
+        state,
+        certification: certification);
+    Equal(StructuralOnboardingState.Certified, onboarding.StructuralState);
+    Equal(OverallOnboardingStatus.Managed, onboarding.OverallOnboardingStatus);
+    True(onboarding.RehearsalEligibility);
+    return Task.CompletedTask;
+}
+
+static Task NewWithoutValidatedInitialPreIsBlocked()
+{
+    var certification = new CertificationDecisionEngine().Evaluate(
+        NewControlledCertificationRequest(qualifiedRelease: true, initialPreValidated: false));
+    Equal(CertificationDecision.Blocked, certification.Decision);
+    Equal(CertificationDecisionReasons.ControlledInitialPreRequired, certification.DecisionReason);
+    True(!certification.ProducesCertifiedState);
+    return Task.CompletedTask;
+}
+
+static Task NewWithoutQualifiedInitialReleaseIsNotManaged()
+{
+    var certification = new CertificationDecisionEngine().Evaluate(
+        NewControlledCertificationRequest(qualifiedRelease: false));
+    Equal(CertificationDecision.Blocked, certification.Decision);
+    Equal(CertificationDecisionReasons.QualifiedReleaseRequired, certification.DecisionReason);
+    var state = EvaluateRegistry(
+        RegistryTarget(DatabaseCertificationStatuses.BaselineRequired,
+            lifecycle: DatabaseLifecycles.New),
+        RegistryObservation(CertificationPostHash()));
+    var onboarding = EvaluateOnboarding(
+        DatabaseLifecycles.New,
+        LineageAssessment("NEW_EF", "EF"),
+        state,
+        certification: certification);
+    Equal(StructuralOnboardingState.Candidate, onboarding.StructuralState);
+    Equal(OverallOnboardingStatus.Pending, onboarding.OverallOnboardingStatus);
+    True(onboarding.Reasons.Contains(DatabaseOnboardingReasons.QualifiedInitialReleaseRequired));
+    True(!onboarding.IsManaged);
+    return Task.CompletedTask;
+}
+
+static Task Cicdv3OnboardingRemainsBlocked()
+{
+    var state = BaselineCandidateState();
+    Equal("3602", state.ApplicationId);
+    Equal("TEST", state.Environment);
+    Equal("CICDV3", state.DatabaseName);
+    var result = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("BLOCKED", "UNKNOWN", "BLOCKED", "BLOCKED_HISTORY_WITHOUT_REPO"),
+        state);
+    Equal(StructuralOnboardingState.Candidate, result.StructuralState);
+    Equal(OverallOnboardingStatus.Blocked, result.OverallOnboardingStatus);
+    True(!result.RehearsalEligibility);
+    True(!result.DeploymentEligibility);
+    True(result.Reasons.Contains(DatabaseOnboardingReasons.LineageBlockedHistoryWithoutRepo));
+    return Task.CompletedTask;
+}
+
+static Task RehearsalRequiresManagedOnboarding()
+{
+    var pending = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("EXISTING_SQL", "SQL"),
+        BaselineCandidateState());
+    var blocked = EvaluateOnboarding(
+        DatabaseLifecycles.Existing,
+        LineageAssessment("BLOCKED", "UNKNOWN", "BLOCKED", "BLOCKED_EF_SEQUENCE_DIVERGED"),
+        CertifiedMatchingState());
+    True(!pending.RehearsalEligibility);
+    True(!blocked.RehearsalEligibility);
+    True(pending.OverallOnboardingStatus != OverallOnboardingStatus.Managed);
+    True(blocked.OverallOnboardingStatus != OverallOnboardingStatus.Managed);
+    return Task.CompletedTask;
+}
+
+static Task OnboardingDoesNotDecideRiskApproval()
+{
+    var exposedTypes = new[]
+    {
+        typeof(DatabaseOnboardingEvaluator),
+        typeof(DatabaseOnboardingRequest),
+        typeof(DatabaseOnboardingResult),
+        typeof(DatabaseLineageAssessment)
+    };
+    var names = exposedTypes.SelectMany(type => type.GetProperties()).Select(property => property.Name).ToArray();
+    True(names.All(name => !name.Contains("Risk", StringComparison.OrdinalIgnoreCase)));
+    True(names.All(name => !name.Contains("Approval", StringComparison.OrdinalIgnoreCase)));
+    True(names.All(name => !name.Contains("AuthorizationDecision", StringComparison.OrdinalIgnoreCase)));
+    Equal(0, typeof(DatabaseOnboardingEvaluator).GetConstructors().Single().GetParameters().Length);
+    return Task.CompletedTask;
+}
+
+static Task BootstrapExistingCreatesFirstCertifiedState()
+{
+    var fixture = FirstCertifiedStateFixture();
+    Equal(CertifiedStateAppendStatus.Appended, fixture.Append.Status);
+    Equal(CertificationId(1), fixture.First.CertificationId);
+    True(fixture.First.PreviousCertificationId is null);
+    True(fixture.First.PreviousCertificationEvidenceHash is null);
+    Equal(CertificationOrigin.BootstrapApproved, fixture.First.CertificationOrigin);
+    Equal(CertificationDecision.HumanApproved, fixture.First.CertificationDecision);
+    Equal(fixture.Schema.Sha256, fixture.First.CanonicalSchemaHash);
+    True(fixture.First.CertificationEvidenceHash.Length == 64);
+    return Task.CompletedTask;
+}
+
+static Task NewControlledCreatesFirstCertifiedState()
+{
+    var pre = EmptyCanonicalSchema();
+    var post = SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: false));
+    var transition = QualifiedStateTransition(pre, post, "new-initial-release-001", controlledInitial: true,
+        sourceKind: "EF");
+    var record = BuildCertifiedState(
+        CertificationId(1), post, transition.Certification,
+        previous: null, qualifiedRelease: transition.QualifiedRelease,
+        lineage: LineageOnboardingState.ConsistentEf);
+    var append = new InMemoryCertifiedStateStore().Append(record);
+    Equal(CertifiedStateAppendStatus.Appended, append.Status);
+    Equal(CertificationOrigin.QualifiedRelease, record.CertificationOrigin);
+    Equal(CertificationDecision.Automatic, record.CertificationDecision);
+    True(record.PreviousCertificationId is null);
+    True(record.QualifiedRelease is not null);
+    True(record.CertificationEvidenceHash.Length == 64);
+    return Task.CompletedTask;
+}
+
+static Task DerivedSecondStateReferencesFirst()
+{
+    var chain = CertifiedStateChainFixture();
+    Equal(chain.First.CertificationId, chain.Second.PreviousCertificationId);
+    Equal(chain.First.CertificationEvidenceHash, chain.Second.PreviousCertificationEvidenceHash);
+    Equal(CertificationOrigin.QualifiedRelease, chain.Second.CertificationOrigin);
+    Equal(CertifiedStateAppendStatus.Appended, chain.SecondAppend.Status);
+    return Task.CompletedTask;
+}
+
+static Task DerivedThirdStateReferencesSecond()
+{
+    var chain = CertifiedStateChainFixture();
+    Equal(chain.Second.CertificationId, chain.Third.PreviousCertificationId);
+    Equal(chain.Second.CertificationEvidenceHash, chain.Third.PreviousCertificationEvidenceHash);
+    Equal(CertifiedStateAppendStatus.Appended, chain.ThirdAppend.Status);
+    Equal(3, chain.Store.ListHistory(DatabaseIdentityFixture()).Count);
+    return Task.CompletedTask;
+}
+
+static Task WrongPreviousCertificationBlocksAppend()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var roguePrevious = BuildBootstrapCertifiedState(CertificationId(9), fixture.Schema);
+    var post = CanonicalWithComment(includeIndex: false);
+    var transition = QualifiedStateTransition(fixture.Schema, post, "release-wrong-previous");
+    var second = BuildCertifiedState(CertificationId(2), post, transition.Certification,
+        roguePrevious, transition.QualifiedRelease);
+    var append = fixture.Store.Append(second);
+    Equal(CertifiedStateAppendStatus.Blocked, append.Status);
+    True(append.Reasons.Contains(CertifiedStateReasons.PreviousCertificationIncorrect));
+    Equal(1, fixture.Store.ListHistory(DatabaseIdentityFixture()).Count);
+    return Task.CompletedTask;
+}
+
+static Task WrongPreviousEvidenceHashBlocksAppend()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var post = CanonicalWithComment(includeIndex: false);
+    var transition = QualifiedStateTransition(fixture.Schema, post, "release-wrong-previous-hash");
+    var second = BuildCertifiedState(CertificationId(2), post, transition.Certification,
+        fixture.First, transition.QualifiedRelease);
+    second = SealCertifiedState(second with { PreviousCertificationEvidenceHash = new string('f', 64) });
+    var append = fixture.Store.Append(second);
+    Equal(CertifiedStateAppendStatus.Blocked, append.Status);
+    True(append.Reasons.Contains(CertifiedStateReasons.PreviousEvidenceHashIncorrect));
+    return Task.CompletedTask;
+}
+
+static Task SemanticEvidenceChangesCertificationHash()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var changed = fixture.First with
+    {
+        LineageEvidence = EvidenceReference.ContentAddressed(
+            "lineage", Hashing.Sha256("changed-lineage-evidence"),
+            fixture.First.LineageEvidence.StorageLocator)
+    };
+    var changedHash = CertifiedStateEvidenceHasher.ComputeHash(changed);
+    NotEqual(fixture.First.CertificationEvidenceHash, changedHash);
+    return Task.CompletedTask;
+}
+
+static Task EvidenceLocatorDoesNotChangeCertificationHash()
+{
+    var chain = CertifiedStateChainFixture();
+    var relocated = RelocateCertifiedStateEvidence(chain.Second, "backend-b");
+    Equal(chain.Second.CertificationEvidenceHash,
+        CertifiedStateEvidenceHasher.ComputeHash(relocated));
+    Equal(chain.Second.CanonicalSchemaEvidenceReference.EvidenceId,
+        relocated.CanonicalSchemaEvidenceReference.EvidenceId);
+    Equal(chain.Second.QualifiedRelease!.ExecutionEvidence.EvidenceSha256,
+        relocated.QualifiedRelease!.ExecutionEvidence.EvidenceSha256);
+    NotEqual(chain.Second.QualifiedRelease.ExecutionEvidence.StorageLocator,
+        relocated.QualifiedRelease.ExecutionEvidence.StorageLocator);
+    return Task.CompletedTask;
+}
+
+static Task EvidenceHashChangeAffectsCertificationIdentity()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var changedEvidenceHash = Hashing.Sha256("different-lineage-evidence-bytes");
+    var changed = fixture.First with
+    {
+        LineageEvidence = EvidenceReference.ContentAddressed(
+            "lineage", changedEvidenceHash, fixture.First.LineageEvidence.StorageLocator)
+    };
+    NotEqual(fixture.First.CertificationEvidenceHash,
+        CertifiedStateEvidenceHasher.ComputeHash(changed));
+
+    var inconsistentIdentity = SealCertifiedState(fixture.First with
+    {
+        LineageEvidence = fixture.First.LineageEvidence with
+        {
+            EvidenceSha256 = changedEvidenceHash
+        }
+    });
+    var append = new InMemoryCertifiedStateStore().Append(inconsistentIdentity);
+    Equal(CertifiedStateAppendStatus.Blocked, append.Status);
+    True(append.Reasons.Contains(CertifiedStateReasons.EvidenceIdInvalid));
+    return Task.CompletedTask;
+}
+
+static Task CanonicalSchemaLocatorDoesNotChangeCertification()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var relocated = fixture.First with
+    {
+        CanonicalSchemaEvidenceReference = fixture.First.CanonicalSchemaEvidenceReference with
+        {
+            StorageLocator = "memory://backend-b/canonical-schema.json"
+        }
+    };
+    Equal(fixture.First.CertificationEvidenceHash,
+        CertifiedStateEvidenceHasher.ComputeHash(relocated));
+    Equal(0, CertifiedStateRecordValidator.Validate(relocated).Count);
+    return Task.CompletedTask;
+}
+
+static Task CanonicalSchemaDifferentBytesAreInvalid()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var differentCanonical = CanonicalWithComment(includeIndex: false);
+    NotEqual(fixture.Schema.Sha256, differentCanonical.Sha256);
+    var changed = fixture.First with { CanonicalSchemaEvidence = differentCanonical };
+    var append = new InMemoryCertifiedStateStore().Append(changed);
+    Equal(CertifiedStateAppendStatus.Blocked, append.Status);
+    True(append.Reasons.Contains(CertifiedStateReasons.CanonicalSchemaHashMismatch));
+    return Task.CompletedTask;
+}
+
+static Task HistoryChainValidatesAfterEvidenceRelocation()
+{
+    var chain = CertifiedStateChainFixture();
+    var relocated = new[] { chain.First, chain.Second, chain.Third }
+        .Select((record, index) => RelocateCertifiedStateEvidence(record, $"backend-{index + 1}"))
+        .ToArray();
+    var store = new InMemoryCertifiedStateStore();
+    foreach (var record in relocated)
+        Equal(CertifiedStateAppendStatus.Appended, store.Append(record).Status);
+    Equal(chain.Third.CertificationEvidenceHash,
+        store.GetCurrent(DatabaseIdentityFixture())!.CertificationEvidenceHash);
+    Equal(chain.First.CertificationEvidenceHash,
+        relocated[1].PreviousCertificationEvidenceHash);
+    Equal(chain.Second.CertificationEvidenceHash,
+        relocated[2].PreviousCertificationEvidenceHash);
+    return Task.CompletedTask;
+}
+
+static Task VolatileRecordMetadataDoesNotChangeHash()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var changed = fixture.First with
+    {
+        CreatedAtUtc = fixture.First.CreatedAtUtc.AddDays(1),
+        RunMetadata = new SortedDictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["runId"] = "different-run"
+        }
+    };
+    Equal(fixture.First.CertificationEvidenceHash, CertifiedStateEvidenceHasher.ComputeHash(changed));
+    return Task.CompletedTask;
+}
+
+static Task HistoricalCertifiedStateIsImmutable()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var tampered = SealCertifiedState(fixture.First with
+    {
+        LineageEvidence = EvidenceReference.ContentAddressed(
+            "lineage", Hashing.Sha256("tampered-lineage-evidence"),
+            fixture.First.LineageEvidence.StorageLocator)
+    });
+    var append = fixture.Store.Append(tampered);
+    Equal(CertifiedStateAppendStatus.Blocked, append.Status);
+    True(append.Reasons.Contains(CertifiedStateReasons.HistoricalRecordImmutable));
+    Equal(fixture.First.CertificationEvidenceHash,
+        fixture.Store.GetById(fixture.First.CertificationId)!.CertificationEvidenceHash);
+
+    var returned = fixture.Store.GetById(fixture.First.CertificationId)!;
+    returned.RunMetadata["runId"] = "caller-mutation";
+    NotEqual("caller-mutation", fixture.Store.GetById(fixture.First.CertificationId)!.RunMetadata["runId"]);
+    return Task.CompletedTask;
+}
+
+static Task DuplicateCertificationIdIsBlocked()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var append = fixture.Store.Append(fixture.First);
+    Equal(CertifiedStateAppendStatus.Blocked, append.Status);
+    True(append.Reasons.Contains(CertifiedStateReasons.DuplicateCertificationId));
+    True(append.Reasons.Contains(CertifiedStateReasons.CertificationRecordAlreadyExists));
+    return Task.CompletedTask;
+}
+
+static Task DifferentDatabaseIdentityBlocksAppend()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var post = CanonicalWithComment(includeIndex: false);
+    var transition = QualifiedStateTransition(fixture.Schema, post, "release-cross-database");
+    var second = BuildCertifiedState(CertificationId(2), post, transition.Certification,
+        fixture.First, transition.QualifiedRelease);
+    second = SealCertifiedState(second with { ApplicationId = "9999" });
+    var append = fixture.Store.Append(second);
+    Equal(CertifiedStateAppendStatus.Blocked, append.Status);
+    True(append.Reasons.Contains(CertifiedStateReasons.DatabaseIdentityMismatch));
+    return Task.CompletedTask;
+}
+
+static Task SecondInitialCertificationIsBlocked()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var secondInitial = BuildBootstrapCertifiedState(CertificationId(8), fixture.Schema);
+    var append = fixture.Store.Append(secondInitial);
+    Equal(CertifiedStateAppendStatus.Blocked, append.Status);
+    True(append.Reasons.Contains(CertifiedStateReasons.InitialCertificationAlreadyExists));
+    return Task.CompletedTask;
+}
+
+static Task CanonicalSchemaMismatchBlocksAppend()
+{
+    var record = BuildBootstrapCertifiedState(CertificationId(1),
+        SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: false)));
+    record = SealCertifiedState(record with { CanonicalSchemaHash = new string('f', 64) });
+    var append = new InMemoryCertifiedStateStore().Append(record);
+    Equal(CertifiedStateAppendStatus.Blocked, append.Status);
+    True(append.Reasons.Contains(CertifiedStateReasons.CanonicalSchemaHashMismatch));
+    return Task.CompletedTask;
+}
+
+static Task DbaPlannedCreatesNormalCertifiedState()
+{
+    var fixture = FirstCertifiedStateFixture();
+    var post = SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: true));
+    var forward = ReleaseScript.FromText("forward", "CREATE INDEX IX_DBA ON dbo.Orden(Fecha);");
+    var rollback = ReleaseScript.FromText("rollback", "DROP INDEX IX_DBA ON dbo.Orden;");
+    var payload = ReleasePayloadBuilder.Build(PlannedDbaRelease(), forward, rollback);
+    var transition = QualifiedStateTransition(fixture.Schema, post, payload.ReleaseId, payload: payload);
+    var second = BuildCertifiedState(CertificationId(2), post, transition.Certification,
+        fixture.First, transition.QualifiedRelease);
+    var append = fixture.Store.Append(second);
+    Equal(CertifiedStateAppendStatus.Appended, append.Status);
+    Equal(CertificationOrigin.QualifiedRelease, second.CertificationOrigin);
+    Equal(DatabaseChangeOrigins.Dba, second.QualifiedRelease!.ChangeOrigin);
+    Equal("SQL", second.QualifiedRelease.SourceKind);
+    True(second.ReconciliationEvidence is null);
+    return Task.CompletedTask;
+}
+
+static Task DbaReconciledCreatesReconciliationCertifiedState()
+{
+    var (certified, observed) = ReconciliationSchemas(oneDifference: true);
+    var store = new InMemoryCertifiedStateStore();
+    var first = BuildBootstrapCertifiedState(CertificationId(1), certified);
+    Equal(CertifiedStateAppendStatus.Appended, store.Append(first).Status);
+    var difference = StructuralDifferenceBuilder.Build(certified, observed).Single();
+    var reconciliation = new ReconciliationEvaluator().Evaluate(
+        ReconciliationContextFixture(CertificationOrigin.BreakGlassReconciliation),
+        certified, observed, [ApproveDba(difference)]);
+    var certification = ReconciliationCertification(certified.Sha256, observed.Sha256);
+    var second = BuildCertifiedState(CertificationId(2), observed, certification, first,
+        reconciliation: reconciliation);
+    var append = store.Append(second);
+    Equal(CertifiedStateAppendStatus.Appended, append.Status);
+    Equal(CertificationOrigin.BreakGlassReconciliation, second.CertificationOrigin);
+    True(second.QualifiedRelease is null);
+    True(second.ReconciliationEvidence is not null);
+    Equal(observed.Sha256, second.CanonicalSchemaEvidence!.Sha256);
+    return Task.CompletedTask;
+}
+
+static Task CertifiedStatePreservesCanonicalSchema()
+{
+    var (certified, observed) = ReconciliationSchemas(oneDifference: true);
+    var store = new InMemoryCertifiedStateStore();
+    var first = BuildBootstrapCertifiedState(CertificationId(1), certified);
+    store.Append(first);
+    var loaded = store.GetById(first.CertificationId)!;
+    Equal(certified.Sha256, loaded.CanonicalSchemaHash);
+    Equal(certified.Json, loaded.CanonicalSchemaEvidence!.Json);
+    True(loaded.CanonicalSchemaEvidenceReference.StorageLocator!
+        .EndsWith("canonical-schema.json", StringComparison.Ordinal));
+    var difference = StructuralDifferenceBuilder.Build(loaded.CanonicalSchemaEvidence, observed).Single();
+    var reconciliation = new ReconciliationEvaluator().Evaluate(
+        ReconciliationContextFixture(CertificationOrigin.BreakGlassReconciliation),
+        loaded.CanonicalSchemaEvidence, observed, [ApproveDba(difference)]);
+    Equal(ReconciliationStatus.ReadyForCertification, reconciliation.ReconciliationStatus);
+    return Task.CompletedTask;
+}
+
+static Task HistoricalStateCanBeLoadedById()
+{
+    var chain = CertifiedStateChainFixture();
+    var historical = chain.Store.GetById(chain.First.CertificationId);
+    True(historical is not null);
+    Equal(chain.First.CanonicalSchemaHash, historical!.CanonicalSchemaHash);
+    Equal(chain.First.CertificationEvidenceHash, historical.CertificationEvidenceHash);
+    return Task.CompletedTask;
+}
+
+static Task CurrentCertifiedStateReturnsLatestRecord()
+{
+    var chain = CertifiedStateChainFixture();
+    var current = chain.Store.GetCurrent(DatabaseIdentityFixture());
+    True(current is not null);
+    Equal(chain.Third.CertificationId, current!.CertificationId);
+    Equal(chain.Third.CanonicalSchemaHash, current.CanonicalSchemaHash);
+    return Task.CompletedTask;
+}
+
+static Task RegistryAndCertifiedStateStoreAreSeparated()
+{
+    var registry = RegistryDocument(RegistryTarget(
+        DatabaseCertificationStatuses.BaselineRequired));
+    var before = JsonSerializer.Serialize(registry, JsonDefaults.Compact);
+    var fixture = FirstCertifiedStateFixture();
+    var after = JsonSerializer.Serialize(registry, JsonDefaults.Compact);
+    Equal(before, after);
+    True(typeof(DatabaseRegistryDocument).GetProperty("History") is null);
+    True(typeof(DatabaseTarget).GetProperty("CertificationHistory") is null);
+    True(typeof(ICertifiedStateStore).GetMethods().Any(method => method.Name == "ListHistory"));
+    True(fixture.Store is ICertifiedStateStore);
+    return Task.CompletedTask;
+}
+
+static Task CertifiedStateRejectsSensitiveMetadata()
+{
+    var blocked = false;
+    try
+    {
+        _ = BuildBootstrapCertifiedState(CertificationId(1),
+            SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: false)),
+            new Dictionary<string, string> { ["secretToken"] = "redacted" });
+    }
+    catch (InvalidOperationException exception)
+    {
+        blocked = exception.Message == "RUN_METADATA_SENSITIVE_KEY_REJECTED";
+    }
+    True(blocked);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolFirstCommit()
+{
+    var fixture = CommitProtocolFixture();
+    var result = fixture.Protocol.Commit(fixture.Request);
+    Equal(CertificationCommitStatus.Committed, result.Status);
+    Equal(CommitOutcomeState.ConfirmedYes, result.RecordPersistence);
+    Equal(CommitOutcomeState.ConfirmedYes, result.PointerAdvance);
+    True(!result.RecoveryRequired);
+    Equal(1, fixture.Store.ListCertifiedHistory(fixture.Request.DatabaseIdentity).Count);
+    Equal(0, fixture.Store.PreparedRecordCount);
+    Equal(1, fixture.Store.ReceiptCount);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolValidSuccessor()
+{
+    var fixture = CommitProtocolFixture();
+    Equal(CertificationCommitStatus.Committed, fixture.Protocol.Commit(fixture.Request).Status);
+    var successor = SuccessorCommitRequest(fixture.Request.Candidate, fixture.Store.GetCurrentPointer(
+        fixture.Request.DatabaseIdentity)!, 2, "operation-002", "qualified-release-commit-002");
+    Equal(CertificationCommitStatus.Committed, fixture.Protocol.Commit(successor).Status);
+    Equal(2, fixture.Store.ListCertifiedHistory(successor.DatabaseIdentity).Count);
+    Equal(successor.Candidate.CertificationId,
+        fixture.Store.GetCurrentPointer(successor.DatabaseIdentity)!.CertificationId);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolIdempotentReplay()
+{
+    var fixture = CommitProtocolFixture();
+    Equal(CertificationCommitStatus.Committed, fixture.Protocol.Commit(fixture.Request).Status);
+    var replayRequest = CopyCommitRequest(fixture.Request,
+        evidence: fixture.Request.EvidenceReferences.Reverse().ToArray());
+    Equal(CertificationCommitProtocol.ComputeFingerprint(fixture.Request),
+        CertificationCommitProtocol.ComputeFingerprint(replayRequest));
+    var replay = fixture.Protocol.Commit(replayRequest);
+    Equal(CertificationCommitStatus.IdempotentReplay, replay.Status);
+    Equal(1, fixture.Store.ListCertifiedHistory(fixture.Request.DatabaseIdentity).Count);
+    Equal(1, fixture.Store.ReceiptCount);
+    return Task.CompletedTask;
+}
+
+static async Task CommitProtocolConcurrentCandidates()
+{
+    var store = new InMemoryCertificationCommitStore();
+    using var barrier = new Barrier(2);
+    var injector = new CommitBarrierFaultInjector(barrier);
+    var first = CommitProtocolRequest(1, "concurrent-operation-a", "concurrent-correlation-a");
+    var second = CommitProtocolRequest(2, "concurrent-operation-b", "concurrent-correlation-b");
+    var protocolA = new CertificationCommitProtocol(store, injector);
+    var protocolB = new CertificationCommitProtocol(store, injector);
+    var results = await Task.WhenAll(Task.Run(() => protocolA.Commit(first)),
+        Task.Run(() => protocolB.Commit(second)));
+    Equal(1, results.Count(result => result.Status == CertificationCommitStatus.Committed));
+    Equal(1, results.Count(result => result.Status == CertificationCommitStatus.ConcurrencyConflict));
+    var winner = results.Single(result => result.Status == CertificationCommitStatus.Committed);
+    var loser = results.Single(result => result.Status == CertificationCommitStatus.ConcurrencyConflict);
+    Equal(1, store.ListCertifiedHistory(first.DatabaseIdentity).Count);
+    Equal(1, store.PreparedRecordCount);
+    Equal(2, store.ReceiptCount);
+    Equal(CertificationCommitReceiptStatus.Committed, store.GetReceipt(winner.OperationId)!.Status);
+    Equal(CertificationCommitReceiptStatus.Prepared, store.GetReceipt(loser.OperationId)!.Status);
+    Equal(winner.CertificationId, store.GetCurrentPointer(first.DatabaseIdentity)!.CertificationId);
+    True(store.ListCertifiedHistory(first.DatabaseIdentity)
+        .All(record => record.CertificationId != loser.CertificationId));
+    True(store.GetCertifiedById(loser.CertificationId) is null);
+    var winnerRequest = winner.OperationId == first.OperationId ? first : second;
+    var loserRequest = loser.OperationId == first.OperationId ? first : second;
+    Equal(CertificationCommitStatus.IdempotentReplay,
+        new CertificationCommitProtocol(store).Commit(winnerRequest).Status);
+    Equal(CertificationCommitStatus.ConcurrencyConflict,
+        new CertificationCommitProtocol(store).Commit(loserRequest).Status);
+    Equal(1, store.ListCertifiedHistory(first.DatabaseIdentity).Count);
+}
+
+static Task CommitProtocolStalePredecessor()
+{
+    var fixture = CommitProtocolFixture();
+    fixture.Protocol.Commit(fixture.Request);
+    var stale = SuccessorCommitRequest(fixture.Request.Candidate,
+        new CertificationPointer(fixture.Request.DatabaseIdentity, fixture.Request.Candidate.CertificationId,
+            fixture.Request.Candidate.CertificationEvidenceHash, 99), 2, "stale-operation", "stale-release");
+    var result = fixture.Protocol.Commit(stale);
+    Equal(CertificationCommitStatus.PredecessorMismatch, result.Status);
+    AssertCommitCounts(fixture.Store, 1, 0, 1, fixture.Request.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolAlteredEvidence()
+{
+    var fixture = CommitProtocolFixture();
+    var altered = fixture.Request.Candidate with
+    {
+        LineageEvidence = fixture.Request.Candidate.LineageEvidence with
+            { EvidenceSha256 = new string('f', 64) }
+    };
+    var request = CopyCommitRequest(fixture.Request, candidate: altered,
+        evidence: CertificationCommitProtocol.CollectEvidence(altered));
+    var result = fixture.Protocol.Commit(request);
+    Equal(CertificationCommitStatus.EvidenceInconsistent, result.Status);
+    AssertCommitCounts(fixture.Store, 0, 0, 0, request.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolInvalidQualification()
+{
+    var fixture = CommitProtocolFixture();
+    var blocked = BlockedCertification(fixture.Request.Certification,
+        CertificationDecisionReasons.ReleaseQualificationGateNotPassed);
+    var result = fixture.Protocol.Commit(CopyCommitRequest(fixture.Request, certification: blocked));
+    Equal(CertificationCommitStatus.QualificationInvalid, result.Status);
+    AssertCommitCounts(fixture.Store, 0, 0, 0, fixture.Request.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolInsufficientApproval()
+{
+    var fixture = CommitProtocolFixture();
+    var blocked = BlockedCertification(fixture.Request.Certification,
+        CertificationDecisionReasons.RequiredApproverNotSatisfied);
+    var result = fixture.Protocol.Commit(CopyCommitRequest(fixture.Request, certification: blocked));
+    Equal(CertificationCommitStatus.ApprovalInsufficient, result.Status);
+    AssertCommitCounts(fixture.Store, 0, 0, 0, fixture.Request.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolFailureBeforeRecord()
+{
+    var store = new InMemoryCertificationCommitStore();
+    var request = CommitProtocolRequest();
+    var protocol = new CertificationCommitProtocol(store,
+        new InMemoryCertificationCommitFaultInjector(CertificationCommitFaultPoint.BeforeRecordPersistence));
+    var failed = protocol.Commit(request);
+    Equal(CertificationCommitStatus.FailedBeforeRecord, failed.Status);
+    Equal(CommitOutcomeState.ConfirmedNo, failed.RecordPersistence);
+    Equal(CommitOutcomeState.ConfirmedNo, failed.PointerAdvance);
+    AssertCommitCounts(store, 0, 0, 0, request.DatabaseIdentity);
+    var result = protocol.Commit(request);
+    Equal(CertificationCommitStatus.Committed, result.Status);
+    AssertCommitCounts(store, 1, 0, 1, request.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolFailureBeforePointer()
+{
+    var store = new InMemoryCertificationCommitStore();
+    var request = CommitProtocolRequest();
+    var protocol = new CertificationCommitProtocol(store,
+        new InMemoryCertificationCommitFaultInjector(
+            CertificationCommitFaultPoint.AfterRecordPersistenceBeforeCas));
+    var result = protocol.Commit(request);
+    Equal(CertificationCommitStatus.RecordPersistedPointerPending, result.Status);
+    Equal(CommitOutcomeState.ConfirmedYes, result.RecordPersistence);
+    Equal(CommitOutcomeState.ConfirmedNo, result.PointerAdvance);
+    AssertCommitCounts(store, 0, 1, 1, request.DatabaseIdentity);
+    True(store.GetCurrentPointer(request.DatabaseIdentity) is null);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolPartialFailureRetry()
+{
+    var store = new InMemoryCertificationCommitStore();
+    var request = CommitProtocolRequest();
+    var first = new CertificationCommitProtocol(store,
+        new InMemoryCertificationCommitFaultInjector(
+            CertificationCommitFaultPoint.AfterRecordPersistenceBeforeCas)).Commit(request);
+    Equal(CertificationCommitStatus.RecordPersistedPointerPending, first.Status);
+    var recovered = new CertificationCommitProtocol(store).Commit(request);
+    Equal(CertificationCommitStatus.RecoveredAndCommitted, recovered.Status);
+    AssertCommitCounts(store, 1, 0, 1, request.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolLostConfirmation()
+{
+    var store = new InMemoryCertificationCommitStore();
+    var request = CommitProtocolRequest();
+    var first = new CertificationCommitProtocol(store,
+        new InMemoryCertificationCommitFaultInjector(
+            CertificationCommitFaultPoint.AfterCasBeforeConfirmation)).Commit(request);
+    Equal(CertificationCommitStatus.IndeterminateFailure, first.Status);
+    Equal(CommitOutcomeState.ConfirmedYes, first.RecordPersistence);
+    Equal(CommitOutcomeState.ConfirmedYes, first.PointerAdvance);
+    True(first.RecoveryRequired);
+    var recovered = new CertificationCommitProtocol(store).Commit(request);
+    Equal(CertificationCommitStatus.RecoveredAndCommitted, recovered.Status);
+    AssertCommitCounts(store, 1, 0, 1, request.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolChainOrder()
+{
+    var fixture = CommitProtocolFixture();
+    fixture.Protocol.Commit(fixture.Request);
+    var second = SuccessorCommitRequest(fixture.Request.Candidate,
+        fixture.Store.GetCurrentPointer(fixture.Request.DatabaseIdentity)!, 2, "chain-operation-2", "chain-release-2");
+    fixture.Protocol.Commit(second);
+    var third = SuccessorCommitRequest(second.Candidate,
+        fixture.Store.GetCurrentPointer(second.DatabaseIdentity)!, 3, "chain-operation-3", "chain-release-3");
+    fixture.Protocol.Commit(third);
+    var history = fixture.Store.ListCertifiedHistory(third.DatabaseIdentity);
+    Equal(3, history.Count);
+    Equal(history[0].CertificationId, history[1].PreviousCertificationId);
+    Equal(history[1].CertificationId, history[2].PreviousCertificationId);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolPreservesCertifiedHistory()
+{
+    var fixture = CommitProtocolFixture();
+    fixture.Protocol.Commit(fixture.Request);
+    var returned = fixture.Store.ListCertifiedHistory(fixture.Request.DatabaseIdentity)[0];
+    returned.RunMetadata["runId"] = "caller-change";
+    NotEqual("caller-change", fixture.Store.ListCertifiedHistory(fixture.Request.DatabaseIdentity)[0]
+        .RunMetadata["runId"]);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolOrphanOutsideHistory()
+{
+    var store = new InMemoryCertificationCommitStore();
+    var request = CommitProtocolRequest();
+    var result = new CertificationCommitProtocol(store,
+        new InMemoryCertificationCommitFaultInjector(
+            CertificationCommitFaultPoint.AfterRecordPersistenceBeforeCas)).Commit(request);
+    Equal(CertificationCommitStatus.RecordPersistedPointerPending, result.Status);
+    Equal(0, store.ListCertifiedHistory(request.DatabaseIdentity).Count);
+    Equal(1, store.PreparedRecordCount);
+    True(store.GetCertifiedById(request.Candidate.CertificationId) is null);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolOrphanCannotBePredecessor()
+{
+    var store = new InMemoryCertificationCommitStore();
+    var orphan = CommitProtocolRequest();
+    new CertificationCommitProtocol(store,
+        new InMemoryCertificationCommitFaultInjector(
+            CertificationCommitFaultPoint.AfterRecordPersistenceBeforeCas)).Commit(orphan);
+    var fakePointer = new CertificationPointer(orphan.DatabaseIdentity, orphan.Candidate.CertificationId,
+        orphan.Candidate.CertificationEvidenceHash, 1);
+    var successor = SuccessorCommitRequest(orphan.Candidate, fakePointer, 2,
+        "orphan-successor-operation", "orphan-successor-release");
+    Equal(CertificationCommitStatus.PredecessorMismatch,
+        new CertificationCommitProtocol(store).Commit(successor).Status);
+    AssertCommitCounts(store, 0, 1, 1, orphan.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolEvidenceCannotBeReplaced()
+{
+    var inner = new InMemoryCertificationCommitStore();
+    var request = CommitProtocolRequest();
+    var store = new EvidenceConflictCommitStore(inner);
+    var result = new CertificationCommitProtocol(store).Commit(request);
+    Equal(CertificationCommitStatus.IntegrityViolation, result.Status);
+    Equal(0, store.MutationCalls);
+    AssertCommitCounts(inner, 0, 0, 0, request.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolOperationConflict()
+{
+    var store = new InMemoryCertificationCommitStore();
+    var first = CommitProtocolRequest();
+    new CertificationCommitProtocol(store,
+        new InMemoryCertificationCommitFaultInjector(
+            CertificationCommitFaultPoint.AfterRecordPersistenceBeforeCas)).Commit(first);
+    var different = CommitProtocolRequest(2, first.OperationId, "different-correlation");
+    var result = new CertificationCommitProtocol(store).Commit(different);
+    Equal(CertificationCommitStatus.IdempotencyConflict, result.Status);
+    AssertCommitCounts(store, 0, 1, 1, first.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolPreparedRecordCannotBeReplaced()
+{
+    var store = new InMemoryCertificationCommitStore();
+    var first = CommitProtocolRequest();
+    new CertificationCommitProtocol(store,
+        new InMemoryCertificationCommitFaultInjector(
+            CertificationCommitFaultPoint.AfterRecordPersistenceBeforeCas)).Commit(first);
+
+    var changedSchema = CanonicalWithComment(includeIndex: true);
+    var changedCertification = new CertificationDecisionEngine().Evaluate(new CertificationRequest
+    {
+        Origin = CertificationOrigin.BootstrapApproved,
+        DatabaseLifecycle = DatabaseLifecycles.Existing,
+        ObservedPreSchemaHash = changedSchema.Sha256,
+        DriftStatus = DatabaseDriftStatuses.BaselineRequired,
+        LineageStatus = "CONSISTENT",
+        CertificationApprovalGranted = CertificationApprovalRequirement.Human,
+        CertificationApprovalReference = "replacement-correlation"
+    });
+    var changedRecord = BuildCertifiedState(first.Candidate.CertificationId,
+        changedSchema, changedCertification);
+    var replacement = NewCommitRequest("replacement-operation", "replacement-correlation",
+        changedRecord, changedCertification, null);
+    var result = new CertificationCommitProtocol(store).Commit(replacement);
+    Equal(CertificationCommitStatus.IntegrityViolation, result.Status);
+    AssertCommitCounts(store, 0, 1, 1, first.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolDefensiveClones()
+{
+    var fixture = CommitProtocolFixture();
+    fixture.Protocol.Commit(fixture.Request);
+    var pointer = fixture.Store.GetCurrentPointer(fixture.Request.DatabaseIdentity)!;
+    var record = fixture.Store.GetCertifiedById(fixture.Request.Candidate.CertificationId)!;
+    record.RunMetadata["runId"] = "mutated";
+    var receipt = fixture.Store.GetReceipt(fixture.Request.OperationId)!;
+    True(pointer.DatabaseIdentity is not null && receipt.DatabaseIdentity is not null);
+    NotEqual("mutated", fixture.Store.GetCertifiedById(record.CertificationId)!.RunMetadata["runId"]);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolExistingStoreCompatibility()
+{
+    var existing = new InMemoryCertifiedStateStore();
+    var record = BuildBootstrapCertifiedState(CertificationId(1),
+        SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: false)));
+    Equal(CertifiedStateAppendStatus.Appended, existing.Append(record).Status);
+    Equal(record.CertificationId, existing.GetCurrent(record.DatabaseIdentity)!.CertificationId);
+    Equal(1, existing.ListHistory(record.DatabaseIdentity).Count);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolValidationPrecedesEvidenceConflict()
+{
+    var store = new InMemoryCertificationCommitStore();
+    var known = CommitProtocolRequest();
+    new CertificationCommitProtocol(store,
+        new InMemoryCertificationCommitFaultInjector(
+            CertificationCommitFaultPoint.AfterRecordPersistenceBeforeCas)).Commit(known);
+    var invalid = CommitProtocolRequest(2, "invalid operation with spaces", "invalid-correlation");
+    var evidence = invalid.EvidenceReferences.ToArray();
+    evidence[0] = evidence[0] with
+        { EvidenceId = known.EvidenceReferences[0].EvidenceId, EvidenceSha256 = new string('d', 64) };
+    var result = new CertificationCommitProtocol(store).Commit(
+        CopyCommitRequest(invalid, evidence: evidence));
+    Equal(CertificationCommitStatus.ValidationFailed, result.Status);
+    AssertCommitCounts(store, 0, 1, 1, known.DatabaseIdentity);
+    True(store.GetCurrentPointer(known.DatabaseIdentity) is null);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolReceiptCertificationIdIntegrity() => AssertContradictoryReceipt(
+    receipt => receipt with { CertificationId = CertificationId(9) }, committed: true);
+
+static Task CommitProtocolReceiptHashIntegrity() => AssertContradictoryReceipt(
+    receipt => receipt with { CertificationEvidenceHash = new string('f', 64) }, committed: true);
+
+static Task CommitProtocolReceiptIdentityIntegrity() => AssertContradictoryReceipt(
+    receipt => receipt with { DatabaseIdentity = new DatabaseIdentity("9999", "TEST", "OtherDb") },
+    committed: true);
+
+static Task CommitProtocolPreparedReceiptIntegrity() => AssertContradictoryReceipt(
+    receipt => receipt with { CertificationId = CertificationId(9) }, committed: false);
+
+static Task AssertContradictoryReceipt(
+    Func<CertificationCommitReceipt, CertificationCommitReceipt> corrupt,
+    bool committed)
+{
+    var inner = new InMemoryCertificationCommitStore();
+    var request = CommitProtocolRequest();
+    if (committed)
+        Equal(CertificationCommitStatus.Committed,
+            new CertificationCommitProtocol(inner).Commit(request).Status);
+    else
+        Equal(CertificationCommitStatus.RecordPersistedPointerPending,
+            new CertificationCommitProtocol(inner,
+                new InMemoryCertificationCommitFaultInjector(
+                    CertificationCommitFaultPoint.AfterRecordPersistenceBeforeCas)).Commit(request).Status);
+    var beforeCertified = inner.ListCertifiedHistory(request.DatabaseIdentity).Count;
+    var beforePrepared = inner.PreparedRecordCount;
+    var beforeReceipts = inner.ReceiptCount;
+    var store = new ReceiptOverrideCommitStore(inner, corrupt);
+    var result = new CertificationCommitProtocol(store).Commit(request);
+    Equal(CertificationCommitStatus.IntegrityViolation, result.Status);
+    Equal(0, store.MutationCalls);
+    AssertCommitCounts(inner, beforeCertified, beforePrepared, beforeReceipts, request.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolBeforeCasFailureState()
+{
+    var store = new InMemoryCertificationCommitStore();
+    var request = CommitProtocolRequest();
+    var result = new CertificationCommitProtocol(store,
+        new InMemoryCertificationCommitFaultInjector(
+            CertificationCommitFaultPoint.BeforeCompareAndSwap)).Commit(request);
+    Equal(CertificationCommitStatus.IndeterminateFailure, result.Status);
+    Equal(CommitOutcomeState.ConfirmedYes, result.RecordPersistence);
+    Equal(CommitOutcomeState.ConfirmedNo, result.PointerAdvance);
+    True(result.RecoveryRequired);
+    AssertCommitCounts(store, 0, 1, 1, request.DatabaseIdentity);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolCasExceptionState()
+{
+    var inner = new InMemoryCertificationCommitStore();
+    var request = CommitProtocolRequest();
+    var throwing = new ThrowAfterCasCommitStore(inner, "password=must-not-escape");
+    var result = new CertificationCommitProtocol(throwing).Commit(request);
+    Equal(CertificationCommitStatus.IndeterminateFailure, result.Status);
+    Equal(CommitOutcomeState.ConfirmedYes, result.RecordPersistence);
+    Equal(CommitOutcomeState.Unknown, result.PointerAdvance);
+    True(result.RecoveryRequired);
+    True(result.Reasons.Contains(nameof(InvalidOperationException)));
+    True(result.Reasons.All(reason => !reason.Contains("must-not-escape", StringComparison.Ordinal)));
+    Equal(1, inner.ListCertifiedHistory(request.DatabaseIdentity).Count);
+    var retry = new CertificationCommitProtocol(inner).Commit(request);
+    Equal(CertificationCommitStatus.RecoveredAndCommitted, retry.Status);
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolLegitimateSensitiveSubstring()
+{
+    var fixture = CommitProtocolFixture();
+    var request = CopyCommitRequest(fixture.Request,
+        authorization: fixture.Request.Authorization with { ActorId = "tokenization-service" });
+    Equal(CertificationCommitStatus.Committed, fixture.Protocol.Commit(request).Status);
+    var receiptJson = JsonSerializer.Serialize(fixture.Store.GetReceipt(request.OperationId), JsonDefaults.Compact);
+    var resultJson = JsonSerializer.Serialize(fixture.Protocol.Commit(request), JsonDefaults.Compact);
+    True(!receiptJson.Contains("credential", StringComparison.OrdinalIgnoreCase));
+    True(!resultJson.Contains("password", StringComparison.OrdinalIgnoreCase));
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolFingerprintSemantics()
+{
+    var request = CommitProtocolRequest();
+    var baseline = CertificationCommitProtocol.ComputeFingerprint(request);
+    Equal(baseline, CertificationCommitProtocol.ComputeFingerprint(
+        CopyCommitRequest(request, requestedAtUtc: request.RequestedAtUtc.AddDays(5))));
+    var relocated = RelocateCertifiedStateEvidence(request.Candidate, "other-backend");
+    Equal(baseline, CertificationCommitProtocol.ComputeFingerprint(
+        CopyCommitRequest(request, candidate: relocated,
+            evidence: CertificationCommitProtocol.CollectEvidence(relocated))));
+    Equal(baseline, CertificationCommitProtocol.ComputeFingerprint(
+        CopyCommitRequest(request, evidence: request.EvidenceReferences.Reverse().ToArray())));
+    var upperHashes = request.EvidenceReferences.Select(e => e with
+        { EvidenceSha256 = e.EvidenceSha256.ToUpperInvariant() }).ToArray();
+    Equal(baseline, CertificationCommitProtocol.ComputeFingerprint(
+        CopyCommitRequest(request, evidence: upperHashes)));
+    var changedHash = request.EvidenceReferences.ToArray();
+    changedHash[0] = changedHash[0] with { EvidenceSha256 = new string('a', 64) };
+    NotEqual(baseline, CertificationCommitProtocol.ComputeFingerprint(
+        CopyCommitRequest(request, evidence: changedHash)));
+    NotEqual(baseline, CertificationCommitProtocol.ComputeFingerprint(CopyCommitRequest(request,
+        authorization: request.Authorization with { AuthorityReference = "other-authority" })));
+    NotEqual(baseline, CertificationCommitProtocol.ComputeFingerprint(CopyCommitRequest(request,
+        correlationId: "other-correlation")));
+    return Task.CompletedTask;
+}
+
+static Task CommitProtocolEvidenceIdIsCaseSensitive()
+{
+    var request = CommitProtocolRequest();
+    var changed = request.EvidenceReferences.ToArray();
+    changed[0] = changed[0] with { EvidenceId = changed[0].EvidenceId.ToUpperInvariant() };
+    NotEqual(CertificationCommitProtocol.ComputeFingerprint(request),
+        CertificationCommitProtocol.ComputeFingerprint(CopyCommitRequest(request, evidence: changed)));
+    Equal(CertificationCommitStatus.EvidenceInconsistent,
+        new CertificationCommitProtocol(new InMemoryCertificationCommitStore())
+            .Commit(CopyCommitRequest(request, evidence: changed)).Status);
+    return Task.CompletedTask;
+}
+
+static (InMemoryCertificationCommitStore Store, CertificationCommitProtocol Protocol,
+    CertificationCommitRequest Request) CommitProtocolFixture()
+{
+    var store = new InMemoryCertificationCommitStore();
+    return (store, new CertificationCommitProtocol(store), CommitProtocolRequest());
+}
+
+static CertificationCommitRequest CommitProtocolRequest(
+    int certificationNumber = 1,
+    string operationId = "operation-001",
+    string correlationId = "bootstrap-correlation-001")
+{
+    var schema = certificationNumber == 1
+        ? SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: false))
+        : CanonicalWithComment(includeIndex: certificationNumber % 2 == 0);
+    var certification = new CertificationDecisionEngine().Evaluate(new CertificationRequest
+    {
+        Origin = CertificationOrigin.BootstrapApproved,
+        DatabaseLifecycle = DatabaseLifecycles.Existing,
+        ObservedPreSchemaHash = schema.Sha256,
+        DriftStatus = DatabaseDriftStatuses.BaselineRequired,
+        LineageStatus = "CONSISTENT",
+        CertificationApprovalGranted = CertificationApprovalRequirement.Human,
+        CertificationApprovalReference = correlationId
+    });
+    var record = BuildCertifiedState(CertificationId(certificationNumber), schema, certification);
+    return NewCommitRequest(operationId, correlationId, record, certification, null);
+}
+
+static CertificationCommitRequest SuccessorCommitRequest(
+    CertifiedStateRecord previous,
+    CertificationPointer pointer,
+    int certificationNumber,
+    string operationId,
+    string releaseId)
+{
+    var schema = CanonicalWithComment(includeIndex: certificationNumber % 2 == 0);
+    var transition = QualifiedStateTransition(previous.CanonicalSchemaEvidence!, schema, releaseId);
+    var record = BuildCertifiedState(CertificationId(certificationNumber), schema,
+        transition.Certification, previous, transition.QualifiedRelease);
+    return NewCommitRequest(operationId, releaseId, record, transition.Certification,
+        new ExpectedCertificationPointer(pointer.CertificationId,
+            pointer.CertificationEvidenceHash, pointer.Version));
+}
+
+static CertificationCommitRequest NewCommitRequest(
+    string operationId,
+    string correlationId,
+    CertifiedStateRecord record,
+    CertificationResult certification,
+    ExpectedCertificationPointer? expected) => new()
+{
+    OperationId = operationId,
+    DatabaseIdentity = record.DatabaseIdentity,
+    ExpectedPredecessor = expected,
+    Candidate = record,
+    EvidenceReferences = CertificationCommitProtocol.CollectEvidence(record),
+    ReleaseOrCorrelationId = correlationId,
+    Authorization = new CommitAuthorizationContext("certification-engine", "policy-evaluation",
+        "CERTIFICATION_POLICY_V1", "authority-reference-001"),
+    Certification = certification,
+    RequestedAtUtc = DateTimeOffset.Parse("2026-09-07T12:00:00Z")
+};
+
+static CertificationCommitRequest CopyCommitRequest(
+    CertificationCommitRequest source,
+    CertifiedStateRecord? candidate = null,
+    IReadOnlyList<EvidenceReference>? evidence = null,
+    CertificationResult? certification = null,
+    CommitAuthorizationContext? authorization = null,
+    string? correlationId = null,
+    DateTimeOffset? requestedAtUtc = null) => new()
+{
+    OperationId = source.OperationId,
+    DatabaseIdentity = source.DatabaseIdentity,
+    ExpectedPredecessor = source.ExpectedPredecessor,
+    Candidate = candidate ?? source.Candidate,
+    EvidenceReferences = evidence ?? source.EvidenceReferences,
+    ReleaseOrCorrelationId = correlationId ?? source.ReleaseOrCorrelationId,
+    Authorization = authorization ?? source.Authorization,
+    Certification = certification ?? source.Certification,
+    RequestedAtUtc = requestedAtUtc ?? source.RequestedAtUtc.AddMinutes(1)
+};
+
+static CertificationResult BlockedCertification(CertificationResult source, string reason) => new()
+{
+    Decision = CertificationDecision.Blocked,
+    DecisionReason = reason,
+    Origin = source.Origin,
+    NextCertifiedSchemaHash = null,
+    Evidence = source.Evidence
+};
+
+static void AssertCommitCounts(InMemoryCertificationCommitStore store, int certified, int prepared,
+    int receipts, DatabaseIdentity identity)
+{
+    Equal(certified, store.ListCertifiedHistory(identity).Count);
+    Equal(prepared, store.PreparedRecordCount);
+    Equal(receipts, store.ReceiptCount);
+}
+
+static (InMemoryCertifiedStateStore Store, CertifiedStateRecord First, CanonicalSchema Schema,
+    CertifiedStateAppendResult Append) FirstCertifiedStateFixture()
+{
+    var schema = SchemaCanonicalizer.Canonicalize(BaseSnapshot(includeIndex: false));
+    var first = BuildBootstrapCertifiedState(CertificationId(1), schema);
+    var store = new InMemoryCertifiedStateStore();
+    var append = store.Append(first);
+    return (store, first, schema, append);
+}
+
+static (InMemoryCertifiedStateStore Store, CertifiedStateRecord First, CertifiedStateRecord Second,
+    CertifiedStateRecord Third, CertifiedStateAppendResult SecondAppend,
+    CertifiedStateAppendResult ThirdAppend) CertifiedStateChainFixture()
+{
+    var initial = FirstCertifiedStateFixture();
+    var secondSchema = CanonicalWithComment(includeIndex: false);
+    var secondTransition = QualifiedStateTransition(initial.Schema, secondSchema, "qualified-release-002");
+    var second = BuildCertifiedState(CertificationId(2), secondSchema,
+        secondTransition.Certification, initial.First, secondTransition.QualifiedRelease);
+    var secondAppend = initial.Store.Append(second);
+
+    var thirdSchema = CanonicalWithComment(includeIndex: true);
+    var thirdTransition = QualifiedStateTransition(secondSchema, thirdSchema, "qualified-release-003");
+    var third = BuildCertifiedState(CertificationId(3), thirdSchema,
+        thirdTransition.Certification, second, thirdTransition.QualifiedRelease);
+    var thirdAppend = initial.Store.Append(third);
+    return (initial.Store, initial.First, second, third, secondAppend, thirdAppend);
+}
+
+static CertifiedStateRecord BuildBootstrapCertifiedState(
+    string certificationId,
+    CanonicalSchema schema,
+    IReadOnlyDictionary<string, string>? runMetadata = null)
+{
+    var certification = new CertificationDecisionEngine().Evaluate(new CertificationRequest
+    {
+        Origin = CertificationOrigin.BootstrapApproved,
+        DatabaseLifecycle = DatabaseLifecycles.Existing,
+        ObservedPreSchemaHash = schema.Sha256,
+        DriftStatus = DatabaseDriftStatuses.BaselineRequired,
+        LineageStatus = "CONSISTENT",
+        CertificationApprovalGranted = CertificationApprovalRequirement.Human,
+        CertificationApprovalReference = "CHG-BOOTSTRAP-001"
+    });
+    Equal(CertificationDecision.HumanApproved, certification.Decision);
+    return BuildCertifiedState(certificationId, schema, certification,
+        runMetadata: runMetadata);
+}
+
+static CertifiedStateRecord BuildCertifiedState(
+    string certificationId,
+    CanonicalSchema schema,
+    CertificationResult certification,
+    CertifiedStateRecord? previous = null,
+    QualifiedReleaseCertificationReference? qualifiedRelease = null,
+    ReconciliationResult? reconciliation = null,
+    LineageOnboardingState lineage = LineageOnboardingState.LegacySql,
+    IReadOnlyDictionary<string, string>? runMetadata = null) => CertifiedStateRecordBuilder.Build(
+        new CertifiedStateRecordRequest
+        {
+            CertificationId = certificationId,
+            PreviousCertification = previous,
+            DatabaseIdentity = DatabaseIdentityFixture(),
+            CanonicalSchema = schema,
+            CanonicalSchemaStorageLocator = $"memory://canonical/{certificationId}/canonical-schema.json",
+            Certification = certification,
+            DecisionEvidenceStorageLocator = $"memory://certification/{certificationId}/decision-evidence.json",
+            TransitionEvidenceStorageLocator = $"memory://certification/{certificationId}/transition-evidence.json",
+            RegistryProvenance = RegistryProvenance(),
+            LineageStatus = lineage,
+            LineageEvidenceStorageLocator = $"memory://lineage/{certificationId}/lineage-evidence.json",
+            LineageEvidenceHash = Hashing.Sha256($"lineage|{lineage}|{certificationId}"),
+            Reconciliation = reconciliation,
+            ReconciliationEvidenceStorageLocator = reconciliation is null
+                ? null
+                : $"memory://reconciliation/{reconciliation.Evidence.ReconciliationId}/evidence.json",
+            QualifiedRelease = qualifiedRelease,
+            CreatedAtUtc = DateTimeOffset.Parse("2026-08-26T15:00:00Z"),
+            RunMetadata = runMetadata ?? new SortedDictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["runId"] = "certification-fixture",
+                ["runAttempt"] = "1"
+            }
+        });
+
+static (CertificationResult Certification,
+    QualifiedReleaseCertificationReference QualifiedRelease) QualifiedStateTransition(
+    CanonicalSchema pre,
+    CanonicalSchema post,
+    string releaseId,
+    bool controlledInitial = false,
+    string sourceKind = "SQL",
+    ReleasePayloadMetadata? payload = null)
+{
+    var payloadHash = payload?.PayloadHash ?? Hashing.Sha256($"{releaseId}|payload");
+    var forwardHash = payload?.ForwardHash ?? Hashing.Sha256($"{releaseId}|forward");
+    var rollbackHash = payload?.RollbackHash ?? Hashing.Sha256($"{releaseId}|rollback");
+    var request = new CertificationRequest
+    {
+        Origin = CertificationOrigin.QualifiedRelease,
+        DatabaseLifecycle = controlledInitial ? DatabaseLifecycles.New : DatabaseLifecycles.Existing,
+        InitialPreStateValidated = controlledInitial,
+        CertifiedPreSchemaHash = controlledInitial ? null : pre.Sha256,
+        ObservedPreSchemaHash = pre.Sha256,
+        QualifiedPreSchemaHash = pre.Sha256,
+        QualifiedPostSchemaHash = post.Sha256,
+        ObservedPostSchemaHash = post.Sha256,
+        ReleaseId = releaseId,
+        QualifiedPayloadHash = payloadHash,
+        ExecutedPayloadHash = payloadHash,
+        QualifiedForwardHash = forwardHash,
+        ExecutedForwardHash = forwardHash,
+        QualifiedRollbackHash = rollbackHash,
+        VerifiedRollbackHash = rollbackHash,
+        QualifiedRelease = true,
+        ExecutionSucceeded = true,
+        DriftStatus = DatabaseDriftStatuses.Match,
+        LineageStatus = "CONSISTENT",
+        DeploymentAuthorization = new DeploymentAuthorizationEvidence
+        {
+            PolicyId = "DEPLOYMENT_POLICY_V1",
+            Risk = RiskLevel.Low,
+            Requirement = DeploymentAuthorizationRequirement.AutomaticPolicy,
+            Decision = DeploymentAuthorizationDecision.Authorized,
+            ReleaseQualificationGatePassed = true,
+            AnalysisConfidence = AnalysisConfidence.Complete,
+            SchemaRollbackValidity = SchemaRollbackValidity.Valid,
+            DataRollbackValidity = DataRollbackValidity.NotApplicable,
+            RollbackCapability = RollbackCapability.FullReversible
+        }
+    };
+    var certification = new CertificationDecisionEngine().Evaluate(request);
+    Equal(CertificationDecision.Automatic, certification.Decision);
+
+    var qualificationReference = $"memory://qualification/{releaseId}/attestation.json";
+    var authorizationReference = $"memory://authorization/{releaseId}/authorization.json";
+    var executionReference = $"memory://execution/{releaseId}/execution.json";
+    var qualificationHash = Hashing.Sha256($"{releaseId}|qualification");
+    var authorizationHash = Hashing.Sha256($"{releaseId}|authorization");
+    var executionHash = Hashing.Sha256($"{releaseId}|execution");
+    var qualified = payload is null
+        ? new QualifiedReleaseCertificationReference
+        {
+            ReleaseId = releaseId,
+            PayloadHash = payloadHash,
+            ForwardHash = forwardHash,
+            RollbackHash = rollbackHash,
+            SourceKind = sourceKind,
+            ChangeOrigin = DatabaseChangeOrigins.Application,
+            ChangePath = DatabaseChangePaths.PlannedRelease,
+            QualificationEvidence = EvidenceReference.ContentAddressed(
+                "qualified-release", qualificationHash, qualificationReference),
+            DeploymentAuthorizationEvidence = EvidenceReference.ContentAddressed(
+                "deployment-authorization", authorizationHash, authorizationReference),
+            ExecutionEvidence = EvidenceReference.ContentAddressed(
+                "execution", executionHash, executionReference),
+            ObservedPostSchemaHash = post.Sha256
+        }
+        : QualifiedReleaseCertificationReference.FromPayload(
+            payload,
+            qualificationReference,
+            qualificationHash,
+            authorizationReference,
+            authorizationHash,
+            executionReference,
+            executionHash,
+            post.Sha256);
+    return (certification, qualified);
+}
+
+static CertifiedStateRecord RelocateCertifiedStateEvidence(
+    CertifiedStateRecord record,
+    string backend)
+{
+    static EvidenceReference Move(EvidenceReference evidence, string backend, string name) =>
+        evidence with { StorageLocator = $"memory://{backend}/{name}.json" };
+
+    var qualified = record.QualifiedRelease is null
+        ? null
+        : record.QualifiedRelease with
+        {
+            QualificationEvidence = Move(record.QualifiedRelease.QualificationEvidence,
+                backend, "qualified-release"),
+            DeploymentAuthorizationEvidence = Move(
+                record.QualifiedRelease.DeploymentAuthorizationEvidence,
+                backend, "deployment-authorization"),
+            ExecutionEvidence = Move(record.QualifiedRelease.ExecutionEvidence,
+                backend, "execution")
+        };
+    return record with
+    {
+        CanonicalSchemaEvidenceReference = Move(record.CanonicalSchemaEvidenceReference,
+            backend, "canonical-schema"),
+        DecisionEvidence = Move(record.DecisionEvidence, backend, "decision"),
+        TransitionEvidence = Move(record.TransitionEvidence, backend, "transition"),
+        LineageEvidence = Move(record.LineageEvidence, backend, "lineage"),
+        ReconciliationEvidence = record.ReconciliationEvidence is null
+            ? null
+            : Move(record.ReconciliationEvidence, backend, "reconciliation"),
+        QualifiedRelease = qualified
+    };
+}
+
+static CertifiedStateRecord SealCertifiedState(CertifiedStateRecord record) => record with
+{
+    CertificationEvidenceHash = CertifiedStateEvidenceHasher.ComputeHash(record)
+};
+
+static DatabaseIdentity DatabaseIdentityFixture() => new("3602", "TEST", "CICDV3");
+
+static string CertificationId(int sequence) =>
+    $"00000000-0000-4000-8000-{sequence:000000000000}";
+
+static CanonicalSchema EmptyCanonicalSchema() => SchemaCanonicalizer.Canonicalize(new SchemaSnapshot
+{
+    Objects = [],
+    ImpactMetrics = []
+});
+
+static CanonicalSchema CanonicalWithComment(bool includeIndex) =>
+    SchemaCanonicalizer.Canonicalize(AddCommentSnapshot(includeIndex, "nvarchar(50)"));
+
+static RiskAnalysisReport AnalyzeRisk(SchemaSnapshot snapshot, string forward, string rollback) =>
+    new RiskEngine().Evaluate(AnalyzePair(snapshot, forward, rollback), snapshot);
+
+static async Task<RehearsalResult> RunPost1IndexScenario()
+{
+    var pre = BaseSnapshot(includeIndex: false);
+    var post = BaseSnapshot(includeIndex: true);
+    var database = new FakeRehearsalDatabase(pre, post, post);
+    return await new RehearsalEngine().QualifyAsync(TestRelease(), ConsistentDiscovery(),
+        ReleaseScript.FromText("forward", "CREATE INDEX IX_Orden_Fecha ON dbo.Orden(Fecha);"),
+        ReleaseScript.FromText("rollback", "ALTER TABLE dbo.Orden ALTER COLUMN Fecha datetime2 NULL;"), database);
+}
+
+static RiskAnalysisReport RiskFor(ScriptAnalysis forward, ScriptAnalysis rollback) =>
+    new RiskEngine().Evaluate(new DependencyAnalysisReport { Forward = forward, Rollback = rollback }, BaseSnapshot(includeIndex: false));
+
+static DependencyAnalysisReport AnalyzePair(SchemaSnapshot snapshot, string forward, string rollback)
+{
+    var analyzer = new SqlScriptAnalyzer();
+    return new DependencyAnalysisReport
+    {
+        Forward = analyzer.Analyze("forward", forward, snapshot),
+        Rollback = analyzer.Analyze("rollback", rollback, snapshot)
+    };
+}
+
+static ScriptAnalysis SelectAnalysis(SchemaSnapshot snapshot) =>
+    new SqlScriptAnalyzer().Analyze("rollback", "SELECT 1;", snapshot);
+
+static RehearsalResult AnalyzedResult(SchemaSnapshot snapshot) => new()
+{
+    QualificationStatus = "ANALYZED_NOT_REHEARSED",
+    SchemaRollbackValidity = SchemaRollbackValidity.NotTested,
+    DataRollbackValidity = DataRollbackValidity.NotApplicable,
+    RollbackCapability = RollbackCapability.Unknown,
+    ForwardCertified = false,
+    RollbackCertified = false,
+    ReapplyCertified = false,
+    Pre = SchemaCanonicalizer.Canonicalize(snapshot)
+};
+
+static CertificationRequest DerivedCertificationRequest(
+    bool includeCertifiedPre = true,
+    string? observedPreSchemaHash = null,
+    string? observedPostSchemaHash = null,
+    string? executedPayloadHash = null,
+    RiskLevel finalRisk = RiskLevel.Low,
+    SchemaRollbackValidity schemaRollbackValidity = SchemaRollbackValidity.Valid,
+    RollbackCapability rollbackCapability = RollbackCapability.FullReversible,
+    bool outOfBandChangeDetected = false,
+    DeploymentAuthorizationRequirement? authorizationRequirement = null,
+    DeploymentAuthorizationDecision authorizationDecision = DeploymentAuthorizationDecision.Authorized,
+    bool includeAuthorizationReference = true,
+    bool releaseQualificationGatePassed = true)
+{
+    var requirement = authorizationRequirement
+        ?? (finalRisk == RiskLevel.Low
+            ? DeploymentAuthorizationRequirement.AutomaticPolicy
+            : DeploymentAuthorizationRequirement.DbaApproval);
+    return new CertificationRequest
+    {
+        Origin = CertificationOrigin.QualifiedRelease,
+        CertifiedPreSchemaHash = includeCertifiedPre ? CertificationPreHash() : null,
+        ObservedPreSchemaHash = observedPreSchemaHash ?? CertificationPreHash(),
+        QualifiedPreSchemaHash = CertificationPreHash(),
+        QualifiedPostSchemaHash = CertificationPostHash(),
+        ObservedPostSchemaHash = observedPostSchemaHash ?? CertificationPostHash(),
+        ReleaseId = "qualified-release-001",
+        QualifiedPayloadHash = CertificationPayloadHash(),
+        ExecutedPayloadHash = executedPayloadHash ?? CertificationPayloadHash(),
+        QualifiedForwardHash = CertificationForwardHash(),
+        ExecutedForwardHash = CertificationForwardHash(),
+        QualifiedRollbackHash = CertificationRollbackHash(),
+        VerifiedRollbackHash = CertificationRollbackHash(),
+        QualifiedRelease = true,
+        ExecutionSucceeded = true,
+        DriftStatus = DatabaseDriftStatuses.Match,
+        LineageStatus = "CONSISTENT",
+        OutOfBandChangeDetected = outOfBandChangeDetected,
+        DeploymentAuthorization = new DeploymentAuthorizationEvidence
+        {
+            PolicyId = "DEPLOYMENT_POLICY_V1",
+            Risk = finalRisk,
+            Requirement = requirement,
+            Decision = authorizationDecision,
+            AuthorizationReference = requirement == DeploymentAuthorizationRequirement.AutomaticPolicy
+                || !includeAuthorizationReference
+                ? null
+                : "CHG-FIXTURE-001",
+            ReleaseQualificationGatePassed = releaseQualificationGatePassed,
+            AnalysisConfidence = AnalysisConfidence.Complete,
+            SchemaRollbackValidity = schemaRollbackValidity,
+            DataRollbackValidity = DataRollbackValidity.NotApplicable,
+            RollbackCapability = rollbackCapability
+        }
+    };
+}
+
+static CertificationRequest NewControlledCertificationRequest(
+    bool qualifiedRelease,
+    bool initialPreValidated = true) => new()
+{
+    Origin = CertificationOrigin.QualifiedRelease,
+    DatabaseLifecycle = DatabaseLifecycles.New,
+    InitialPreStateValidated = initialPreValidated,
+    ObservedPreSchemaHash = CertificationPreHash(),
+    QualifiedPreSchemaHash = CertificationPreHash(),
+    QualifiedPostSchemaHash = CertificationPostHash(),
+    ObservedPostSchemaHash = CertificationPostHash(),
+    ReleaseId = "qualified-initial-release-001",
+    QualifiedPayloadHash = CertificationPayloadHash(),
+    ExecutedPayloadHash = CertificationPayloadHash(),
+    QualifiedForwardHash = CertificationForwardHash(),
+    ExecutedForwardHash = CertificationForwardHash(),
+    QualifiedRollbackHash = CertificationRollbackHash(),
+    VerifiedRollbackHash = CertificationRollbackHash(),
+    QualifiedRelease = qualifiedRelease,
+    ExecutionSucceeded = true,
+    DriftStatus = DatabaseDriftStatuses.Match,
+    LineageStatus = "CONSISTENT",
+    DeploymentAuthorization = new DeploymentAuthorizationEvidence
+    {
+        PolicyId = "DEPLOYMENT_POLICY_V1",
+        Risk = RiskLevel.Low,
+        Requirement = DeploymentAuthorizationRequirement.AutomaticPolicy,
+        Decision = DeploymentAuthorizationDecision.Authorized,
+        ReleaseQualificationGatePassed = true,
+        AnalysisConfidence = AnalysisConfidence.Complete,
+        SchemaRollbackValidity = SchemaRollbackValidity.Valid,
+        DataRollbackValidity = DataRollbackValidity.NotApplicable,
+        RollbackCapability = RollbackCapability.FullReversible
+    }
+};
+
+static CertificationRequest BootstrapCertificationRequest(string lineageStatus = "CONSISTENT") => new()
+{
+    Origin = CertificationOrigin.BootstrapApproved,
+    ObservedPreSchemaHash = CertificationPreHash(),
+    DriftStatus = DatabaseDriftStatuses.BaselineRequired,
+    LineageStatus = lineageStatus
+};
+
+static string CertificationPreHash() => new('1', 64);
+static string CertificationPostHash() => new('2', 64);
+static string CertificationPayloadHash() => new('3', 64);
+static string CertificationForwardHash() => new('4', 64);
+static string CertificationRollbackHash() => new('5', 64);
+
+static ReleaseDescriptor PlannedDbaRelease() => new()
+{
+    ReleaseId = "dba-release-001",
+    Environment = "TEST",
+    SourceKind = "SQL",
+    Scenario = "EXISTING_SQL",
+    DatabaseLifecycle = "EXISTING",
+    ChangeOrigin = DatabaseChangeOrigins.Dba,
+    ChangePath = DatabaseChangePaths.PlannedRelease,
+    ChangeReference = "CHG-DBA-001",
+    ChangeReason = "Crear índice operativo planificado"
+};
+
+static (CanonicalSchema Certified, CanonicalSchema Observed) ReconciliationSchemas(bool oneDifference)
+{
+    var certifiedSnapshot = BaseSnapshot(includeIndex: false);
+    var observedSnapshot = BaseSnapshot(includeIndex: false);
+    observedSnapshot.Objects.Add(Object("index", "dbo", "Orden", "IX_DBA_Fecha",
+        ("type", "NONCLUSTERED"), ("unique", "false"), ("disabled", "false")));
+    if (!oneDifference)
+    {
+        observedSnapshot.Objects.Add(Object("trigger", "dbo", "Orden", "TR_DBA_Audit",
+            ("disabled", "false"), ("insteadOf", "false")));
+    }
+    return (
+        SchemaCanonicalizer.Canonicalize(certifiedSnapshot),
+        SchemaCanonicalizer.Canonicalize(observedSnapshot));
+}
+
+static ReconciliationContext ReconciliationContextFixture(CertificationOrigin origin) => new()
+{
+    ReconciliationId = "reconciliation-001",
+    PreviousCertificationId = "certification-001",
+    ApplicationId = "3602",
+    Environment = "TEST",
+    DatabaseName = "CICDV3",
+    CertificationOrigin = origin,
+    CreatedAtUtc = DateTimeOffset.Parse("2026-08-26T12:00:00Z"),
+    RunMetadata = new SortedDictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["runId"] = "123456",
+        ["runAttempt"] = "1"
+    }
+};
+
+static ReconciliationDisposition ApproveDba(StructuralDifference difference) => new()
+{
+    DifferenceId = difference.DifferenceId,
+    Classification = ReconciliationClassification.ApprovedOutOfBand,
+    ChangeOrigin = DatabaseChangeOrigins.Dba,
+    Reference = "CHG-FIXTURE-001",
+    Reason = "Cambio DBA directo conocido y revisado"
+};
+
+static DatabaseLineageAssessment LineageAssessment(
+    string scenario,
+    string sourceKind,
+    string consistencyStatus = "CONSISTENT",
+    string consistencyReason = "OK") => new()
+{
+    Scenario = scenario,
+    SourceKind = sourceKind,
+    Discovery = new DiscoveryGate
+    {
+        ConsistencyStatus = consistencyStatus,
+        ConsistencyReason = consistencyReason
+    }
+};
+
+static DatabaseOnboardingResult EvaluateOnboarding(
+    string lifecycle,
+    DatabaseLineageAssessment lineage,
+    DatabaseStateEvaluation state,
+    ReconciliationResult? reconciliation = null,
+    CertificationResult? certification = null) => new DatabaseOnboardingEvaluator().Evaluate(new DatabaseOnboardingRequest
+{
+    DatabaseLifecycle = lifecycle,
+    LineageAssessment = lineage,
+    DatabaseState = state,
+    Reconciliation = reconciliation,
+    Certification = certification
+});
+
+static DatabaseStateEvaluation CertifiedMatchingState() => EvaluateRegistry(
+    RegistryTarget(DatabaseCertificationStatuses.Certified, ObservedSchemaHash()),
+    RegistryObservation());
+
+static DatabaseStateEvaluation CertifiedDriftedState() => EvaluateRegistry(
+    RegistryTarget(DatabaseCertificationStatuses.Certified, CertificationPreHash()),
+    RegistryObservation(CertificationPostHash()));
+
+static DatabaseStateEvaluation BaselineCandidateState() => EvaluateRegistry(
+    RegistryTarget(DatabaseCertificationStatuses.BaselineRequired),
+    RegistryObservation());
+
+static (CanonicalSchema Certified, CanonicalSchema Observed, DatabaseStateEvaluation State,
+    ReconciliationResult Reconciliation) ReadyReconciliationFixture()
+{
+    var (certified, observed) = ReconciliationSchemas(oneDifference: true);
+    var difference = StructuralDifferenceBuilder.Build(certified, observed).Single();
+    var reconciliation = new ReconciliationEvaluator().Evaluate(
+        ReconciliationContextFixture(CertificationOrigin.BreakGlassReconciliation),
+        certified,
+        observed,
+        [ApproveDba(difference)]);
+    var state = EvaluateRegistry(
+        RegistryTarget(DatabaseCertificationStatuses.Certified, certified.Sha256),
+        RegistryObservation(observed.Sha256));
+    return (certified, observed, state, reconciliation);
+}
+
+static CertificationResult ReconciliationCertification(string certifiedHash, string observedHash) =>
+    new CertificationDecisionEngine().Evaluate(new CertificationRequest
+    {
+        Origin = CertificationOrigin.BreakGlassReconciliation,
+        DatabaseLifecycle = DatabaseLifecycles.Existing,
+        CertifiedPreSchemaHash = certifiedHash,
+        ObservedPreSchemaHash = observedHash,
+        ObservedPostSchemaHash = observedHash,
+        DriftStatus = DatabaseDriftStatuses.DriftDetected,
+        LineageStatus = "CONSISTENT",
+        OutOfBandChangeDetected = true,
+        ReconciliationCompleted = true,
+        CertificationApprovalGranted = CertificationApprovalRequirement.Dba,
+        CertificationApprovalReference = "CHG-RECONCILIATION-001"
+    });
+
+static ReleaseDescriptor TestRelease(string environment = "TEST") => new()
+{
+    ReleaseId = "release-001",
+    Environment = environment,
+    SourceKind = "SQL",
+    Scenario = "EXISTING_SQL",
+    DatabaseLifecycle = "EXISTING"
+};
+
+static DiscoveryGate ConsistentDiscovery() => new()
+{
+    ConsistencyStatus = "CONSISTENT",
+    ConsistencyReason = "CONSISTENT_EXISTING_SQL"
+};
+
+static ReleaseScript Forward() => ReleaseScript.FromText("forward", "ALTER TABLE dbo.Orden ADD Comentario nvarchar(50) NULL;\n");
+static ReleaseScript Rollback() => ReleaseScript.FromText("rollback", "ALTER TABLE dbo.Orden DROP COLUMN Comentario;\n");
+
+static SchemaSnapshot BaseSnapshot(bool includeIndex, bool nullable = false, long rows = 10, decimal indexMb = 1)
+{
+    var objects = new List<SchemaObject>
+    {
+        Object("schema", "dbo", "", "dbo", ("owner", "dbo")),
+        Object("table", "dbo", "", "Orden", ("temporalType", "0")),
+        Object("column", "dbo", "Orden", "Fecha", ("type", "datetime2"),
+            ("nullable", nullable ? "true" : "false"), ("identity", "false"), ("computed", "false"))
+    };
+    if (includeIndex)
+    {
+        objects.Add(Object("index", "dbo", "Orden", "IX_Orden_Fecha",
+            ("type", "NONCLUSTERED"), ("unique", "false"), ("disabled", "false")));
+        objects.Add(Object("index-column", "dbo", "Orden", "IX_Orden_Fecha:1",
+            ("index", "IX_Orden_Fecha"), ("column", "Fecha"), ("role", "key"), ("descending", "false")));
+    }
+    return new SchemaSnapshot { Objects = objects, ImpactMetrics = [Metric(rows, 1, indexMb, includeIndex)] };
+}
+
+static SchemaCaptureSourceResult CaptureSource(
+    SchemaSnapshot snapshot,
+    MetricsAvailability metricsAvailability = MetricsAvailability.Complete,
+    string? metricsDiagnosticCode = null) => new()
+{
+    Snapshot = snapshot,
+    DatabaseName = "DatabaseForTests",
+    ServerVersion = "16.0.1000.6",
+    ServerMajorVersion = 16,
+    MetricsAvailability = metricsAvailability,
+    MetricsDiagnosticCode = metricsDiagnosticCode
+};
+
+static string ObservedSchemaHash() => new('a', 64);
+
+static DatabaseTarget RegistryTarget(
+    string certificationStatus,
+    string? certifiedSchemaHash = null,
+    string environment = "TEST",
+    string databaseName = "CICDV3",
+    string lifecycle = DatabaseLifecycles.Existing) => new()
+{
+    ApplicationId = "3602",
+    Environment = environment,
+    DatabaseName = databaseName,
+    Lifecycle = lifecycle,
+    CertificationStatus = certificationStatus,
+    CertifiedSchemaHash = certifiedSchemaHash
+};
+
+static DatabaseRegistryDocument RegistryDocument(params DatabaseTarget[] targets) => new()
+{
+    RegistryFormatVersion = 1,
+    Targets = targets.ToList()
+};
+
+static RegistryProvenance RegistryProvenance(
+    string? registryFileSha256 = null,
+    string? registryCommitSha = null) => new()
+{
+    RegistryRepository = "infrastructure-services/workflow",
+    RegistryRef = "feature/db-schema-capture-test",
+    RegistryCommitSha = registryCommitSha ?? new string('d', 40),
+    RegistryFilePath = "database-registry/targets.json",
+    RegistryFileSha256 = registryFileSha256 ?? new string('c', 64)
+};
+
+static DatabaseStateObservation RegistryObservation(string? observedSchemaHash = null) => new()
+{
+    ApplicationId = "3602",
+    Environment = "TEST",
+    DatabaseName = "CICDV3",
+    ObservedSchemaHash = observedSchemaHash ?? ObservedSchemaHash(),
+    SchemaCoverage = "COMPLETE",
+    UnsupportedSchemaFeatures = [],
+    CaptureTimestampUtc = DateTimeOffset.Parse("2026-08-25T12:00:00Z"),
+    RunId = "123456",
+    RunAttempt = "1"
+};
+
+static DatabaseRegistryValidation ValidateTarget(DatabaseTarget target) =>
+    DatabaseRegistryLoader.Validate(RegistryDocument(target), RegistryProvenance());
+
+static DatabaseStateEvaluation EvaluateRegistry(
+    DatabaseTarget target,
+    DatabaseStateObservation? observation = null) =>
+    new DatabaseStateEvaluator().Evaluate(ValidateTarget(target), observation ?? RegistryObservation());
+
+static SchemaSnapshot AddCommentSnapshot(bool includeIndex, string type)
+{
+    var snapshot = BaseSnapshot(includeIndex);
+    snapshot.Objects.Add(Object("column", "dbo", "Orden", "Comentario", ("type", type), ("nullable", "true")));
+    return snapshot;
+}
+
+static SchemaSnapshot SnapshotWithoutFecha() => new()
+{
+    Objects =
+    [
+        Object("schema", "dbo", "", "dbo", ("owner", "dbo")),
+        Object("table", "dbo", "", "Orden", ("temporalType", "0"))
+    ],
+    ImpactMetrics = [Metric(10, 1)]
+};
+
+static TableImpactMetric Metric(
+    long rows,
+    decimal reservedMb,
+    decimal indexMb = 1,
+    bool includeIndex = false,
+    int foreignKeys = 0,
+    int triggers = 0) => new()
+{
+    Schema = "dbo", Table = "Orden", RowCount = rows, ReservedMb = reservedMb, IndexMb = indexMb,
+    LobMb = 0, PartitionCount = 1, IndexCount = includeIndex ? 1 : 0,
+    ForeignKeyCount = foreignKeys, TriggerCount = triggers, DependencyCount = includeIndex ? 1 : 0
+};
+
+static SchemaObject Object(string kind, string schema, string parent, string name, params (string Key, string Value)[] properties) => new()
+{
+    Kind = kind,
+    Schema = schema,
+    Parent = parent,
+    Name = name,
+    Properties = new SortedDictionary<string, string>(properties.ToDictionary(item => item.Key, item => item.Value), StringComparer.Ordinal)
+};
+
+static (string Forward, string Rollback, string Schema, string Output, string Result) WriteCliFixtures(string root)
+{
+    Directory.CreateDirectory(root);
+    var paths = (
+        Forward: Path.Combine(root, "forward.sql"),
+        Rollback: Path.Combine(root, "rollback.sql"),
+        Schema: Path.Combine(root, "schema.json"),
+        Output: Path.Combine(root, "package-root"),
+        Result: Path.Combine(root, "result.json"));
+    File.WriteAllText(paths.Forward, Forward().Text);
+    File.WriteAllText(paths.Rollback, Rollback().Text);
+    File.WriteAllText(paths.Schema, JsonSerializer.Serialize(BaseSnapshot(includeIndex: false), JsonDefaults.Indented));
+    return paths;
+}
+
+static string[] CliArguments(
+    (string Forward, string Rollback, string Schema, string Output, string Result) paths,
+    string discoveryStatus,
+    string discoveryReason) =>
+[
+    "analyze", "--release-id", "release-cli-001", "--attestation-id", "run-cli-001",
+    "--environment", "TEST", "--source-kind", "SQL", "--scenario", "EXISTING_SQL",
+    "--database-lifecycle", "EXISTING", "--discovery-status", discoveryStatus,
+    "--discovery-reason", discoveryReason, "--forward", paths.Forward, "--rollback", paths.Rollback,
+    "--schema", paths.Schema, "--output", paths.Output, "--result", paths.Result
+];
+
+static string[] DatabaseStateCliArguments(
+    string registry,
+    string capture,
+    string output,
+    string result)
+{
+    var provenance = RegistryProvenance(
+        registryFileSha256: DatabaseRegistryLoader.ComputeFileSha256(registry));
+    return
+    [
+        "evaluate-database-state", "--environment", "TEST", "--application-id", "3602",
+        "--registry", registry,
+        "--registry-repository", provenance.RegistryRepository,
+        "--registry-ref", provenance.RegistryRef,
+        "--registry-commit-sha", provenance.RegistryCommitSha,
+        "--registry-file-path", provenance.RegistryFilePath,
+        "--registry-file-sha256", provenance.RegistryFileSha256,
+        "--capture", capture, "--capture-timestamp-utc", "2026-08-25T12:00:00Z",
+        "--run-id", "123456", "--run-attempt", "1", "--output", output, "--result", result
+    ];
+}
+
+static string TempDirectory(string prefix) => Path.Combine(Path.GetTempPath(), prefix, Guid.NewGuid().ToString("N"));
+static void DeleteTemp(string path) { if (Directory.Exists(path)) Directory.Delete(path, recursive: true); }
+
+static void True(bool condition) { if (!condition) throw new InvalidOperationException("Expected condition to be true."); }
+static void Equal<T>(T expected, T actual)
+{
+    if (!EqualityComparer<T>.Default.Equals(expected, actual))
+        throw new InvalidOperationException($"Expected '{expected}', received '{actual}'.");
+}
+static void NotEqual<T>(T first, T second)
+{
+    if (EqualityComparer<T>.Default.Equals(first, second))
+        throw new InvalidOperationException($"Expected values to differ, both were '{first}'.");
+}
+static void SequenceEqual(byte[] expected, byte[] actual)
+{
+    if (!expected.SequenceEqual(actual)) throw new InvalidOperationException("Byte sequences differ.");
+}
+
+internal sealed class FakeRehearsalDatabase(params SchemaSnapshot[] snapshots) : IRehearsalDatabase
+{
+    private readonly Queue<SchemaSnapshot> _snapshots = new(snapshots);
+    public int CaptureCount { get; private set; }
+    public List<(string Role, string Hash)> Executions { get; } = [];
+
+    public Task<SchemaSnapshot> CaptureSchemaAsync(CancellationToken cancellationToken = default)
+    {
+        CaptureCount++;
+        if (_snapshots.Count == 0) throw new InvalidOperationException("Unexpected schema capture.");
+        return Task.FromResult(_snapshots.Dequeue());
+    }
+
+    public Task ExecuteSqlAsync(ReleaseScript script, string expectedSha256, CancellationToken cancellationToken = default)
+    {
+        if (!string.Equals(expectedSha256, script.Sha256, StringComparison.Ordinal))
+            throw new InvalidOperationException("Executed script hash differs from expected hash.");
+        Executions.Add((script.Role, expectedSha256));
+        return Task.CompletedTask;
+    }
+}
+
+internal sealed class FakeDataRollbackContract(DataRollbackValidity result) : IDataRollbackValidationContract
+{
+    public bool PreCaptured { get; private set; }
+    public Task CapturePreDataAsync(CancellationToken cancellationToken = default)
+    {
+        PreCaptured = true;
+        return Task.CompletedTask;
+    }
+    public Task<DataRollbackValidity> ValidateRollbackDataAsync(CancellationToken cancellationToken = default) => Task.FromResult(result);
+}
+
+internal sealed class CommitBarrierFaultInjector(Barrier barrier) : ICertificationCommitFaultInjector
+{
+    public void ThrowIfArmed(CertificationCommitFaultPoint point)
+    {
+        if (point == CertificationCommitFaultPoint.BeforeCompareAndSwap)
+            barrier.SignalAndWait(TimeSpan.FromSeconds(10));
+    }
+}
+
+internal class DelegatingCommitStore(ICertificationCommitStore inner) : ICertificationCommitStore
+{
+    protected ICertificationCommitStore Inner { get; } = inner;
+    public virtual CertificationCommitReceipt? GetReceipt(string operationId) => Inner.GetReceipt(operationId);
+    public virtual bool HasEvidenceConflict(IReadOnlyList<EvidenceReference> evidenceReferences) =>
+        Inner.HasEvidenceConflict(evidenceReferences);
+    public virtual CertifiedStateRecord? GetPrepared(string certificationId) => Inner.GetPrepared(certificationId);
+    public virtual CertificationPointer? GetCurrentPointer(DatabaseIdentity databaseIdentity) =>
+        Inner.GetCurrentPointer(databaseIdentity);
+    public virtual PrepareRecordResult CreatePreparedIfAbsent(string operationId, string operationFingerprint,
+        CertifiedStateRecord record, IReadOnlyList<EvidenceReference> evidenceReferences) =>
+        Inner.CreatePreparedIfAbsent(operationId, operationFingerprint, record, evidenceReferences);
+    public virtual PointerCasResult CompareAndSwapCurrent(DatabaseIdentity databaseIdentity,
+        ExpectedCertificationPointer? expected, string operationId, string certificationId) =>
+        Inner.CompareAndSwapCurrent(databaseIdentity, expected, operationId, certificationId);
+    public virtual bool CompleteReceipt(string operationId, string operationFingerprint) =>
+        Inner.CompleteReceipt(operationId, operationFingerprint);
+    public virtual CertifiedStateRecord? GetCertifiedById(string certificationId) =>
+        Inner.GetCertifiedById(certificationId);
+    public virtual IReadOnlyList<CertifiedStateRecord> ListCertifiedHistory(DatabaseIdentity databaseIdentity) =>
+        Inner.ListCertifiedHistory(databaseIdentity);
+    public int PreparedRecordCount => Inner.PreparedRecordCount;
+    public int ReceiptCount => Inner.ReceiptCount;
+}
+
+internal sealed class ReceiptOverrideCommitStore(
+    ICertificationCommitStore inner,
+    Func<CertificationCommitReceipt, CertificationCommitReceipt> transform) : DelegatingCommitStore(inner)
+{
+    public int MutationCalls { get; private set; }
+
+    public override CertificationCommitReceipt? GetReceipt(string operationId)
+    {
+        var receipt = base.GetReceipt(operationId);
+        return receipt is null ? null : transform(receipt);
+    }
+
+    public override PrepareRecordResult CreatePreparedIfAbsent(string operationId, string operationFingerprint,
+        CertifiedStateRecord record, IReadOnlyList<EvidenceReference> evidenceReferences)
+    {
+        MutationCalls++;
+        return base.CreatePreparedIfAbsent(operationId, operationFingerprint, record, evidenceReferences);
+    }
+
+    public override PointerCasResult CompareAndSwapCurrent(DatabaseIdentity databaseIdentity,
+        ExpectedCertificationPointer? expected, string operationId, string certificationId)
+    {
+        MutationCalls++;
+        return base.CompareAndSwapCurrent(databaseIdentity, expected, operationId, certificationId);
+    }
+
+    public override bool CompleteReceipt(string operationId, string operationFingerprint)
+    {
+        MutationCalls++;
+        return base.CompleteReceipt(operationId, operationFingerprint);
+    }
+}
+
+internal sealed class ThrowAfterCasCommitStore(ICertificationCommitStore inner, string message)
+    : DelegatingCommitStore(inner)
+{
+    public override PointerCasResult CompareAndSwapCurrent(DatabaseIdentity databaseIdentity,
+        ExpectedCertificationPointer? expected, string operationId, string certificationId)
+    {
+        _ = base.CompareAndSwapCurrent(databaseIdentity, expected, operationId, certificationId);
+        throw new InvalidOperationException(message);
+    }
+}
+
+internal sealed class EvidenceConflictCommitStore(ICertificationCommitStore inner)
+    : DelegatingCommitStore(inner)
+{
+    public int MutationCalls { get; private set; }
+    public override bool HasEvidenceConflict(IReadOnlyList<EvidenceReference> evidenceReferences) => true;
+    public override PrepareRecordResult CreatePreparedIfAbsent(string operationId, string operationFingerprint,
+        CertifiedStateRecord record, IReadOnlyList<EvidenceReference> evidenceReferences)
+    {
+        MutationCalls++;
+        return base.CreatePreparedIfAbsent(operationId, operationFingerprint, record, evidenceReferences);
+    }
+    public override PointerCasResult CompareAndSwapCurrent(DatabaseIdentity databaseIdentity,
+        ExpectedCertificationPointer? expected, string operationId, string certificationId)
+    {
+        MutationCalls++;
+        return base.CompareAndSwapCurrent(databaseIdentity, expected, operationId, certificationId);
+    }
+    public override bool CompleteReceipt(string operationId, string operationFingerprint)
+    {
+        MutationCalls++;
+        return base.CompleteReceipt(operationId, operationFingerprint);
+    }
+}
