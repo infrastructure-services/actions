@@ -2,12 +2,12 @@ name: Backup de Código
 description: Hace el backup del código en el recurso habilitado para tal fin
 
 inputs:
-#  gitlab_token:
-#    description: "Personal o Group Access Token de GitLab (scope: api)"
-#    required: true
-#  gitlab_url:
-#    description: "Host de GitLab sin protocolo (ej: gitlab.apps.andreani.com.ar)"
-#    required: true
+  gitlab_token:
+    description: "Personal o Group Access Token de GitLab (scope: api)"
+    required: true
+  gitlab_url:
+    description: "Host de GitLab sin protocolo (ej: gitlab.apps.andreani.com.ar)"
+    required: true
   repository:
     description: "Repositorio en formato owner/repo (ej: infrastructure-services/devops-luana-api)"
     required: true
