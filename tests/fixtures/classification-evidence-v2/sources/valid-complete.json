@@ -1,0 +1,13 @@
+{
+  "producerContractVersion": 1,
+  "declarationsSource": { "databaseLifecycle": "EXISTING", "changeManagementMode": "EF_MIGRATIONS" },
+  "connectionSource": { "status": "SUCCEEDED" },
+  "databaseLookupSource": { "status": "FOUND" },
+  "metadataSource": { "status": "SUFFICIENT" },
+  "physicalSource": { "status": "OBSERVED", "businessObjectCount": 12, "technicalObjectCount": 1 },
+  "historySource": { "status": "PRESENT", "migrationCount": 1, "migrationIds": ["20260101000000_Initial"] },
+  "repositorySource": { "status": "PRESENT_VALID", "migrations": { "count": 2, "ids": ["20260101000000_Initial", "20260201000000_AddOrders"] } },
+  "schemaSource": { "status": "CONSISTENT" },
+  "registrySource": { "status": "CERTIFIED" },
+  "onboardingSource": { "status": "MANAGED" }
+}
