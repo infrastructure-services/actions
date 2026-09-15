@@ -1,0 +1,2 @@
+/tests/fixtures/classification-evidence-v2/raw/*.json text eol=lf
+/tests/test-classification-evidence-producer-v2.sh text eol=lf

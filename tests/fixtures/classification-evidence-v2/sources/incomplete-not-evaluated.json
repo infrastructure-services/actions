@@ -1,0 +1,13 @@
+{
+  "producerContractVersion": 1,
+  "declarationsSource": { "databaseLifecycle": "EXISTING", "changeManagementMode": "EF_MIGRATIONS" },
+  "connectionSource": { "status": "SUCCEEDED" },
+  "databaseLookupSource": { "status": "FOUND" },
+  "metadataSource": { "status": "SUFFICIENT" },
+  "physicalSource": { "status": "OBSERVED", "businessObjectCount": 0 },
+  "historySource": { "status": "ABSENT" },
+  "repositorySource": { "status": "ABSENT" },
+  "schemaSource": { "status": "NOT_EVALUATED" },
+  "registrySource": { "status": "NOT_EVALUATED" },
+  "onboardingSource": { "status": "UNKNOWN" }
+}
