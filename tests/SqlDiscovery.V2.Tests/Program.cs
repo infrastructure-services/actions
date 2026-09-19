@@ -9,10 +9,12 @@ var tests = new List<(string Name, Func<Task> Run)>
     ("fallo de transporte sanitizado", TransportFailure),
     ("timeout de conexión", ConnectionTimeout),
     ("cancelación y propagación del token", Cancellation),
+    ("token precancelado produce estado interno", PreCancelled),
     ("base encontrada", DatabaseFound),
     ("ausencia confirmada con visibilidad", ConfirmedAbsent),
     ("lookup sin visibilidad queda desconocido", LookupVisibilityInsufficient),
     ("fallo técnico del lookup", LookupTechnicalFailure),
+    ("timeout de lookup bloquea dependencias", LookupTimeout),
     ("target fallido no contamina conexión servidor", TargetFailure),
     ("metadata suficiente", MetadataSufficient),
     ("metadata insuficiente", MetadataInsufficient),
@@ -31,6 +33,7 @@ var tests = new List<(string Name, Func<Task> Run)>
     ("input conservado y resultados independientes", InputAndResultIsolation),
     ("integración real clasifica EXISTING_EF", IntegrationExistingEf),
     ("integración bloquea target fallido antes del productor", IntegrationTargetGap),
+    ("integración bloqueada no invoca classifier real", IntegrationUnknownLookup),
     ("límite taxonómico bloquea elegibilidad NEW_EF", IntegrationNewEfTaxonomyGap)
 };
 
@@ -100,6 +103,8 @@ static async Task ConnectionTimeout()
     var result = await Discover(transport);
     Equal(ConnectionStatus.TimedOut, result.ServerConnection.Status);
     Equal("TIMEOUT", result.Diagnostics.Single().Code);
+    Equal(DatabaseLookupStatus.NotAttempted, result.DatabaseLookup.Status);
+    EqualSequence(new[] { "server" }, transport.Calls);
 }
 
 static async Task Cancellation()
@@ -110,9 +115,23 @@ static async Task Cancellation()
     var result = await Discover(transport, source.Token);
     Equal(ConnectionStatus.Cancelled, result.ServerConnection.Status);
     True(transport.SeenTokens.Single() == source.Token);
+    Equal(DatabaseLookupStatus.NotAttempted, result.DatabaseLookup.Status);
+    EqualSequence(new[] { "server" }, transport.Calls);
     var projection = new SqlDiscoveryOrchestratorV2(transport).ProjectSources(result);
     False(projection.IsRepresentable);
     Contains("CONNECTION_CANCELLED_UNREPRESENTABLE", projection.Gaps);
+}
+
+static async Task PreCancelled()
+{
+    var transport = SuccessfulTransport();
+    using var source = new CancellationTokenSource();
+    source.Cancel();
+    var result = await Discover(transport, source.Token);
+    Equal(ConnectionStatus.Cancelled, result.ServerConnection.Status);
+    Equal(DatabaseLookupStatus.NotAttempted, result.DatabaseLookup.Status);
+    Equal(0, transport.Calls.Count);
+    False(new SqlDiscoveryOrchestratorV2(transport).ProjectSources(result).IsRepresentable);
 }
 
 static async Task DatabaseFound() => Equal(DatabaseLookupStatus.Found, (await Discover(SuccessfulTransport())).DatabaseLookup.Status);
@@ -144,6 +163,20 @@ static async Task LookupTechnicalFailure()
     var result = await Discover(transport);
     Equal(DatabaseLookupStatus.TechnicalError, result.DatabaseLookup.Status);
     Equal("TECHNICAL_ERROR", result.Diagnostics.Single().Code);
+}
+
+static async Task LookupTimeout()
+{
+    var transport = SuccessfulTransport();
+    transport.Lookup = _ => throw new TimeoutException("opaque");
+    var result = await Discover(transport);
+    Equal(DatabaseLookupStatus.TimedOut, result.DatabaseLookup.Status);
+    Equal(ConnectionStatus.NotAttempted, result.TargetConnection.Status);
+    Equal(MetadataStatus.NotAttempted, result.Metadata.Status);
+    EqualSequence(new[] { "server", "lookup" }, transport.Calls);
+    var projection = new SqlDiscoveryOrchestratorV2(transport).ProjectSources(result);
+    False(projection.IsRepresentable);
+    Contains("DATABASE_LOOKUP_TIMEOUT_UNREPRESENTABLE", projection.Gaps);
 }
 
 static async Task TargetFailure()
@@ -196,6 +229,9 @@ static async Task PhysicalPartial()
     var projection = new SqlDiscoveryOrchestratorV2(transport).ProjectSources(await Discover(transport));
     False(projection.IsRepresentable);
     Contains("PHYSICAL_PARTIAL_UNREPRESENTABLE", projection.Gaps);
+    var invocations = 0;
+    False(InvokePipelineWhenRepresentable(projection, () => invocations++));
+    Equal(0, invocations);
 }
 
 static async Task HistoryAbsent()
@@ -314,6 +350,22 @@ static async Task IntegrationTargetGap()
     var projection = new SqlDiscoveryOrchestratorV2(transport).ProjectSources(await Discover(transport));
     False(projection.IsRepresentable);
     Contains("TARGET_CONNECTION_STATE_UNREPRESENTABLE", projection.Gaps);
+    var invocations = 0;
+    False(InvokePipelineWhenRepresentable(projection, () => invocations++));
+    Equal(0, invocations);
+}
+
+static async Task IntegrationUnknownLookup()
+{
+    var transport = SuccessfulTransport();
+    transport.Lookup = _ => Task.FromResult(new DatabaseLookupResult(DatabaseLookupStatus.VisibilityInsufficient));
+    var projection = new SqlDiscoveryOrchestratorV2(transport).ProjectSources(await Discover(transport));
+    var envelope = Envelope(projection, "EXISTING", "EF_MIGRATIONS",
+        new { status = "NOT_ATTEMPTED" }, new { status = "INSUFFICIENT_EVIDENCE" },
+        new { status = "UNKNOWN" }, new { status = "UNKNOWN" });
+    var pipeline = RunPipeline(envelope);
+    False(pipeline.Json.RootElement.GetProperty("classificationInvoked").GetBoolean());
+    False(pipeline.Json.RootElement.GetProperty("adapterStatus").GetString() == "CLASSIFIED");
 }
 
 static async Task IntegrationNewEfTaxonomyGap()
@@ -360,6 +412,13 @@ static (int ExitCode, JsonDocument Json) RunPipeline(object envelope)
     Equal(0, producer.ExitCode);
     var adapter = RunProcess("node", Path.Combine(root, "scripts", "adapt-classification-evidence-v2.mjs"), producer.Stdout);
     return (adapter.ExitCode, JsonDocument.Parse(adapter.Stdout));
+}
+
+static bool InvokePipelineWhenRepresentable(SourceProjection projection, Action invoke)
+{
+    if (!projection.IsRepresentable) return false;
+    invoke();
+    return true;
 }
 
 static (int ExitCode, string Stdout) RunProcess(string fileName, string argument, string stdin)

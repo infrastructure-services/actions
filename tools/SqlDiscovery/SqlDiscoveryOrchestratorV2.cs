@@ -7,7 +7,10 @@ public sealed class SqlDiscoveryOrchestratorV2(ISqlDiscoveryTransport transport)
     public async Task<SqlDiscoveryResult> DiscoverAsync(SqlDiscoveryTarget target, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(target);
-        cancellationToken.ThrowIfCancellationRequested();
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Result(new ConnectionResult(ConnectionStatus.Cancelled, Diagnostic("SERVER_CONNECTION", "CANCELLED")));
+        }
 
         var server = await RunConnectionAsync("SERVER_CONNECTION", () => transport.ConnectServerAsync(target, cancellationToken), cancellationToken);
         if (server.Status != ConnectionStatus.Succeeded)
