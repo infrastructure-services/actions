@@ -9,7 +9,7 @@ function evidence(overrides = {}) {
   const base = {
     contractVersion: 2,
     declarations: { databaseLifecycle: "EXISTING", changeManagementMode: "EF_MIGRATIONS" },
-    connection: { status: "SUCCEEDED" }, databaseLookup: { status: "FOUND" }, metadata: { status: "SUFFICIENT" },
+    connection: { status: "SUCCEEDED" }, databaseLookup: { status: "FOUND" }, targetConnection: { status: "SUCCEEDED" }, metadata: { status: "SUFFICIENT" },
     physical: { status: "OBSERVED", businessObjectCount: 5, technicalObjectCount: 1 },
     history: { status: "PRESENT", migrationCount: 2, migrationIds: ids.slice(0, 2) },
     repository: { status: "PRESENT_VALID", migrations: { count: 3, ids: [...ids] } },
@@ -63,6 +63,20 @@ test("tipo incorrecto", () => { const x = evidence(); x.physical.businessObjectC
 
 test("connection failed", () => expectExit(withoutInternal({ connection: { status: "FAILED" }, databaseLookup: { status: "UNKNOWN" } }), 75, "CONNECTION_FAILED"));
 test("connection timeout", () => expectExit(withoutInternal({ connection: { status: "TIMEOUT" }, databaseLookup: { status: "UNKNOWN" } }), 75, "CONNECTION_TIMEOUT"));
+test("connection cancelled", () => expectExit(withoutInternal({ connection: { status: "CANCELLED" }, databaseLookup: { status: "UNKNOWN" } }), 75, "CONNECTION_CANCELLED"));
+for (const status of ["AUTHENTICATION_FAILED", "TRANSPORT_FAILED", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED"]) {
+  test(`target ${status} bloquea classifier`, () => expectExit(withoutInternal({ targetConnection: { status } }), 75, `TARGET_CONNECTION_${status}`));
+}
+test("target histórico ausente bloquea base encontrada", () => { const x = withoutInternal(); delete x.targetConnection; expectExit(x, 75, "TARGET_CONNECTION_SOURCE_REQUIRED"); });
+test("target NOT_ATTEMPTED es válido con base ausente", () => {
+  const x = withoutInternal({ databaseLookup: { status: "NOT_FOUND" }, targetConnection: { status: "NOT_ATTEMPTED" } });
+  const actual = outcome(x); assert.equal(actual.exitCode, 0); assert.equal(actual.calls, 1);
+});
+for (const [key, prefix] of [["databaseLookup", "DATABASE_LOOKUP"], ["metadata", "METADATA"], ["physical", "PHYSICAL"], ["history", "HISTORY"]]) {
+  for (const status of ["TIMEOUT", "CANCELLED"]) {
+    test(`${key} ${status} bloquea classifier`, () => expectExit(withoutInternal({ [key]: { status } }), 75, `${prefix}_${status}`));
+  }
+}
 for (const [key, code] of [["metadata", "METADATA_ERROR"], ["history", "HISTORY_ERROR"], ["schema", "SCHEMA_ERROR"], ["registry", "REGISTRY_ERROR"], ["onboarding", "ONBOARDING_ERROR"], ["physical", "PHYSICAL_OBSERVATION_ERROR"], ["repository", "REPOSITORY_ERROR"]]) {
   test(`${key} error`, () => { const x = evidence(); x[key] = { status: "ERROR" }; expectExit(x, 75, code); });
 }

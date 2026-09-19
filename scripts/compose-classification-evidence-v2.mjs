@@ -8,17 +8,18 @@ const MAX_COUNT = Number.MAX_SAFE_INTEGER;
 const MIGRATION_ID_PATTERN = /^[0-9]{14}_[A-Za-z0-9_]+$/;
 const ROOT_KEYS = [
   "producerContractVersion", "declarationsSource", "connectionSource",
-  "databaseLookupSource", "metadataSource", "physicalSource", "historySource",
+  "databaseLookupSource", "targetConnectionSource", "metadataSource", "physicalSource", "historySource",
   "repositorySource", "schemaSource", "registrySource", "onboardingSource"
 ];
 const ENUMS = Object.freeze({
   databaseLifecycle: ["NEW", "EXISTING"],
   changeManagementMode: ["EF_MIGRATIONS", "LEGACY_UNMANAGED"],
-  connectionSource: ["SUCCEEDED", "FAILED", "TIMEOUT", "NOT_ATTEMPTED"],
-  databaseLookupSource: ["FOUND", "NOT_FOUND", "UNKNOWN", "ERROR", "NOT_ATTEMPTED"],
-  metadataSource: ["SUFFICIENT", "INSUFFICIENT", "UNKNOWN", "ERROR", "NOT_ATTEMPTED"],
-  physicalSource: ["OBSERVED", "UNKNOWN", "ERROR", "NOT_ATTEMPTED"],
-  historySource: ["ABSENT", "PRESENT", "UNREADABLE", "INVALID_STRUCTURE", "UNKNOWN", "ERROR", "NOT_ATTEMPTED"],
+  connectionSource: ["SUCCEEDED", "FAILED", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED"],
+  databaseLookupSource: ["FOUND", "NOT_FOUND", "UNKNOWN", "ERROR", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED"],
+  targetConnectionSource: ["SUCCEEDED", "AUTHENTICATION_FAILED", "TRANSPORT_FAILED", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED"],
+  metadataSource: ["SUFFICIENT", "INSUFFICIENT", "UNKNOWN", "ERROR", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED"],
+  physicalSource: ["OBSERVED", "UNKNOWN", "ERROR", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED"],
+  historySource: ["ABSENT", "PRESENT", "UNREADABLE", "INVALID_STRUCTURE", "UNKNOWN", "ERROR", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED"],
   repositorySource: ["ABSENT", "PRESENT_VALID", "INVALID", "AMBIGUOUS", "UNKNOWN", "ERROR", "NOT_ATTEMPTED"],
   schemaSource: ["NOT_EVALUATED", "CONSISTENT", "DRIFT_DETECTED", "INSUFFICIENT_EVIDENCE", "UNKNOWN", "ERROR"],
   registrySource: ["NOT_EVALUATED", "TARGET_NOT_REGISTERED", "BASELINE_REQUIRED", "CERTIFIED", "INVALID", "CONTRADICTORY", "UNKNOWN", "ERROR"],
@@ -59,7 +60,8 @@ function validIds(value, repository) {
 export function composeEnvelope(envelope) {
   if (!isPlainObject(envelope)) return sourceError("ROOT_OBJECT_REQUIRED");
   if (envelope.producerContractVersion !== 1) return sourceError("PRODUCER_CONTRACT_VERSION_INVALID");
-  if (!ROOT_KEYS.every(key => Object.hasOwn(envelope, key))) return sourceError("SOURCE_SECTION_REQUIRED");
+  const historicalRootKeys = ROOT_KEYS.filter(key => key !== "targetConnectionSource");
+  if (!historicalRootKeys.every(key => Object.hasOwn(envelope, key))) return sourceError("SOURCE_SECTION_REQUIRED");
   if (Object.keys(envelope).some(key => !ROOT_KEYS.includes(key))) return sourceError("UNKNOWN_SOURCE_PROPERTY");
 
   const declarations = envelope.declarationsSource;
@@ -69,6 +71,9 @@ export function composeEnvelope(envelope) {
 
   for (const key of ["connectionSource", "databaseLookupSource", "metadataSource", "schemaSource", "registrySource", "onboardingSource"]) {
     if (!checkStatusSource(envelope[key], key)) return sourceError(`${key.replace(/Source$/, "").toUpperCase()}_SOURCE_INVALID`);
+  }
+  if (Object.hasOwn(envelope, "targetConnectionSource") && !checkStatusSource(envelope.targetConnectionSource, "targetConnectionSource")) {
+    return sourceError("TARGET_CONNECTION_SOURCE_INVALID");
   }
 
   const physical = envelope.physicalSource;
@@ -136,6 +141,7 @@ export function composeEnvelope(envelope) {
     registry: { status: envelope.registrySource.status },
     onboarding: { status: envelope.onboardingSource.status }
   };
+  if (Object.hasOwn(envelope, "targetConnectionSource")) raw.targetConnection = { status: envelope.targetConnectionSource.status };
   for (const key of ["businessObjectCount", "technicalObjectCount"]) {
     if (Object.hasOwn(physical, key)) raw.physical[key] = physical[key];
   }

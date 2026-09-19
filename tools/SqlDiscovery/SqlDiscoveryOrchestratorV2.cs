@@ -37,6 +37,10 @@ public sealed class SqlDiscoveryOrchestratorV2(ISqlDiscoveryTransport transport)
         }
 
         var physical = await RunPhysicalAsync(() => transport.ObservePhysicalAsync(target, cancellationToken), cancellationToken);
+        if (physical.Status != PhysicalStatus.Complete)
+        {
+            return Result(server, lookup, targetConnection, metadata, physical);
+        }
         var history = await RunHistoryAsync(() => transport.ObserveHistoryAsync(target, cancellationToken), cancellationToken);
         return Result(server, lookup, targetConnection, metadata, physical, history);
     }
@@ -51,15 +55,21 @@ public sealed class SqlDiscoveryOrchestratorV2(ISqlDiscoveryTransport transport)
             ConnectionStatus.Succeeded => "SUCCEEDED",
             ConnectionStatus.AuthenticationFailed or ConnectionStatus.TransportFailed => "FAILED",
             ConnectionStatus.TimedOut => "TIMEOUT",
+            ConnectionStatus.Cancelled => "CANCELLED",
             ConnectionStatus.NotAttempted => "NOT_ATTEMPTED",
-            ConnectionStatus.Cancelled => Gap("CONNECTION_CANCELLED_UNREPRESENTABLE"),
             _ => Gap("CONNECTION_STATE_UNREPRESENTABLE")
         };
 
-        if (result.TargetConnection.Status is not (ConnectionStatus.Succeeded or ConnectionStatus.NotAttempted))
+        string targetConnection = result.TargetConnection.Status switch
         {
-            gaps.Add("TARGET_CONNECTION_STATE_UNREPRESENTABLE");
-        }
+            ConnectionStatus.Succeeded => "SUCCEEDED",
+            ConnectionStatus.AuthenticationFailed => "AUTHENTICATION_FAILED",
+            ConnectionStatus.TransportFailed => "TRANSPORT_FAILED",
+            ConnectionStatus.TimedOut => "TIMEOUT",
+            ConnectionStatus.Cancelled => "CANCELLED",
+            ConnectionStatus.NotAttempted => "NOT_ATTEMPTED",
+            _ => Gap("TARGET_CONNECTION_STATE_UNREPRESENTABLE")
+        };
 
         string lookup = result.DatabaseLookup.Status switch
         {
@@ -68,8 +78,8 @@ public sealed class SqlDiscoveryOrchestratorV2(ISqlDiscoveryTransport transport)
             DatabaseLookupStatus.VisibilityInsufficient => "UNKNOWN",
             DatabaseLookupStatus.TechnicalError => "ERROR",
             DatabaseLookupStatus.NotAttempted => "NOT_ATTEMPTED",
-            DatabaseLookupStatus.TimedOut => Gap("DATABASE_LOOKUP_TIMEOUT_UNREPRESENTABLE"),
-            DatabaseLookupStatus.Cancelled => Gap("DATABASE_LOOKUP_CANCELLED_UNREPRESENTABLE"),
+            DatabaseLookupStatus.TimedOut => "TIMEOUT",
+            DatabaseLookupStatus.Cancelled => "CANCELLED",
             _ => Gap("DATABASE_LOOKUP_STATE_UNREPRESENTABLE")
         };
 
@@ -79,8 +89,8 @@ public sealed class SqlDiscoveryOrchestratorV2(ISqlDiscoveryTransport transport)
             MetadataStatus.Insufficient => "INSUFFICIENT",
             MetadataStatus.TechnicalError => "ERROR",
             MetadataStatus.NotAttempted => "NOT_ATTEMPTED",
-            MetadataStatus.TimedOut => Gap("METADATA_TIMEOUT_UNREPRESENTABLE"),
-            MetadataStatus.Cancelled => Gap("METADATA_CANCELLED_UNREPRESENTABLE"),
+            MetadataStatus.TimedOut => "TIMEOUT",
+            MetadataStatus.Cancelled => "CANCELLED",
             _ => Gap("METADATA_STATE_UNREPRESENTABLE")
         };
 
@@ -90,8 +100,8 @@ public sealed class SqlDiscoveryOrchestratorV2(ISqlDiscoveryTransport transport)
             PhysicalStatus.TechnicalError => "ERROR",
             PhysicalStatus.NotAttempted => "NOT_ATTEMPTED",
             PhysicalStatus.Partial => Gap("PHYSICAL_PARTIAL_UNREPRESENTABLE"),
-            PhysicalStatus.TimedOut => Gap("PHYSICAL_TIMEOUT_UNREPRESENTABLE"),
-            PhysicalStatus.Cancelled => Gap("PHYSICAL_CANCELLED_UNREPRESENTABLE"),
+            PhysicalStatus.TimedOut => "TIMEOUT",
+            PhysicalStatus.Cancelled => "CANCELLED",
             _ => Gap("PHYSICAL_STATE_UNREPRESENTABLE")
         }};
         if (result.Physical.Status == PhysicalStatus.Complete)
@@ -114,8 +124,8 @@ public sealed class SqlDiscoveryOrchestratorV2(ISqlDiscoveryTransport transport)
             HistoryStatus.InvalidStructure => "INVALID_STRUCTURE",
             HistoryStatus.TechnicalError => "ERROR",
             HistoryStatus.NotAttempted => "NOT_ATTEMPTED",
-            HistoryStatus.TimedOut => Gap("HISTORY_TIMEOUT_UNREPRESENTABLE"),
-            HistoryStatus.Cancelled => Gap("HISTORY_CANCELLED_UNREPRESENTABLE"),
+            HistoryStatus.TimedOut => "TIMEOUT",
+            HistoryStatus.Cancelled => "CANCELLED",
             _ => Gap("HISTORY_STATE_UNREPRESENTABLE")
         }};
         if (result.History.Status is HistoryStatus.Empty or HistoryStatus.Present)
@@ -133,6 +143,7 @@ public sealed class SqlDiscoveryOrchestratorV2(ISqlDiscoveryTransport transport)
         {
             ["connectionSource"] = ReadOnlySection(new Dictionary<string, object?> { ["status"] = connection }),
             ["databaseLookupSource"] = ReadOnlySection(new Dictionary<string, object?> { ["status"] = lookup }),
+            ["targetConnectionSource"] = ReadOnlySection(new Dictionary<string, object?> { ["status"] = targetConnection }),
             ["metadataSource"] = ReadOnlySection(new Dictionary<string, object?> { ["status"] = metadata }),
             ["physicalSource"] = ReadOnlySection(physical),
             ["historySource"] = ReadOnlySection(history)

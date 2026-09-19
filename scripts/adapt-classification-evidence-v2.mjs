@@ -12,18 +12,19 @@ const MIGRATION_ID_PATTERN = /^[0-9]{14}_[A-Za-z0-9_]+$/;
 const ENUMS = Object.freeze({
   databaseLifecycle: ["NEW", "EXISTING"],
   changeManagementMode: ["EF_MIGRATIONS", "LEGACY_UNMANAGED"],
-  connection: ["SUCCEEDED", "FAILED", "TIMEOUT", "NOT_ATTEMPTED"],
-  databaseLookup: ["FOUND", "NOT_FOUND", "UNKNOWN", "ERROR", "NOT_ATTEMPTED"],
-  metadata: ["SUFFICIENT", "INSUFFICIENT", "UNKNOWN", "ERROR", "NOT_ATTEMPTED"],
-  physical: ["OBSERVED", "UNKNOWN", "ERROR", "NOT_ATTEMPTED"],
-  history: ["ABSENT", "PRESENT", "UNREADABLE", "INVALID_STRUCTURE", "UNKNOWN", "ERROR", "NOT_ATTEMPTED"],
+  connection: ["SUCCEEDED", "FAILED", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED"],
+  databaseLookup: ["FOUND", "NOT_FOUND", "UNKNOWN", "ERROR", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED"],
+  targetConnection: ["SUCCEEDED", "AUTHENTICATION_FAILED", "TRANSPORT_FAILED", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED"],
+  metadata: ["SUFFICIENT", "INSUFFICIENT", "UNKNOWN", "ERROR", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED"],
+  physical: ["OBSERVED", "UNKNOWN", "ERROR", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED"],
+  history: ["ABSENT", "PRESENT", "UNREADABLE", "INVALID_STRUCTURE", "UNKNOWN", "ERROR", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED"],
   repository: ["ABSENT", "PRESENT_VALID", "INVALID", "AMBIGUOUS", "UNKNOWN", "ERROR", "NOT_ATTEMPTED"],
   schema: ["NOT_EVALUATED", "CONSISTENT", "DRIFT_DETECTED", "INSUFFICIENT_EVIDENCE", "UNKNOWN", "ERROR"],
   registry: ["NOT_EVALUATED", "TARGET_NOT_REGISTERED", "BASELINE_REQUIRED", "CERTIFIED", "INVALID", "CONTRADICTORY", "UNKNOWN", "ERROR"],
   onboarding: ["NOT_REQUIRED", "REQUIRED", "PENDING", "MANAGED", "BLOCKED", "UNKNOWN", "ERROR"]
 });
 
-const ROOT_KEYS = ["contractVersion", "declarations", "connection", "databaseLookup", "metadata", "physical", "history", "repository", "schema", "registry", "onboarding"];
+const ROOT_KEYS = ["contractVersion", "declarations", "connection", "databaseLookup", "targetConnection", "metadata", "physical", "history", "repository", "schema", "registry", "onboarding"];
 const OUTPUT_ROOT_KEYS = ["contractVersion", "rulesVersion", "declarations", "observations", "inferences", "decision", "warnings", "unknownFields"];
 const BLOCK_CODES = new Set([
   "BLOCKED_UNSUPPORTED_CONTRACT_VERSION", "BLOCKED_INVALID_LIFECYCLE", "BLOCKED_CHANGE_MODE_REQUIRED",
@@ -104,7 +105,7 @@ export function validateContract(raw) {
   if (!isPlainObject(raw)) {
     return [issue("ROOT_OBJECT_REQUIRED", "$", "Input root must be an object.")];
   }
-  checkObject(raw, "$", ROOT_KEYS, errors);
+  checkObject(raw, "$", ROOT_KEYS.filter(key => key !== "targetConnection"), errors, ROOT_KEYS);
   if (Object.hasOwn(raw, "contractVersion") && raw.contractVersion !== 2) {
     errors.push(issue("CONTRACT_VERSION_INVALID", "contractVersion", "Contract version must be integer 2."));
   }
@@ -117,6 +118,9 @@ export function validateContract(raw) {
     if (checkObject(raw[key], key, ["status"], errors)) {
       checkEnum(raw[key].status, ENUMS[key], `${key}.status`, errors);
     }
+  }
+  if (Object.hasOwn(raw, "targetConnection") && checkObject(raw.targetConnection, "targetConnection", ["status"], errors)) {
+    checkEnum(raw.targetConnection.status, ENUMS.targetConnection, "targetConnection.status", errors);
   }
 
   if (checkObject(raw.physical, "physical", ["status"], errors, ["status", "businessObjectCount", "technicalObjectCount"])) {
@@ -175,12 +179,15 @@ export function findContradictions(raw) {
       errors.push(issue("NOT_FOUND_WITH_DATABASE_EVIDENCE", "databaseLookup.status", "A missing database cannot include internal database evidence."));
     }
   }
+  if (raw.databaseLookup.status === "NOT_FOUND" && Object.hasOwn(raw, "targetConnection") && raw.targetConnection.status !== "NOT_ATTEMPTED") {
+    errors.push(issue("TARGET_ATTEMPTED_FOR_MISSING_DATABASE", "targetConnection.status", "Target access must not be attempted for a confirmed missing database."));
+  }
   const hasConclusiveInternalEvidence =
     ["SUFFICIENT", "INSUFFICIENT"].includes(raw.metadata.status) ||
     raw.physical.status === "OBSERVED" ||
     ["ABSENT", "PRESENT", "UNREADABLE", "INVALID_STRUCTURE"].includes(raw.history.status) ||
     ["CONSISTENT", "DRIFT_DETECTED", "INSUFFICIENT_EVIDENCE"].includes(raw.schema.status);
-  if (hasConclusiveInternalEvidence && (raw.connection.status !== "SUCCEEDED" || raw.databaseLookup.status !== "FOUND")) {
+  if (hasConclusiveInternalEvidence && (raw.connection.status !== "SUCCEEDED" || raw.databaseLookup.status !== "FOUND" || raw.targetConnection?.status !== "SUCCEEDED")) {
     errors.push(issue("INTERNAL_EVIDENCE_WITHOUT_FOUND_DATABASE", "$", "Conclusive internal evidence requires a successful connection and a found database."));
   }
 
@@ -218,6 +225,17 @@ export function findTechnicalErrors(raw) {
   const errors = [];
   if (raw.connection.status === "FAILED") errors.push(issue("CONNECTION_FAILED", "connection.status", "Database connection failed."));
   if (raw.connection.status === "TIMEOUT") errors.push(issue("CONNECTION_TIMEOUT", "connection.status", "Database connection timed out."));
+  if (raw.connection.status === "CANCELLED") errors.push(issue("CONNECTION_CANCELLED", "connection.status", "Database connection was cancelled."));
+  if (raw.databaseLookup.status === "TIMEOUT") errors.push(issue("DATABASE_LOOKUP_TIMEOUT", "databaseLookup.status", "Database lookup timed out."));
+  if (raw.databaseLookup.status === "CANCELLED") errors.push(issue("DATABASE_LOOKUP_CANCELLED", "databaseLookup.status", "Database lookup was cancelled."));
+  if (raw.databaseLookup.status === "FOUND") {
+    if (!Object.hasOwn(raw, "targetConnection")) errors.push(issue("TARGET_CONNECTION_SOURCE_REQUIRED", "targetConnection", "Target connection evidence is required for an existing database."));
+    else if (raw.targetConnection.status !== "SUCCEEDED") errors.push(issue(`TARGET_CONNECTION_${raw.targetConnection.status}`, "targetConnection.status", "Target database access is insufficient."));
+  }
+  for (const key of ["metadata", "physical", "history"]) {
+    if (raw[key].status === "TIMEOUT") errors.push(issue(`${key.toUpperCase()}_TIMEOUT`, `${key}.status`, "Observation timed out."));
+    if (raw[key].status === "CANCELLED") errors.push(issue(`${key.toUpperCase()}_CANCELLED`, `${key}.status`, "Observation was cancelled."));
+  }
   for (const [key, code, message] of [
     ["databaseLookup", "DATABASE_LOOKUP_ERROR", "Database lookup failed."],
     ["metadata", "METADATA_ERROR", "Metadata observation failed."],
