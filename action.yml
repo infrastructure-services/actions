@@ -1,23 +1,93 @@
-name: 'Instalar Dependencias'
-description: 'Asegura que estén instalados yq, wget y jq'
+name: Get Package Version
+description: Obtiene la versión SemVer desde un archivo package.props de MSBuild.
+
+inputs:
+  file:
+    description: Ruta al archivo package.props relativa al workspace.
+    required: false
+    default: Build/package.props
+
+outputs:
+  version:
+    description: Versión base en formato MAJOR.MINOR.PATCH.
+    value: ${{ steps.extract-version.outputs.version }}
+  prerelease:
+    description: Sufijo prerelease posterior al guion. Vacío si no existe.
+    value: ${{ steps.extract-version.outputs.build }}
 
 runs:
-  using: "composite"
+  using: composite
   steps:
-    - name: Instalando Dependencias
+    - name: Extract package version
+      id: extract-version
       shell: bash
-      run: |-
-          # Instalar dependencias una sola vez
-          if ! command -v jq &> /dev/null; then
-            if grep -qiE 'debian|ubuntu' /etc/os-release; then
-              sudo apt-get update -y && sudo apt-get install -y wget jq
-            elif grep -qiE 'rhel|fedora|centos' /etc/os-release; then
-              sudo yum install -y wget jq
-            fi
-          fi
-          
-          if ! command -v yq &> /dev/null; then
-            sudo yum install -y wget
-            sudo wget -qO /usr/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
-            sudo chmod a+x /usr/bin/yq
-          fi
+      env:
+        VERSION_FILE: ${{ inputs.file }}
+      run: |
+        set -euo pipefail
+
+        file_path="${GITHUB_WORKSPACE}/${VERSION_FILE}"
+
+        if [[ ! -f "${file_path}" ]]; then
+          echo "Error: no se encontró el archivo de versión: ${file_path}" >&2
+          exit 1
+        fi
+
+        # Lee el contenido completo para admitir espacios o saltos de línea
+        # dentro del elemento <Version>.
+        file_content="$(<"${file_path}")"
+
+        # Busca un elemento XML estándar:
+        #   <Version>1.1.2</Version>
+        #   <Version>1.1.2-rc1</Version>
+        version_element_pattern='<Version[[:space:]]*>([^<]+)</Version[[:space:]]*>'
+
+        if [[ ! "${file_content}" =~ ${version_element_pattern} ]]; then
+          echo "Error: no se encontró un elemento <Version> válido en '${file_path}'." >&2
+          exit 1
+        fi
+
+        raw_version="${BASH_REMATCH[1]}"
+
+        # Elimina espacios iniciales y finales sin modificar el contenido interno.
+        shopt -s extglob
+        raw_version="${raw_version##+([[:space:]])}"
+        raw_version="${raw_version%%+([[:space:]])}"
+
+        if [[ -z "${raw_version}" ]]; then
+          echo "Error: el elemento <Version> está vacío en '${file_path}'." >&2
+          exit 1
+        fi
+
+        # Grupos capturados:
+        #   1: MAJOR
+        #   2: MINOR
+        #   3: PATCH
+        #   5: sufijo prerelease posterior a "-"
+        #
+        # Ejemplos admitidos:
+        #   1.1.2
+        #   1.1.2-rc1
+        #   1.1.2-rc.1
+        #   1.1.2-beta.2+build.123
+        semver_pattern='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$'
+
+        if [[ ! "${raw_version}" =~ ${semver_pattern} ]]; then
+          echo "Error: la versión '${raw_version}' no cumple el formato SemVer esperado." >&2
+          echo "Formato válido: MAJOR.MINOR.PATCH o MAJOR.MINOR.PATCH-SUFIJO." >&2
+          exit 1
+        fi
+
+        version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+        prerelease="${BASH_REMATCH[5]:-}"
+
+        printf 'version=%s\n' "${version}" >> "${GITHUB_OUTPUT}"
+        printf 'prerelease=%s\n' "${prerelease}" >> "${GITHUB_OUTPUT}"
+
+        echo "Versión base detectada: ${version}"
+
+        if [[ -n "${build}" ]]; then
+          echo "Sufijo prerelease detectado: ${build}"
+        else
+          echo "No se detectó sufijo prerelease."
+        fi
