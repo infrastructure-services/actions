@@ -13,7 +13,7 @@ outputs:
     value: ${{ steps.extract-version.outputs.version }}
   prerelease:
     description: Sufijo prerelease posterior al guion. Vacío si no existe.
-    value: ${{ steps.extract-version.outputs.build }}
+    value: ${{ steps.extract-version.outputs.prerelease }}
 
 runs:
   using: composite
@@ -86,8 +86,8 @@ runs:
 
         echo "Versión base detectada: ${version}"
 
-        if [[ -n "${build}" ]]; then
-          echo "Sufijo prerelease detectado: ${build}"
+        if [[ -n "${prerelease}" ]]; then
+          echo "Sufijo prerelease detectado: ${prerelease}"
         else
           echo "No se detectó sufijo prerelease."
         fi
