@@ -1,11 +1,11 @@
 name: Get Package Version
-description: Obtiene la versión SemVer desde un archivo package.props de MSBuild.
+description: Obtiene la versión SemVer desde un archivo packages.props de MSBuild.
 
 inputs:
   file:
-    description: Ruta al archivo package.props relativa al workspace.
+    description: Ruta al archivo packages.props relativa al workspace.
     required: false
-    default: Build/package.props
+    default: Build/packages.props
 
 outputs:
   version:
