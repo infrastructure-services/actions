@@ -72,15 +72,24 @@ test("target NOT_ATTEMPTED es válido con base ausente", () => {
   const x = withoutInternal({ databaseLookup: { status: "NOT_FOUND" }, targetConnection: { status: "NOT_ATTEMPTED" } });
   const actual = outcome(x); assert.equal(actual.exitCode, 0); assert.equal(actual.calls, 1);
 });
+for (const lookupStatus of ["UNKNOWN", "ERROR", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED"]) {
+  test(`target intentado con lookup ${lookupStatus} bloquea classifier`, () => {
+    expectExit(withoutInternal({ databaseLookup: { status: lookupStatus }, targetConnection: { status: "SUCCEEDED" } }), 66, "TARGET_ATTEMPTED_WITHOUT_FOUND_DATABASE");
+  });
+}
 for (const [key, prefix] of [["databaseLookup", "DATABASE_LOOKUP"], ["metadata", "METADATA"], ["physical", "PHYSICAL"], ["history", "HISTORY"]]) {
   for (const status of ["TIMEOUT", "CANCELLED"]) {
-    test(`${key} ${status} bloquea classifier`, () => expectExit(withoutInternal({ [key]: { status } }), 75, `${prefix}_${status}`));
+    test(`${key} ${status} bloquea classifier`, () => {
+      const overrides = { [key]: { status } };
+      if (key === "databaseLookup") overrides.targetConnection = { status: "NOT_ATTEMPTED" };
+      expectExit(withoutInternal(overrides), 75, `${prefix}_${status}`);
+    });
   }
 }
 for (const [key, code] of [["metadata", "METADATA_ERROR"], ["history", "HISTORY_ERROR"], ["schema", "SCHEMA_ERROR"], ["registry", "REGISTRY_ERROR"], ["onboarding", "ONBOARDING_ERROR"], ["physical", "PHYSICAL_OBSERVATION_ERROR"], ["repository", "REPOSITORY_ERROR"]]) {
   test(`${key} error`, () => { const x = evidence(); x[key] = { status: "ERROR" }; expectExit(x, 75, code); });
 }
-test("database lookup error sin evidencia interna", () => expectExit(withoutInternal({ databaseLookup: { status: "ERROR" } }), 75, "DATABASE_LOOKUP_ERROR"));
+test("database lookup error sin evidencia interna", () => expectExit(withoutInternal({ databaseLookup: { status: "ERROR" }, targetConnection: { status: "NOT_ATTEMPTED" } }), 75, "DATABASE_LOOKUP_ERROR"));
 
 test("count cero válido produce EMPTY por frontera", () => { const x = evidence({ history: { status: "PRESENT", migrationCount: 0, migrationIds: [] } }); assert.equal(outcome(x).result.normalizedFacts.historyState, "EMPTY"); });
 test("count positivo válido", () => assert.equal(validateContract(evidence()).length, 0));

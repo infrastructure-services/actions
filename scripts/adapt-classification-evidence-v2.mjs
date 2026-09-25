@@ -190,6 +190,10 @@ export function findContradictions(raw) {
   if (hasConclusiveInternalEvidence && (raw.connection.status !== "SUCCEEDED" || raw.databaseLookup.status !== "FOUND" || raw.targetConnection?.status !== "SUCCEEDED")) {
     errors.push(issue("INTERNAL_EVIDENCE_WITHOUT_FOUND_DATABASE", "$", "Conclusive internal evidence requires a successful connection and a found database."));
   }
+  if (raw.connection.status === "SUCCEEDED" && raw.databaseLookup.status !== "FOUND" && raw.databaseLookup.status !== "NOT_FOUND" &&
+      Object.hasOwn(raw, "targetConnection") && raw.targetConnection.status !== "NOT_ATTEMPTED") {
+    errors.push(issue("TARGET_ATTEMPTED_WITHOUT_FOUND_DATABASE", "targetConnection.status", "Target access requires a found database."));
+  }
 
   if (raw.physical.status !== "OBSERVED" && (has(raw.physical, "businessObjectCount") || has(raw.physical, "technicalObjectCount"))) {
     errors.push(issue("COUNTS_WITHOUT_OBSERVATION", "physical", "Counts are not allowed when physical state was not observed."));
