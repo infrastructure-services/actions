@@ -1,0 +1,43 @@
+name: Classification V2 TEST Runtime (Read Only)
+description: Compone evidencia gobernada y clasifica un target TEST sin ejecutar SQL ni deployment
+
+inputs:
+  environment-name:
+    description: Ambiente autorizado. HG6 admite exclusivamente TEST.
+    required: true
+  evidence-file:
+    description: JSON estructurado HG5 con gobernanza y fuentes V2 explícitas.
+    required: true
+  output-directory:
+    description: Directorio local para el artifact V2 sanitizado.
+    required: false
+    default: artifacts/classification-v2/TEST
+
+outputs:
+  artifact-path:
+    description: Path del artifact V2 determinístico y sanitizado.
+    value: ${{ steps.classify.outputs.artifact-path }}
+  status:
+    description: Estado exacto del compositor gobernado.
+    value: ${{ steps.classify.outputs.status }}
+  reason:
+    description: Razón contractual estable.
+    value: ${{ steps.classify.outputs.reason }}
+  classification-invoked:
+    description: Indica si Classification V2 fue invocada.
+    value: ${{ steps.classify.outputs.classification-invoked }}
+  target-id:
+    description: Identidad de correlación gobernada.
+    value: ${{ steps.classify.outputs.target-id }}
+
+runs:
+  using: composite
+  steps:
+    - name: Compose and classify governed TEST evidence (read only)
+      id: classify
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment-name }}
+        EVIDENCE_FILE: ${{ inputs.evidence-file }}
+        OUTPUT_DIRECTORY: ${{ inputs.output-directory }}
+      run: node "$GITHUB_ACTION_PATH/../scripts/run-classification-v2-test-runtime.mjs"

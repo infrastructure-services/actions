@@ -1,5 +1,10 @@
 /tests/fixtures/classification-evidence-v2/raw/*.json text eol=lf
+/.gitattributes text eol=lf
 /tests/test-classification-evidence-producer-v2.sh text eol=lf
 /tests/test-repository-discovery-v2.sh text eol=lf
 /tests/test-local-classification-composition-v2.sh text eol=lf
 /tests/test-governed-classification-composition-v2.sh text eol=lf
+/classification-v2-test-runtime/action.yml text eol=lf
+/scripts/run-classification-v2-test-runtime.mjs text eol=lf
+/tests/test-classification-v2-test-runtime.mjs text eol=lf
+/tests/test-classification-v2-test-runtime.sh text eol=lf
