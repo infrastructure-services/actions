@@ -35,12 +35,33 @@ function appendOutput(file, name, value) {
   fs.appendFileSync(file, `${name}<<SQL_DISCOVERY_V2_EOF\n${value}\nSQL_DISCOVERY_V2_EOF\n`, { encoding: "utf8" });
 }
 
+function runDotnet(execute, args, options, failureCode) {
+  const child = execute("dotnet", args, options);
+  if (child.error || child.status !== 0) throw new Error(failureCode);
+  return child;
+}
+
+export function prepareSqlDiscovery(env = process.env, execute = spawnSync) {
+  if (!env.GITHUB_ACTION_PATH || !env.RUNNER_TEMP) throw new Error("INPUT_REQUIRED");
+  const project = path.resolve(env.GITHUB_ACTION_PATH, "..", "tools", "SqlDiscovery", "SqlDiscovery.csproj");
+  const config = path.resolve(env.GITHUB_ACTION_PATH, "..", "tools", "SqlDiscovery", "NuGet.Config");
+  const buildRoot = path.join(env.RUNNER_TEMP, "sql-discovery-v2-build");
+  const baseOutput = `${path.join(buildRoot, "bin")}${path.sep}`;
+  const baseIntermediate = `${path.join(buildRoot, "obj")}${path.sep}`;
+  const buildEnv = { ...env };
+  delete buildEnv.SQL_SERVER_CONNECTION;
+
+  const common = { encoding: "utf8", env: buildEnv, timeout: 180_000, maxBuffer: 1024 * 1024 };
+  runDotnet(execute, ["restore", project, "--configfile", config, `--property:BaseIntermediateOutputPath=${baseIntermediate}`, "--verbosity", "minimal"], common, "SQL_DISCOVERY_RESTORE_FAILED");
+  runDotnet(execute, ["build", project, "--no-restore", "--configuration", "Release", `--property:BaseOutputPath=${baseOutput}`, `--property:BaseIntermediateOutputPath=${baseIntermediate}`, "--verbosity", "minimal"], common, "SQL_DISCOVERY_BUILD_FAILED");
+  return path.join(baseOutput, "Release", "net10.0", "SqlDiscovery.dll");
+}
+
 export function runPublicSqlDiscovery(env = process.env, execute = spawnSync) {
   validateEnvironment(env.ENVIRONMENT_NAME);
   if (!env.SQL_SERVER_CONNECTION || !env.SQL_DATABASE_NAME || !env.GITHUB_OUTPUT || !env.GITHUB_ACTION_PATH || !env.RUNNER_TEMP) throw new Error("INPUT_REQUIRED");
-  const project = path.resolve(env.GITHUB_ACTION_PATH, "..", "tools", "SqlDiscovery", "SqlDiscovery.csproj");
-  const buildRoot = path.join(env.RUNNER_TEMP, "sql-discovery-v2-build");
-  const child = execute("dotnet", ["run", "--project", project, "--configuration", "Release", `--property:BaseOutputPath=${path.join(buildRoot, "bin")}${path.sep}`, `--property:BaseIntermediateOutputPath=${path.join(buildRoot, "obj")}${path.sep}`, "--", "--v2"], {
+  const executable = prepareSqlDiscovery(env, execute);
+  const child = execute("dotnet", [executable, "--v2"], {
     encoding: "utf8", env, timeout: 180_000, maxBuffer: 1024 * 1024
   });
   if (child.error || child.status !== 0) throw new Error("SQL_DISCOVERY_EXECUTION_FAILED");

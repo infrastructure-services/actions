@@ -40,10 +40,10 @@ export function runPublicRepositoryDiscovery(env = process.env, execute = spawnS
   if (child.error || ![0, 75].includes(child.status)) throw new Error("REPOSITORY_DISCOVERY_EXECUTION_FAILED");
   const evidence = JSON.parse(child.stdout);
   if (evidence === null || typeof evidence !== "object" || !STATUSES.has(evidence.status)) throw new Error("EVIDENCE_INVALID");
+  if ((child.status === 75) !== (evidence.status === "ERROR")) throw new Error("EVIDENCE_EXIT_MISMATCH");
   appendOutput(env.GITHUB_OUTPUT, "status", evidence.status);
   appendOutput(env.GITHUB_OUTPUT, "evidence-json", JSON.stringify(evidence));
   appendOutput(env.GITHUB_OUTPUT, "migration-ids-json", JSON.stringify(evidence.migrations?.ids ?? []));
-  if (child.status === 75) throw new Error("REPOSITORY_INSPECTION_FAILED");
   return evidence;
 }
 

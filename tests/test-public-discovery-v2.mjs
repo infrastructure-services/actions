@@ -23,6 +23,14 @@ const sqlEvidence = targetStatus => ({
   physicalSource: { status: targetStatus === "SUCCEEDED" ? "OBSERVED" : "NOT_ATTEMPTED", ...(targetStatus === "SUCCEEDED" ? { businessObjectCount: 2 } : {}) },
   historySource: { status: targetStatus === "SUCCEEDED" ? "PRESENT" : "NOT_ATTEMPTED", ...(targetStatus === "SUCCEEDED" ? { migrationCount: 1, migrationIds: ["20260101000000_A"] } : {}) }
 });
+const sqlExecutor = (evidence, observe = () => {}) => {
+  let call = 0;
+  return (command, args, options) => {
+    observe({ command, args, options, call });
+    call += 1;
+    return call < 3 ? { status: 0, stdout: "restore/build log\n", stderr: "" } : { status: 0, stdout: JSON.stringify(evidence), stderr: "" };
+  };
+};
 
 try {
   test("SQL acepta TEST explícito", () => assert.doesNotThrow(() => validateSqlEnvironment("TEST")));
@@ -30,7 +38,7 @@ try {
   for (const status of ["AUTHENTICATION_FAILED", "TRANSPORT_FAILED", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED", "SUCCEEDED"]) {
     test(`SQL preserva ${status}`, () => {
       const env = sqlEnv(`sql-${status}`);
-      const execute = () => ({ status: 0, stdout: JSON.stringify(sqlEvidence(status)), stderr: "" });
+      const execute = sqlExecutor(sqlEvidence(status));
       const evidence = runPublicSqlDiscovery(env, execute);
       assert.equal(evidence.serverConnectionStatus, status);
       const persisted = fs.readFileSync(env.GITHUB_OUTPUT, "utf8");
@@ -40,19 +48,23 @@ try {
   }
   test("SQL no filtra secreto ante error", () => {
     const env = sqlEnv("sql-error");
-    assert.throws(() => runPublicSqlDiscovery(env, () => ({ status: 1, stdout: "", stderr: env.SQL_SERVER_CONNECTION })), /SQL_DISCOVERY_EXECUTION_FAILED/);
+    assert.throws(() => runPublicSqlDiscovery(env, () => ({ status: 1, stdout: "", stderr: env.SQL_SERVER_CONNECTION })), /SQL_DISCOVERY_RESTORE_FAILED/);
     assert.equal(fs.existsSync(env.GITHUB_OUTPUT), false);
   });
   test("SQL mantiene secreto fuera de command line, evidence y outputs", () => {
     const env = sqlEnv("sql-secret-boundary");
-    let invocation;
-    const execute = (command, args, options) => {
-      invocation = { command, args, options };
-      return { status: 0, stdout: JSON.stringify(sqlEvidence("SUCCEEDED")), stderr: "" };
-    };
+    const invocations = [];
+    const execute = sqlExecutor(sqlEvidence("SUCCEEDED"), invocation => invocations.push(invocation));
     const evidence = runPublicSqlDiscovery(env, execute);
-    assert.equal(`${invocation.command} ${invocation.args.join(" ")}`.includes(env.SQL_SERVER_CONNECTION), false);
-    assert.equal(invocation.options.env.SQL_SERVER_CONNECTION, env.SQL_SERVER_CONNECTION);
+    assert.equal(invocations.length, 3);
+    assert.equal(invocations.every(invocation => `${invocation.command} ${invocation.args.join(" ")}`.includes(env.SQL_SERVER_CONNECTION) === false), true);
+    assert.equal(invocations[0].args.includes("restore"), true);
+    assert.equal(invocations[0].args.some(value => value.endsWith("NuGet.Config")), true);
+    assert.equal(invocations[0].options.env.SQL_SERVER_CONNECTION, undefined);
+    assert.equal(invocations[1].args.includes("--no-restore"), true);
+    assert.equal(invocations[1].options.env.SQL_SERVER_CONNECTION, undefined);
+    assert.deepEqual(invocations[2].args.slice(-1), ["--v2"]);
+    assert.equal(invocations[2].options.env.SQL_SERVER_CONNECTION, env.SQL_SERVER_CONNECTION);
     assert.equal(JSON.stringify(evidence).includes(env.SQL_SERVER_CONNECTION), false);
     assert.equal(fs.readFileSync(env.GITHUB_OUTPUT, "utf8").includes(env.SQL_SERVER_CONNECTION), false);
   });
@@ -80,10 +92,15 @@ try {
       assert.equal(evidence.status, status);
     }
   });
-  test("Repository ERROR falla cerrado sin coerción", () => {
+  test("Repository ERROR se publica como evidence contractual", () => {
     const env = { ENVIRONMENT_NAME: "TEST", INSPECTION_STATUS: "READY", WORKSPACE: temporaryRoot, GITHUB_WORKSPACE: temporaryRoot, GITHUB_OUTPUT: output("repo-error"), GITHUB_ACTION_PATH: path.join(root, "repository-discovery-v2") };
-    assert.throws(() => runPublicRepositoryDiscovery(env, () => ({ status: 75, stdout: '{"status":"ERROR"}\n', stderr: "private path" })), /REPOSITORY_INSPECTION_FAILED/);
+    const evidence = runPublicRepositoryDiscovery(env, () => ({ status: 75, stdout: '{"status":"ERROR"}\n', stderr: "private path" }));
+    assert.equal(evidence.status, "ERROR");
     assert.match(fs.readFileSync(env.GITHUB_OUTPUT, "utf8"), /ERROR/);
+  });
+  test("Repository exige coherencia entre ERROR y exit 75", () => {
+    const env = { ENVIRONMENT_NAME: "TEST", INSPECTION_STATUS: "READY", WORKSPACE: temporaryRoot, GITHUB_WORKSPACE: temporaryRoot, GITHUB_OUTPUT: output("repo-error-mismatch"), GITHUB_ACTION_PATH: path.join(root, "repository-discovery-v2") };
+    assert.throws(() => runPublicRepositoryDiscovery(env, () => ({ status: 0, stdout: '{"status":"ERROR"}\n', stderr: "" })), /EVIDENCE_EXIT_MISMATCH/);
   });
 
   test("contratos action.yml son explícitos y no tienen default TEST", () => {

@@ -7,8 +7,6 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 node "$SCRIPT_DIR/test-public-discovery-v2.mjs"
 
 ROUTING_ROOT="$(mktemp -d)"
-ROOT_WIN="$(cygpath -w "$ROOT")"
-ROUTING_ROOT_WIN="$(cygpath -w "$ROUTING_ROOT")"
 cleanup() {
   local resolved temp_root
   resolved="$(cd "$ROUTING_ROOT" && pwd -P)"
@@ -20,13 +18,26 @@ cleanup() {
 }
 trap cleanup EXIT
 
-dotnet restore "$ROOT_WIN/tools/SqlDiscovery/SqlDiscovery.csproj" \
-  --configfile "$ROOT_WIN/tools/SqlDiscovery/NuGet.Config" >/dev/null
-dotnet build "$ROOT_WIN/tools/SqlDiscovery/SqlDiscovery.csproj" \
-  --configuration Release --no-restore \
-  --property:BaseOutputPath="$ROUTING_ROOT_WIN/bin/" >/dev/null
+mkdir -p "$ROUTING_ROOT/source" "$ROUTING_ROOT/source/sql-discovery-v2" "$ROUTING_ROOT/runtime"
+git -c safe.directory="$ROOT" -C "$ROOT" archive HEAD tools/SqlDiscovery | tar -xf - -C "$ROUTING_ROOT/source"
+if ! GITHUB_ACTION_PATH="$(cygpath -w "$ROUTING_ROOT/source/sql-discovery-v2")" \
+  RUNNER_TEMP="$(cygpath -w "$ROUTING_ROOT/runtime")" \
+  SQL_SERVER_CONNECTION="unique-secret-must-not-reach-build" \
+    node --input-type=module -e '
+    import { pathToFileURL } from "node:url";
+    const { prepareSqlDiscovery } = await import(pathToFileURL(process.argv[2]));
+    process.stdout.write(prepareSqlDiscovery(process.env));
+  ' prepare-only "$(cygpath -w "$ROOT/scripts/run-sql-discovery-v2-public.mjs")" >"$ROUTING_ROOT/prepared-path" 2>"$ROUTING_ROOT/prepare-stderr"
+then
+  grep -Eo 'SQL_DISCOVERY_[A-Z_]+' "$ROUTING_ROOT/prepare-stderr" | head -n 1 || true
+  sed 's/unique-secret-must-not-reach-build/[REDACTED]/g' "$ROUTING_ROOT/prepare-stderr"
+  echo "FAIL: real public SQL preparation failed"
+  exit 1
+fi
 
-SQL_DISCOVERY_DLL="$ROUTING_ROOT_WIN/bin/Release/net10.0/SqlDiscovery.dll"
+[[ ! -s "$ROUTING_ROOT/prepare-stderr" ]] || { echo "FAIL: restore/build leaked stderr"; exit 1; }
+SQL_DISCOVERY_DLL="$(cat "$ROUTING_ROOT/prepared-path")"
+[[ "$SQL_DISCOVERY_DLL" == *.dll ]] || { echo "FAIL: restore/build contaminated prepared artifact output"; exit 1; }
 run_route() {
   local expected_exit="$1" expected_diagnostic="$2"
   shift 2
@@ -45,6 +56,7 @@ run_route 2 DB_CONNECTION_REQUIRED
 run_route 64 SQL_DISCOVERY_INPUT_REQUIRED --v2
 run_route 64 ARGUMENTS_INVALID --unknown
 echo "OK: Program.cs routing proves no-args V1, explicit --v2 and fail-closed unknown args"
+echo "OK: real public SQL preparation uses NuGet.Config and isolates restore/build output"
 
 for protected in \
   "$ROOT/action.yml" \
