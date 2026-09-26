@@ -2,3 +2,4 @@
 /tests/test-classification-evidence-producer-v2.sh text eol=lf
 /tests/test-repository-discovery-v2.sh text eol=lf
 /tests/test-local-classification-composition-v2.sh text eol=lf
+/tests/test-governed-classification-composition-v2.sh text eol=lf
