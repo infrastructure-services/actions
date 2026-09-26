@@ -3,6 +3,7 @@
   "declarationsSource": { "databaseLifecycle": "EXISTING", "changeManagementMode": "EF_MIGRATIONS" },
   "connectionSource": { "status": "SUCCEEDED" },
   "databaseLookupSource": { "status": "FOUND" },
+  "targetConnectionSource": { "status": "SUCCEEDED" },
   "metadataSource": { "status": "SUFFICIENT" },
   "physicalSource": { "status": "OBSERVED", "businessObjectCount": 12, "technicalObjectCount": 1 },
   "historySource": { "status": "PRESENT", "migrationCount": 1, "migrationIds": ["20260101000000_Initial"] },

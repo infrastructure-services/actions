@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { composeEnvelope, parseInput, runCli } from "../scripts/compose-classification-evidence-v2.mjs";
-import { adaptEvidence } from "../scripts/adapt-classification-evidence-v2.mjs";
+import { adaptEvidence, normalize } from "../scripts/adapt-classification-evidence-v2.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixtureRoot = path.join(root, "tests", "fixtures", "classification-evidence-v2");
@@ -23,6 +23,7 @@ function envelope(overrides = {}) {
     declarationsSource: { databaseLifecycle: "EXISTING", changeManagementMode: "EF_MIGRATIONS" },
     connectionSource: { status: "SUCCEEDED" },
     databaseLookupSource: { status: "FOUND" },
+    targetConnectionSource: { status: "SUCCEEDED" },
     metadataSource: { status: "SUFFICIENT" },
     physicalSource: { status: "OBSERVED", businessObjectCount: 4, technicalObjectCount: 1 },
     historySource: { status: "PRESENT", migrationCount: 1, migrationIds: ["20260101000000_Initial"] },
@@ -54,6 +55,7 @@ test("propiedad raíz desconocida", () => expectCode(envelope({ unexpected: true
 test("propiedad fuente desconocida", () => expectCode(envelope({ connectionSource: { status: "SUCCEEDED", extra: true } }), 65));
 test("tipo incorrecto", () => expectCode(envelope({ connectionSource: "SUCCEEDED" }), 65));
 test("enum inválido", () => expectCode(envelope({ metadataSource: { status: "VISIBLE" } }), 65));
+test("enum target inválido", () => expectCode(envelope({ targetConnectionSource: { status: "FAILED" } }), 65));
 test("count negativo", () => expectCode(envelope({ physicalSource: { status: "OBSERVED", businessObjectCount: -1 } }), 65));
 test("count decimal", () => expectCode(envelope({ physicalSource: { status: "OBSERVED", businessObjectCount: 1.5 } }), 65));
 test("count fuera de rango seguro", () => expectCode(envelope({ physicalSource: { status: "OBSERVED", businessObjectCount: Number.MAX_SAFE_INTEGER + 1 } }), 65));
@@ -64,18 +66,30 @@ test("technicalObjectCount ausente se conserva ausente", () => {
 });
 test("businessObjectCount cero sin técnico normaliza UNKNOWN en adapter", () => {
   const output = raw(envelope({ physicalSource: { status: "OBSERVED", businessObjectCount: 0 } }));
-  assert.equal(adaptEvidence(output).result.normalizedFacts.physicalState, "UNKNOWN");
+  assert.equal(normalize(output).physicalState, "UNKNOWN");
 });
 
-for (const status of ["FAILED", "TIMEOUT", "NOT_ATTEMPTED"]) {
+for (const status of ["FAILED", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED"]) {
   test(`connection ${status} preservado`, () => assert.equal(raw(envelope({ connectionSource: { status } })).connection.status, status));
 }
-for (const status of ["NOT_FOUND", "ERROR", "UNKNOWN", "NOT_ATTEMPTED"]) {
+for (const status of ["NOT_FOUND", "ERROR", "UNKNOWN", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED"]) {
   test(`database lookup ${status} preservado`, () => assert.equal(raw(envelope({ databaseLookupSource: { status } })).databaseLookup.status, status));
 }
-for (const status of ["ABSENT", "UNREADABLE", "INVALID_STRUCTURE", "ERROR", "UNKNOWN", "NOT_ATTEMPTED"]) {
+for (const status of ["ABSENT", "UNREADABLE", "INVALID_STRUCTURE", "ERROR", "UNKNOWN", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED"]) {
   test(`history ${status} preservado`, () => assert.equal(raw(envelope({ historySource: { status } })).history.status, status));
 }
+for (const status of ["SUCCEEDED", "AUTHENTICATION_FAILED", "TRANSPORT_FAILED", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED"]) {
+  test(`target ${status} preservado`, () => assert.equal(raw(envelope({ targetConnectionSource: { status } })).targetConnection.status, status));
+}
+for (const key of ["metadataSource", "physicalSource"]) {
+  for (const status of ["TIMEOUT", "CANCELLED"]) {
+    test(`${key} ${status} preservado`, () => assert.equal(raw(envelope({ [key]: { status } }))[key.replace("Source", "")].status, status));
+  }
+}
+test("fuente target histórica ausente se conserva ausente", () => {
+  const input = envelope(); delete input.targetConnectionSource;
+  assert.equal(Object.hasOwn(raw(input), "targetConnection"), false);
+});
 test("history PRESENT vacío", () => assert.deepEqual(raw(envelope({ historySource: { status: "PRESENT", migrationCount: 0, migrationIds: [] } })).history, { status: "PRESENT", migrationCount: 0, migrationIds: [] }));
 test("history PRESENT con IDs y orden estable", () => {
   const ids = ["20260201000000_Second", "20260101000000_First"];

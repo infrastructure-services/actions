@@ -15,18 +15,23 @@ var tests = new List<(string Name, Func<Task> Run)>
     ("lookup sin visibilidad queda desconocido", LookupVisibilityInsufficient),
     ("fallo técnico del lookup", LookupTechnicalFailure),
     ("timeout de lookup bloquea dependencias", LookupTimeout),
+    ("cancelación de lookup bloquea dependencias", LookupCancellation),
     ("target fallido no contamina conexión servidor", TargetFailure),
+    ("target conserva autenticación timeout y cancelación", TargetExactFailures),
     ("metadata suficiente", MetadataSufficient),
     ("metadata insuficiente", MetadataInsufficient),
     ("fallo de metadata", MetadataFailure),
+    ("metadata conserva timeout y cancelación", MetadataTimeoutCancellation),
     ("observación física completa y count válido", PhysicalComplete),
     ("observación física parcial no publica counts", PhysicalPartial),
+    ("física conserva timeout y cancelación", PhysicalTimeoutCancellation),
     ("history ausente", HistoryAbsent),
     ("history presente vacía", HistoryEmpty),
     ("history presente conserva duplicados y orden", HistoryRows),
     ("history ilegible", HistoryUnreadable),
     ("history con estructura inválida", HistoryInvalid),
     ("history con error técnico", HistoryError),
+    ("history conserva timeout y cancelación", HistoryTimeoutCancellation),
     ("prerrequisitos dejan etapas no intentadas", Prerequisites),
     ("excepción sensible no se expone", SensitiveException),
     ("transporte declara cero retries, TLS estricto y sólo lectura", StaticTransportGuards),
@@ -118,8 +123,8 @@ static async Task Cancellation()
     Equal(DatabaseLookupStatus.NotAttempted, result.DatabaseLookup.Status);
     EqualSequence(new[] { "server" }, transport.Calls);
     var projection = new SqlDiscoveryOrchestratorV2(transport).ProjectSources(result);
-    False(projection.IsRepresentable);
-    Contains("CONNECTION_CANCELLED_UNREPRESENTABLE", projection.Gaps);
+    True(projection.IsRepresentable);
+    Equal("CANCELLED", Status(projection, "connectionSource"));
 }
 
 static async Task PreCancelled()
@@ -131,7 +136,7 @@ static async Task PreCancelled()
     Equal(ConnectionStatus.Cancelled, result.ServerConnection.Status);
     Equal(DatabaseLookupStatus.NotAttempted, result.DatabaseLookup.Status);
     Equal(0, transport.Calls.Count);
-    False(new SqlDiscoveryOrchestratorV2(transport).ProjectSources(result).IsRepresentable);
+    Equal("CANCELLED", Status(new SqlDiscoveryOrchestratorV2(transport).ProjectSources(result), "connectionSource"));
 }
 
 static async Task DatabaseFound() => Equal(DatabaseLookupStatus.Found, (await Discover(SuccessfulTransport())).DatabaseLookup.Status);
@@ -175,8 +180,19 @@ static async Task LookupTimeout()
     Equal(MetadataStatus.NotAttempted, result.Metadata.Status);
     EqualSequence(new[] { "server", "lookup" }, transport.Calls);
     var projection = new SqlDiscoveryOrchestratorV2(transport).ProjectSources(result);
-    False(projection.IsRepresentable);
-    Contains("DATABASE_LOOKUP_TIMEOUT_UNREPRESENTABLE", projection.Gaps);
+    True(projection.IsRepresentable);
+    Equal("TIMEOUT", Status(projection, "databaseLookupSource"));
+}
+
+static async Task LookupCancellation()
+{
+    var transport = SuccessfulTransport();
+    using var source = new CancellationTokenSource();
+    transport.Lookup = token => { source.Cancel(); return Task.FromCanceled<DatabaseLookupResult>(token); };
+    var result = await Discover(transport, source.Token);
+    Equal(DatabaseLookupStatus.Cancelled, result.DatabaseLookup.Status);
+    Equal(ConnectionStatus.NotAttempted, result.TargetConnection.Status);
+    Equal("CANCELLED", Status(new SqlDiscoveryOrchestratorV2(transport).ProjectSources(result), "databaseLookupSource"));
 }
 
 static async Task TargetFailure()
@@ -188,8 +204,30 @@ static async Task TargetFailure()
     Equal(ConnectionStatus.TransportFailed, result.TargetConnection.Status);
     Equal(MetadataStatus.NotAttempted, result.Metadata.Status);
     var projection = new SqlDiscoveryOrchestratorV2(transport).ProjectSources(result);
-    False(projection.IsRepresentable);
-    Contains("TARGET_CONNECTION_STATE_UNREPRESENTABLE", projection.Gaps);
+    True(projection.IsRepresentable);
+    Equal("TRANSPORT_FAILED", Status(projection, "targetConnectionSource"));
+}
+
+static async Task TargetExactFailures()
+{
+    foreach (var item in new (Func<CancellationToken, Task> Action, ConnectionStatus Expected, string Raw)[]
+    {
+        (_ => throw new SqlDiscoveryAuthenticationException(), ConnectionStatus.AuthenticationFailed, "AUTHENTICATION_FAILED"),
+        (_ => throw new TimeoutException(), ConnectionStatus.TimedOut, "TIMEOUT")
+    })
+    {
+        var transport = SuccessfulTransport(); transport.ConnectTarget = item.Action;
+        var result = await Discover(transport);
+        Equal(item.Expected, result.TargetConnection.Status);
+        Equal(item.Raw, Status(new SqlDiscoveryOrchestratorV2(transport).ProjectSources(result), "targetConnectionSource"));
+        Equal(MetadataStatus.NotAttempted, result.Metadata.Status);
+    }
+    using var source = new CancellationTokenSource();
+    var cancelled = SuccessfulTransport();
+    cancelled.ConnectTarget = token => { source.Cancel(); return Task.FromCanceled(token); };
+    var cancelledResult = await Discover(cancelled, source.Token);
+    Equal(ConnectionStatus.Cancelled, cancelledResult.TargetConnection.Status);
+    Equal("CANCELLED", Status(new SqlDiscoveryOrchestratorV2(cancelled).ProjectSources(cancelledResult), "targetConnectionSource"));
 }
 
 static async Task MetadataSufficient() => Equal(MetadataStatus.Sufficient, (await Discover(SuccessfulTransport())).Metadata.Status);
@@ -212,6 +250,19 @@ static async Task MetadataFailure()
     Equal("TECHNICAL_ERROR", result.Diagnostics.Single().Code);
 }
 
+static async Task MetadataTimeoutCancellation()
+{
+    var timedOut = SuccessfulTransport(); timedOut.Metadata = _ => throw new TimeoutException();
+    var timedOutResult = await Discover(timedOut);
+    Equal("TIMEOUT", Status(new SqlDiscoveryOrchestratorV2(timedOut).ProjectSources(timedOutResult), "metadataSource"));
+    Equal(PhysicalStatus.NotAttempted, timedOutResult.Physical.Status);
+    using var source = new CancellationTokenSource();
+    var cancelled = SuccessfulTransport(); cancelled.Metadata = token => { source.Cancel(); return Task.FromCanceled<MetadataResult>(token); };
+    var cancelledResult = await Discover(cancelled, source.Token);
+    Equal("CANCELLED", Status(new SqlDiscoveryOrchestratorV2(cancelled).ProjectSources(cancelledResult), "metadataSource"));
+    Equal(PhysicalStatus.NotAttempted, cancelledResult.Physical.Status);
+}
+
 static async Task PhysicalComplete()
 {
     var transport = SuccessfulTransport();
@@ -232,6 +283,19 @@ static async Task PhysicalPartial()
     var invocations = 0;
     False(InvokePipelineWhenRepresentable(projection, () => invocations++));
     Equal(0, invocations);
+}
+
+static async Task PhysicalTimeoutCancellation()
+{
+    var timedOut = SuccessfulTransport(); timedOut.Physical = _ => throw new TimeoutException();
+    var timedOutResult = await Discover(timedOut);
+    Equal("TIMEOUT", Status(new SqlDiscoveryOrchestratorV2(timedOut).ProjectSources(timedOutResult), "physicalSource"));
+    Equal(HistoryStatus.NotAttempted, timedOutResult.History.Status);
+    using var source = new CancellationTokenSource();
+    var cancelled = SuccessfulTransport(); cancelled.Physical = token => { source.Cancel(); return Task.FromCanceled<PhysicalResult>(token); };
+    var cancelledResult = await Discover(cancelled, source.Token);
+    Equal("CANCELLED", Status(new SqlDiscoveryOrchestratorV2(cancelled).ProjectSources(cancelledResult), "physicalSource"));
+    Equal(HistoryStatus.NotAttempted, cancelledResult.History.Status);
 }
 
 static async Task HistoryAbsent()
@@ -265,6 +329,15 @@ static async Task HistoryUnreadable() => await AssertHistoryStatus(HistoryStatus
 static async Task HistoryInvalid() => await AssertHistoryStatus(HistoryStatus.InvalidStructure, "INVALID_STRUCTURE");
 static async Task HistoryError() => await AssertHistoryStatus(HistoryStatus.TechnicalError, "ERROR");
 
+static async Task HistoryTimeoutCancellation()
+{
+    var timedOut = SuccessfulTransport(); timedOut.History = _ => throw new TimeoutException();
+    Equal("TIMEOUT", Status(new SqlDiscoveryOrchestratorV2(timedOut).ProjectSources(await Discover(timedOut)), "historySource"));
+    using var source = new CancellationTokenSource();
+    var cancelled = SuccessfulTransport(); cancelled.History = token => { source.Cancel(); return Task.FromCanceled<HistoryResult>(token); };
+    Equal("CANCELLED", Status(new SqlDiscoveryOrchestratorV2(cancelled).ProjectSources(await Discover(cancelled, source.Token)), "historySource"));
+}
+
 static async Task AssertHistoryStatus(HistoryStatus status, string projected)
 {
     var transport = SuccessfulTransport();
@@ -293,8 +366,8 @@ static async Task SensitiveException()
     False(serialized.Contains("do-not-expose", StringComparison.OrdinalIgnoreCase));
     False(serialized.Contains("opaque.invalid", StringComparison.OrdinalIgnoreCase));
     Equal("TECHNICAL_ERROR", result.Physical.Diagnostic?.Code);
-    Equal(HistoryStatus.Present, result.History.Status);
-    True(transport.Calls.Contains("history"));
+    Equal(HistoryStatus.NotAttempted, result.History.Status);
+    False(transport.Calls.Contains("history"));
 }
 
 static Task StaticTransportGuards()
@@ -348,11 +421,13 @@ static async Task IntegrationTargetGap()
     var transport = SuccessfulTransport();
     transport.ConnectTarget = _ => throw new InvalidOperationException("target");
     var projection = new SqlDiscoveryOrchestratorV2(transport).ProjectSources(await Discover(transport));
-    False(projection.IsRepresentable);
-    Contains("TARGET_CONNECTION_STATE_UNREPRESENTABLE", projection.Gaps);
-    var invocations = 0;
-    False(InvokePipelineWhenRepresentable(projection, () => invocations++));
-    Equal(0, invocations);
+    True(projection.IsRepresentable);
+    var envelope = Envelope(projection, "EXISTING", "EF_MIGRATIONS",
+        new { status = "PRESENT_VALID", migrations = new { count = 1, ids = new[] { "20260101000000_A" } } },
+        new { status = "UNKNOWN" }, new { status = "UNKNOWN" }, new { status = "UNKNOWN" });
+    var pipeline = RunPipeline(envelope);
+    Equal(75, pipeline.ExitCode);
+    False(pipeline.Json.RootElement.GetProperty("classificationInvoked").GetBoolean());
 }
 
 static async Task IntegrationUnknownLookup()
@@ -395,6 +470,7 @@ static object Envelope(SourceProjection projection, string lifecycle, string mod
         ["declarationsSource"] = new { databaseLifecycle = lifecycle, changeManagementMode = mode },
         ["connectionSource"] = source["connectionSource"],
         ["databaseLookupSource"] = source["databaseLookupSource"],
+        ["targetConnectionSource"] = source["targetConnectionSource"],
         ["metadataSource"] = source["metadataSource"],
         ["physicalSource"] = source["physicalSource"],
         ["historySource"] = source["historySource"],
