@@ -8,3 +8,9 @@
 /scripts/run-classification-v2-test-runtime.mjs text eol=lf
 /tests/test-classification-v2-test-runtime.mjs text eol=lf
 /tests/test-classification-v2-test-runtime.sh text eol=lf
+/sql-discovery-v2/action.yml text eol=lf
+/repository-discovery-v2/action.yml text eol=lf
+/scripts/run-sql-discovery-v2-public.mjs text eol=lf
+/scripts/run-repository-discovery-v2-public.mjs text eol=lf
+/tests/test-public-discovery-v2.mjs text eol=lf
+/tests/test-public-discovery-v2.sh text eol=lf

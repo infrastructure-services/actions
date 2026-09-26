@@ -1,0 +1,107 @@
+#!/usr/bin/env node
+
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { runPublicSqlDiscovery, validateEnvironment as validateSqlEnvironment } from "../scripts/run-sql-discovery-v2-public.mjs";
+import { buildRequest, runPublicRepositoryDiscovery, validateEnvironment as validateRepositoryEnvironment } from "../scripts/run-repository-discovery-v2-public.mjs";
+
+const root = path.resolve(new URL("..", import.meta.url).pathname.replace(/^\/(?:([A-Za-z]:))/, "$1"));
+const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "public-discovery-v2-"));
+let passed = 0;
+const test = (name, fn) => { try { fn(); passed += 1; console.log(`PASS: ${name}`); } catch (error) { console.error(`FAIL: ${name}`); throw error; } };
+const output = name => path.join(temporaryRoot, `${name}.txt`);
+const sqlEnv = name => ({ ENVIRONMENT_NAME: "TEST", SQL_SERVER_CONNECTION: "Server=secret.example;Password=do-not-log", SQL_DATABASE_NAME: "Db", GITHUB_OUTPUT: output(name), GITHUB_ACTION_PATH: path.join(root, "sql-discovery-v2"), RUNNER_TEMP: temporaryRoot });
+const sqlEvidence = targetStatus => ({
+  serverConnectionStatus: targetStatus,
+  connectionSource: { status: targetStatus === "NOT_ATTEMPTED" ? "NOT_ATTEMPTED" : targetStatus === "CANCELLED" ? "CANCELLED" : targetStatus === "TIMEOUT" ? "TIMEOUT" : "SUCCEEDED" },
+  databaseLookupSource: { status: targetStatus === "NOT_ATTEMPTED" ? "NOT_ATTEMPTED" : "FOUND" },
+  targetConnectionSource: { status: targetStatus },
+  metadataSource: { status: targetStatus === "SUCCEEDED" ? "SUFFICIENT" : "NOT_ATTEMPTED" },
+  physicalSource: { status: targetStatus === "SUCCEEDED" ? "OBSERVED" : "NOT_ATTEMPTED", ...(targetStatus === "SUCCEEDED" ? { businessObjectCount: 2 } : {}) },
+  historySource: { status: targetStatus === "SUCCEEDED" ? "PRESENT" : "NOT_ATTEMPTED", ...(targetStatus === "SUCCEEDED" ? { migrationCount: 1, migrationIds: ["20260101000000_A"] } : {}) }
+});
+
+try {
+  test("SQL acepta TEST explícito", () => assert.doesNotThrow(() => validateSqlEnvironment("TEST")));
+  for (const value of [undefined, "", "QA", "PROD", "test"]) test(`SQL rechaza ambiente ${String(value)}`, () => assert.throws(() => validateSqlEnvironment(value), /ENVIRONMENT_NOT_ALLOWED/));
+  for (const status of ["AUTHENTICATION_FAILED", "TRANSPORT_FAILED", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED", "SUCCEEDED"]) {
+    test(`SQL preserva ${status}`, () => {
+      const env = sqlEnv(`sql-${status}`);
+      const execute = () => ({ status: 0, stdout: JSON.stringify(sqlEvidence(status)), stderr: "" });
+      const evidence = runPublicSqlDiscovery(env, execute);
+      assert.equal(evidence.serverConnectionStatus, status);
+      const persisted = fs.readFileSync(env.GITHUB_OUTPUT, "utf8");
+      assert.match(persisted, new RegExp(status));
+      assert.equal(persisted.includes(env.SQL_SERVER_CONNECTION), false);
+    });
+  }
+  test("SQL no filtra secreto ante error", () => {
+    const env = sqlEnv("sql-error");
+    assert.throws(() => runPublicSqlDiscovery(env, () => ({ status: 1, stdout: "", stderr: env.SQL_SERVER_CONNECTION })), /SQL_DISCOVERY_EXECUTION_FAILED/);
+    assert.equal(fs.existsSync(env.GITHUB_OUTPUT), false);
+  });
+  test("SQL mantiene secreto fuera de command line, evidence y outputs", () => {
+    const env = sqlEnv("sql-secret-boundary");
+    let invocation;
+    const execute = (command, args, options) => {
+      invocation = { command, args, options };
+      return { status: 0, stdout: JSON.stringify(sqlEvidence("SUCCEEDED")), stderr: "" };
+    };
+    const evidence = runPublicSqlDiscovery(env, execute);
+    assert.equal(`${invocation.command} ${invocation.args.join(" ")}`.includes(env.SQL_SERVER_CONNECTION), false);
+    assert.equal(invocation.options.env.SQL_SERVER_CONNECTION, env.SQL_SERVER_CONNECTION);
+    assert.equal(JSON.stringify(evidence).includes(env.SQL_SERVER_CONNECTION), false);
+    assert.equal(fs.readFileSync(env.GITHUB_OUTPUT, "utf8").includes(env.SQL_SERVER_CONNECTION), false);
+  });
+
+  test("Repository acepta TEST explícito", () => assert.doesNotThrow(() => validateRepositoryEnvironment("TEST")));
+  for (const value of [undefined, "", "QA", "PROD", "test"]) test(`Repository rechaza ambiente ${String(value)}`, () => assert.throws(() => validateRepositoryEnvironment(value), /ENVIRONMENT_NOT_ALLOWED/));
+  test("Repository preserva UNKNOWN", () => assert.deepEqual(buildRequest({ ENVIRONMENT_NAME: "TEST", INSPECTION_STATUS: "UNKNOWN" }), { repositoryDiscoveryContractVersion: 1, inspectionStatus: "UNKNOWN" }));
+  test("Repository preserva NOT_ATTEMPTED", () => assert.deepEqual(buildRequest({ ENVIRONMENT_NAME: "TEST", INSPECTION_STATUS: "NOT_ATTEMPTED" }), { repositoryDiscoveryContractVersion: 1, inspectionStatus: "NOT_ATTEMPTED" }));
+  test("Repository bloquea traversal", () => assert.throws(() => buildRequest({ ENVIRONMENT_NAME: "TEST", INSPECTION_STATUS: "READY", GITHUB_WORKSPACE: temporaryRoot, WORKSPACE: os.tmpdir() }), /WORKSPACE_NOT_ALLOWED/));
+  test("Repository no filtra path cuando realpath falla", () => {
+    const secretPath = path.join(temporaryRoot, "customer-secret-path");
+    const child = spawnSync(process.execPath, [path.join(root, "scripts", "run-repository-discovery-v2-public.mjs")], {
+      encoding: "utf8",
+      env: { ...process.env, ENVIRONMENT_NAME: "TEST", INSPECTION_STATUS: "READY", GITHUB_WORKSPACE: temporaryRoot, WORKSPACE: secretPath, GITHUB_OUTPUT: output("missing-path"), GITHUB_ACTION_PATH: path.join(root, "repository-discovery-v2") }
+    });
+    assert.equal(child.status, 1);
+    assert.equal(child.stderr.includes(secretPath), false);
+    assert.match(child.stderr, /EXECUTION_FAILED/);
+  });
+  test("Repository invoca implementación real y conserva estados", () => {
+    for (const status of ["PRESENT_VALID", "ABSENT", "INVALID", "AMBIGUOUS", "UNKNOWN", "NOT_ATTEMPTED"]) {
+      const env = { ENVIRONMENT_NAME: "TEST", INSPECTION_STATUS: status === "UNKNOWN" || status === "NOT_ATTEMPTED" ? status : "READY", WORKSPACE: temporaryRoot, GITHUB_WORKSPACE: temporaryRoot, GITHUB_OUTPUT: output(`repo-${status}`), GITHUB_ACTION_PATH: path.join(root, "repository-discovery-v2") };
+      const payload = status === "PRESENT_VALID" ? { status, migrations: { count: 1, ids: ["20260101000000_A"] } } : { status };
+      const evidence = runPublicRepositoryDiscovery(env, () => ({ status: 0, stdout: JSON.stringify(payload), stderr: "" }));
+      assert.equal(evidence.status, status);
+    }
+  });
+  test("Repository ERROR falla cerrado sin coerción", () => {
+    const env = { ENVIRONMENT_NAME: "TEST", INSPECTION_STATUS: "READY", WORKSPACE: temporaryRoot, GITHUB_WORKSPACE: temporaryRoot, GITHUB_OUTPUT: output("repo-error"), GITHUB_ACTION_PATH: path.join(root, "repository-discovery-v2") };
+    assert.throws(() => runPublicRepositoryDiscovery(env, () => ({ status: 75, stdout: '{"status":"ERROR"}\n', stderr: "private path" })), /REPOSITORY_INSPECTION_FAILED/);
+    assert.match(fs.readFileSync(env.GITHUB_OUTPUT, "utf8"), /ERROR/);
+  });
+
+  test("contratos action.yml son explícitos y no tienen default TEST", () => {
+    for (const action of ["sql-discovery-v2", "repository-discovery-v2"]) {
+      const text = fs.readFileSync(path.join(root, action, "action.yml"), "utf8");
+      assert.match(text, /environment-name:\n\s+description:[^\n]+\n\s+required: true/);
+      assert.doesNotMatch(text, /environment-name:[\s\S]{0,160}default:\s*TEST/);
+      assert.match(text, /shell: bash/);
+    }
+  });
+  test("runners no contienen mutaciones SQL ni eval", () => {
+    for (const file of ["run-sql-discovery-v2-public.mjs", "run-repository-discovery-v2-public.mjs"]) {
+      const text = fs.readFileSync(path.join(root, "scripts", file), "utf8");
+      assert.doesNotMatch(text, /\beval\s*\(|\b(?:INSERT\s+INTO|UPDATE\s+[^\s]+\s+SET|DELETE\s+FROM|MERGE\s+INTO|CREATE\s+(?:TABLE|DATABASE)|ALTER\s+(?:TABLE|DATABASE)|DROP\s+(?:TABLE|DATABASE)|TRUNCATE\s+TABLE)/i);
+    }
+  });
+} finally {
+  fs.rmSync(temporaryRoot, { recursive: true, force: true });
+}
+
+console.log(`OK: ${passed} casos de public Discovery V2`);
