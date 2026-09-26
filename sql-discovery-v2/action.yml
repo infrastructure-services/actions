@@ -1,0 +1,55 @@
+name: SQL Discovery V2 TEST (Read Only)
+description: Observa conectividad, existencia, metadata, estado físico e historial EF en TEST sin mutaciones
+
+inputs:
+  environment-name:
+    description: Ambiente autorizado; debe ser exactamente TEST.
+    required: true
+  server-connection-string:
+    description: Connection string al servidor; sólo se entrega al proceso por ambiente y nunca se persiste.
+    required: true
+  database-name:
+    description: Nombre explícito de la base target observada.
+    required: true
+  dotnet-version:
+    description: Versión del SDK para la implementación existente.
+    required: false
+    default: 10.0.x
+
+outputs:
+  evidence-json:
+    description: Fuentes SQL V2 estructuradas y sanitizadas.
+    value: ${{ steps.discover.outputs.evidence-json }}
+  connection-status:
+    value: ${{ steps.discover.outputs.connection-status }}
+  database-lookup-status:
+    value: ${{ steps.discover.outputs.database-lookup-status }}
+  target-connection-status:
+    value: ${{ steps.discover.outputs.target-connection-status }}
+  metadata-status:
+    value: ${{ steps.discover.outputs.metadata-status }}
+  physical-status:
+    value: ${{ steps.discover.outputs.physical-status }}
+  history-status:
+    value: ${{ steps.discover.outputs.history-status }}
+
+runs:
+  using: composite
+  steps:
+    - name: Mask SQL connection
+      shell: bash
+      env:
+        SQL_SERVER_CONNECTION: ${{ inputs.server-connection-string }}
+      run: echo "::add-mask::$SQL_SERVER_CONNECTION"
+    - name: Setup .NET for SQL Discovery V2
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: ${{ inputs.dotnet-version }}
+    - name: Discover SQL evidence in TEST (read only)
+      id: discover
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment-name }}
+        SQL_SERVER_CONNECTION: ${{ inputs.server-connection-string }}
+        SQL_DATABASE_NAME: ${{ inputs.database-name }}
+      run: node "$GITHUB_ACTION_PATH/../scripts/run-sql-discovery-v2-public.mjs"

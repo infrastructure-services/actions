@@ -1,6 +1,17 @@
 using System.Text.Json;
 using Microsoft.Data.SqlClient;
 
+if (args is ["--v2"])
+{
+    return await SqlDiscovery.V2.SqlDiscoveryPublicCli.RunAsync();
+}
+
+if (args.Length != 0)
+{
+    Console.Error.WriteLine("ARGUMENTS_INVALID");
+    return 64;
+}
+
 var rawConnectionString = Environment.GetEnvironmentVariable("DB_CONNECTION");
 var connectionOpened = false;
 

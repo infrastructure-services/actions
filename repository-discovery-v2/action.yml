@@ -1,0 +1,35 @@
+name: Repository Discovery V2 TEST (Read Only)
+description: Observa proyectos, migrations, snapshots y lineage EF en TEST sin modificar el repository
+
+inputs:
+  environment-name:
+    description: Ambiente autorizado; debe ser exactamente TEST.
+    required: true
+  inspection-status:
+    description: READY, UNKNOWN o NOT_ATTEMPTED explícito.
+    required: true
+  workspace:
+    description: Directorio dentro de GITHUB_WORKSPACE; requerido sólo para READY.
+    required: false
+
+outputs:
+  status:
+    value: ${{ steps.discover.outputs.status }}
+  evidence-json:
+    description: Fuente repository V2 estructurada y sanitizada.
+    value: ${{ steps.discover.outputs.evidence-json }}
+  migration-ids-json:
+    description: MigrationId exactos y ordenados; [] cuando no corresponda.
+    value: ${{ steps.discover.outputs.migration-ids-json }}
+
+runs:
+  using: composite
+  steps:
+    - name: Discover repository evidence in TEST (read only)
+      id: discover
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment-name }}
+        INSPECTION_STATUS: ${{ inputs.inspection-status }}
+        WORKSPACE: ${{ inputs.workspace }}
+      run: node "$GITHUB_ACTION_PATH/../scripts/run-repository-discovery-v2-public.mjs"
