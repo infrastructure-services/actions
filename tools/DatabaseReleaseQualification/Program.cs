@@ -210,13 +210,15 @@ public static class QualificationCli
                 comparison.Status,
                 comparison.DiagnosticCode,
                 comparison.Deterministic,
+                comparison.IdentityConsistent,
+                comparison.IdentityDiagnosticCode,
                 comparison.Capture1SchemaHash,
                 comparison.Capture2SchemaHash,
                 comparison.ObservedServerInstance,
                 comparison.ObservedDatabaseName
             });
             Console.WriteLine($"Schema capture determinism: {comparison.Deterministic.ToString().ToLowerInvariant()}.");
-            return Task.FromResult(comparison.Deterministic ? 0 : 7);
+            return Task.FromResult(comparison.Deterministic && comparison.IdentityConsistent ? 0 : 7);
         }
         catch (Exception exception)
         {

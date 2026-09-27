@@ -269,17 +269,23 @@ fi
 
 STATUS="$(safe_status "$(jq -r '.status // "FAIL_SCHEMA_CAPTURE"' "$COMPARISON_RESULT" 2>/dev/null)")"
 DIAGNOSTIC="$(safe_diagnostic "$(jq -r '.diagnosticCode // "UNKNOWN_SAFE_DIAGNOSTIC"' "$COMPARISON_RESULT" 2>/dev/null)")"
+IDENTITY_CONSISTENT="$(jq -r '.identityConsistent // false' "$COMPARISON_RESULT" 2>/dev/null)"
+IDENTITY_DIAGNOSTIC="$(safe_diagnostic "$(jq -r '.identityDiagnosticCode // "OBSERVED_DATABASE_IDENTITY_MISMATCH"' "$COMPARISON_RESULT" 2>/dev/null)")"
 HASH_1="$(jq -r '.capture1SchemaHash // empty' "$COMPARISON_RESULT" 2>/dev/null)"
 HASH_2="$(jq -r '.capture2SchemaHash // empty' "$COMPARISON_RESULT" 2>/dev/null)"
 DETERMINISTIC="$(jq -r '.deterministic // false' "$COMPARISON_RESULT" 2>/dev/null)"
 if [[ ! "$HASH_1" =~ ^[0-9a-f]{64}$ ]]; then HASH_1=''; fi
 if [[ ! "$HASH_2" =~ ^[0-9a-f]{64}$ ]]; then HASH_2=''; fi
 if [[ "$DETERMINISTIC" != 'true' ]]; then DETERMINISTIC='false'; fi
+if [[ "$IDENTITY_CONSISTENT" != 'true' ]]; then
+  IDENTITY_CONSISTENT='false'
+  if [[ "$DETERMINISTIC" == 'true' ]]; then DIAGNOSTIC="$IDENTITY_DIAGNOSTIC"; fi
+fi
 
 OBSERVED_SERVER_INSTANCE="$(jq -r '.observedServerInstance // empty' "$COMPARISON_RESULT" 2>/dev/null)"
 OBSERVED_DATABASE_NAME="$(jq -r '.observedDatabaseName // empty' "$COMPARISON_RESULT" 2>/dev/null)"
 OBSERVED_DATABASE_IDENTITY_JSON=''
-if [[ "$DETERMINISTIC" == 'true' ]]; then
+if [[ "$DETERMINISTIC" == 'true' && "$IDENTITY_CONSISTENT" == 'true' ]]; then
   if [[ ! "$OBSERVED_SERVER_INSTANCE" =~ ^[A-Za-z0-9][A-Za-z0-9._\\-]{0,254}$ ]] \
     || [[ -z "$OBSERVED_DATABASE_NAME" ]] \
     || [[ ${#OBSERVED_DATABASE_NAME} -gt 128 ]] \
@@ -306,7 +312,7 @@ REGISTRY_EVALUATION_EXIT=0
 REGISTRY_FORMAT_VERSION=''
 REGISTRY_COMMIT_SHA=''
 
-if [[ $COMPARISON_EXIT -eq 0 && "$DETERMINISTIC" == 'true' ]]; then
+if [[ $COMPARISON_EXIT -eq 0 && "$DETERMINISTIC" == 'true' && "$IDENTITY_CONSISTENT" == 'true' ]]; then
   set +e
   dotnet "$BUILD_DIRECTORY/DatabaseReleaseQualification.dll" evaluate-database-state \
     --environment TEST \

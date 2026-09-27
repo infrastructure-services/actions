@@ -97,6 +97,8 @@ public sealed class SchemaCaptureComparison
     public required string Capture2SchemaHash { get; init; }
     public bool Deterministic { get; init; }
     public required string DiagnosticCode { get; init; }
+    public bool IdentityConsistent { get; init; }
+    public required string IdentityDiagnosticCode { get; init; }
     public string? ObservedServerInstance { get; init; }
     public string? ObservedDatabaseName { get; init; }
     public required SchemaDiff SchemaDiff { get; init; }
@@ -197,16 +199,15 @@ public sealed class SchemaCaptureArtifactWriter
             && ObservedDatabaseIdentityContract.IsValid(second.Metadata.ServerInstance, second.Metadata.DatabaseName)
             && string.Equals(first.Metadata.ServerInstance, second.Metadata.ServerInstance, StringComparison.Ordinal)
             && string.Equals(first.Metadata.DatabaseName, second.Metadata.DatabaseName, StringComparison.Ordinal);
-        var deterministic = structuralMatch && identityMatch;
         var comparison = new SchemaCaptureComparison
         {
-            Status = deterministic ? SchemaCaptureStatuses.Success : SchemaCaptureStatuses.Nondeterministic,
+            Status = structuralMatch ? SchemaCaptureStatuses.Success : SchemaCaptureStatuses.Nondeterministic,
             Capture1SchemaHash = first.SchemaHash,
             Capture2SchemaHash = second.SchemaHash,
-            Deterministic = deterministic,
-            DiagnosticCode = deterministic ? "SCHEMA_HASHES_AND_IDENTITY_MATCH"
-                : !identityMatch ? "OBSERVED_DATABASE_IDENTITY_MISMATCH"
-                : "CONCURRENT_DDL_OR_NONDETERMINISTIC_CAPTURE",
+            Deterministic = structuralMatch,
+            DiagnosticCode = structuralMatch ? "SCHEMA_HASHES_MATCH" : "CONCURRENT_DDL_OR_NONDETERMINISTIC_CAPTURE",
+            IdentityConsistent = identityMatch,
+            IdentityDiagnosticCode = identityMatch ? "OBSERVED_DATABASE_IDENTITY_MATCH" : "OBSERVED_DATABASE_IDENTITY_MISMATCH",
             ObservedServerInstance = identityMatch ? first.Metadata.ServerInstance : null,
             ObservedDatabaseName = identityMatch ? first.Metadata.DatabaseName : null,
             SchemaDiff = diff
