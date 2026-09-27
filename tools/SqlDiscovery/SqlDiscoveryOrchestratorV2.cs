@@ -24,31 +24,40 @@ public sealed class SqlDiscoveryOrchestratorV2(ISqlDiscoveryTransport transport)
             return Result(server, lookup);
         }
 
-        var targetConnection = await RunConnectionAsync("TARGET_CONNECTION", () => transport.ConnectTargetAsync(target, cancellationToken), cancellationToken);
+        var targetAttempt = await RunTargetConnectionAsync(() => transport.ConnectTargetAsync(target, cancellationToken), cancellationToken);
+        var targetConnection = targetAttempt.Connection;
         if (targetConnection.Status != ConnectionStatus.Succeeded)
         {
             return Result(server, lookup, targetConnection);
         }
+        var observedIdentity = targetAttempt.Identity;
 
         var metadata = await RunMetadataAsync(() => transport.InspectMetadataAsync(target, cancellationToken), cancellationToken);
         if (metadata.Status != MetadataStatus.Sufficient)
         {
-            return Result(server, lookup, targetConnection, metadata);
+            return Result(server, lookup, targetConnection, observedIdentity, metadata);
         }
 
         var physical = await RunPhysicalAsync(() => transport.ObservePhysicalAsync(target, cancellationToken), cancellationToken);
         if (physical.Status != PhysicalStatus.Complete)
         {
-            return Result(server, lookup, targetConnection, metadata, physical);
+            return Result(server, lookup, targetConnection, observedIdentity, metadata, physical);
         }
         var history = await RunHistoryAsync(() => transport.ObserveHistoryAsync(target, cancellationToken), cancellationToken);
-        return Result(server, lookup, targetConnection, metadata, physical, history);
+        return Result(server, lookup, targetConnection, observedIdentity, metadata, physical, history);
     }
 
     public SourceProjection ProjectSources(SqlDiscoveryResult result)
     {
         ArgumentNullException.ThrowIfNull(result);
         var gaps = new List<string>();
+        if (result.TargetConnection.Status == ConnectionStatus.Succeeded
+            && (result.ObservedIdentity.Status != ObservedIdentityStatus.Available
+                || result.ObservedIdentity.Identity is null
+                || !ObservedIdentityValidator.IsValid(result.ObservedIdentity.Identity)))
+        {
+            gaps.Add("OBSERVED_DATABASE_IDENTITY_UNAVAILABLE");
+        }
 
         string connection = result.ServerConnection.Status switch
         {
@@ -189,6 +198,39 @@ public sealed class SqlDiscoveryOrchestratorV2(ISqlDiscoveryTransport transport)
         }
     }
 
+    private static async Task<(ConnectionResult Connection, ObservedIdentityResult Identity)> RunTargetConnectionAsync(
+        Func<Task<ObservedIdentityResult>> operation,
+        CancellationToken token)
+    {
+        try
+        {
+            var identity = await operation();
+            return (new(ConnectionStatus.Succeeded), identity);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            return (new(ConnectionStatus.Cancelled, Diagnostic("TARGET_CONNECTION", "CANCELLED")), IdentityNotAttempted());
+        }
+        catch (TimeoutException)
+        {
+            return (new(ConnectionStatus.TimedOut, Diagnostic("TARGET_CONNECTION", "TIMEOUT")), IdentityNotAttempted());
+        }
+        catch (Microsoft.Data.SqlClient.SqlException exception) when (exception.Number == -2)
+        {
+            return (new(ConnectionStatus.TimedOut, Diagnostic("TARGET_CONNECTION", "TIMEOUT")), IdentityNotAttempted());
+        }
+        catch (SqlDiscoveryAuthenticationException)
+        {
+            return (new(ConnectionStatus.AuthenticationFailed, Diagnostic("TARGET_CONNECTION", "AUTHENTICATION_FAILED")), IdentityNotAttempted());
+        }
+        catch
+        {
+            return (new(ConnectionStatus.TransportFailed, Diagnostic("TARGET_CONNECTION", "TRANSPORT_FAILED")), IdentityNotAttempted());
+        }
+
+        static ObservedIdentityResult IdentityNotAttempted() => new(ObservedIdentityStatus.NotAttempted);
+    }
+
     private static async Task<DatabaseLookupResult> RunLookupAsync(Func<Task<DatabaseLookupResult>> operation, CancellationToken token)
     {
         try { return await operation(); }
@@ -231,12 +273,14 @@ public sealed class SqlDiscoveryOrchestratorV2(ISqlDiscoveryTransport transport)
         ConnectionResult? server = null,
         DatabaseLookupResult? lookup = null,
         ConnectionResult? target = null,
+        ObservedIdentityResult? identity = null,
         MetadataResult? metadata = null,
         PhysicalResult? physical = null,
         HistoryResult? history = null) => new(
             server ?? new(ConnectionStatus.NotAttempted),
             lookup ?? new(DatabaseLookupStatus.NotAttempted),
             target ?? new(ConnectionStatus.NotAttempted),
+            identity ?? new(ObservedIdentityStatus.NotAttempted),
             metadata ?? new(MetadataStatus.NotAttempted),
             physical ?? new(PhysicalStatus.NotAttempted),
             history ?? new(HistoryStatus.NotAttempted));

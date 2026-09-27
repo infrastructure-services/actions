@@ -7,6 +7,9 @@ var tests = new (string Name, Func<Task> Run)[]
     ("diferencia estructural cambia fingerprint", StructuralDifferenceChangesFingerprint),
     ("métricas no contaminan fingerprint", MetricsDoNotChangeFingerprint),
     ("dos captures equivalentes son determinísticos", EquivalentCapturesAreDeterministic),
+    ("identidad adicional no cambia hash estructural", IdentityMetadataDoesNotChangeStructuralHash),
+    ("identidad contradictoria bloquea dos captures", ContradictoryCaptureIdentityIsBlocked),
+    ("identidad vacía falla cerrado", InvalidCaptureIdentityFailsClosed),
     ("captures estructuralmente distintas se bloquean", DifferentCapturesAreNondeterministic),
     ("metadata de capture separa métricas no disponibles", UnavailableMetricsDoNotFailCapture),
     ("discovery bloqueado permite capture pero no rehearsal", BlockedDiscoveryAllowsCaptureOnly),
@@ -14,8 +17,10 @@ var tests = new (string Name, Func<Task> Run)[]
     ("fallo de conexión se clasifica de forma estable", ConnectionFailureIsClassified),
     ("guard de schema capture admite solo SELECT", SchemaCaptureSqlGuard),
     ("queries degradan por versión SQL Server", SqlServerVersionQueriesDegradeSafely),
+    ("metadata SQL observa servidor y base con SELECT", ServerMetadataObservesIdentity),
     ("CLI capture sin conexión falla antes de SQL", CliSchemaCaptureRequiresEnvironmentSecret),
     ("CLI compare devuelve estado no determinístico", CliSchemaComparisonBlocksMismatch),
+    ("CLI compare bloquea identity mismatch sin redefinir deterministic", CliSchemaComparisonBlocksIdentityMismatch),
     ("artifacts no conservan valores de identidad", SchemaCaptureArtifactsExcludeIdentityValue),
     ("registry BASELINE_REQUIRED bloquea y pide candidate", RegistryBaselineRequired),
     ("registryFormatVersion 1 es válido", RegistryFormatVersionOneIsValid),
@@ -255,6 +260,9 @@ static Task EquivalentCapturesAreDeterministic()
         var comparison = writer.CompareAndWrite(first, second, Path.Combine(root, "comparison"));
         True(comparison.Deterministic);
         Equal(SchemaCaptureStatuses.Success, comparison.Status);
+        Equal("SCHEMA_HASHES_MATCH", comparison.DiagnosticCode);
+        True(comparison.IdentityConsistent);
+        Equal("OBSERVED_DATABASE_IDENTITY_MATCH", comparison.IdentityDiagnosticCode);
         Equal(first.SchemaHash, second.SchemaHash);
         True(File.Exists(Path.Combine(root, "capture-1", "canonical-schema.json")));
         True(File.Exists(Path.Combine(root, "capture-2", "metadata.json")));
@@ -280,7 +288,66 @@ static Task DifferentCapturesAreNondeterministic()
         True(!comparison.Deterministic);
         Equal(SchemaCaptureStatuses.Nondeterministic, comparison.Status);
         Equal("CONCURRENT_DDL_OR_NONDETERMINISTIC_CAPTURE", comparison.DiagnosticCode);
+        True(comparison.IdentityConsistent);
         True(!comparison.SchemaDiff.IsEquivalent);
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task IdentityMetadataDoesNotChangeStructuralHash()
+{
+    var root = TempDirectory("schema-capture-identity-hash");
+    try
+    {
+        var writer = new SchemaCaptureArtifactWriter();
+        var first = writer.WriteCapture(Path.Combine(root, "capture-1"), "capture-1",
+            CaptureSource(BaseSnapshot(includeIndex: true), serverInstance: "SQL01\\MAIN", databaseName: "Orders"));
+        var second = writer.WriteCapture(Path.Combine(root, "capture-2"), "capture-2",
+            CaptureSource(BaseSnapshot(includeIndex: true), serverInstance: "SQL02\\MAIN", databaseName: "OrdersReplica"));
+        Equal(first.SchemaHash, second.SchemaHash);
+        var comparison = writer.CompareAndWrite(first, second, Path.Combine(root, "comparison"));
+        True(comparison.Deterministic);
+        Equal("SCHEMA_HASHES_MATCH", comparison.DiagnosticCode);
+        True(!comparison.IdentityConsistent);
+        Equal("OBSERVED_DATABASE_IDENTITY_MISMATCH", comparison.IdentityDiagnosticCode);
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task ContradictoryCaptureIdentityIsBlocked()
+{
+    var root = TempDirectory("schema-capture-identity-mismatch");
+    try
+    {
+        var writer = new SchemaCaptureArtifactWriter();
+        var first = writer.WriteCapture(Path.Combine(root, "capture-1"), "capture-1",
+            CaptureSource(BaseSnapshot(includeIndex: true), serverInstance: "SQL01\\MAIN"));
+        var second = writer.WriteCapture(Path.Combine(root, "capture-2"), "capture-2",
+            CaptureSource(BaseSnapshot(includeIndex: true), serverInstance: "SQL02\\MAIN"));
+        var comparison = writer.CompareAndWrite(first, second, Path.Combine(root, "comparison"));
+        True(comparison.Deterministic);
+        Equal("SCHEMA_HASHES_MATCH", comparison.DiagnosticCode);
+        True(!comparison.IdentityConsistent);
+        Equal("OBSERVED_DATABASE_IDENTITY_MISMATCH", comparison.IdentityDiagnosticCode);
+        True(comparison.ObservedServerInstance is null);
+        True(comparison.ObservedDatabaseName is null);
+    }
+    finally { DeleteTemp(root); }
+    return Task.CompletedTask;
+}
+
+static Task InvalidCaptureIdentityFailsClosed()
+{
+    var root = TempDirectory("schema-capture-invalid-identity");
+    try
+    {
+        var source = CaptureSource(BaseSnapshot(includeIndex: true), serverInstance: "");
+        var blocked = false;
+        try { new SchemaCaptureArtifactWriter().WriteCapture(root, "capture-1", source); }
+        catch (InvalidOperationException exception) { blocked = exception.Message == "OBSERVED_DATABASE_IDENTITY_INVALID"; }
+        True(blocked);
     }
     finally { DeleteTemp(root); }
     return Task.CompletedTask;
@@ -393,6 +460,18 @@ static Task SqlServerVersionQueriesDegradeSafely()
     return Task.CompletedTask;
 }
 
+static Task ServerMetadataObservesIdentity()
+{
+    var field = typeof(SqlServerSchemaReader).GetField("ServerMetadataSql", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
+        ?? throw new InvalidOperationException("ServerMetadataSql not found.");
+    var sql = (string)(field.GetValue(null) ?? "");
+    SqlServerSchemaReader.EnsureSelectOnlySql(sql);
+    True(sql.Contains("SERVERPROPERTY(N'ServerName')", StringComparison.Ordinal));
+    True(sql.Contains("DB_NAME()", StringComparison.Ordinal));
+    True(!sql.Contains("INSERT", StringComparison.OrdinalIgnoreCase));
+    return Task.CompletedTask;
+}
+
 static async Task CliSchemaCaptureRequiresEnvironmentSecret()
 {
     var root = TempDirectory("schema-capture-cli-missing-connection");
@@ -436,6 +515,38 @@ static async Task CliSchemaComparisonBlocksMismatch()
         var result = JsonDocument.Parse(File.ReadAllText(resultPath));
         Equal(SchemaCaptureStatuses.Nondeterministic, result.RootElement.GetProperty("status").GetString());
         True(!result.RootElement.GetProperty("deterministic").GetBoolean());
+    }
+    finally { DeleteTemp(root); }
+}
+
+static async Task CliSchemaComparisonBlocksIdentityMismatch()
+{
+    var root = TempDirectory("schema-capture-cli-identity-mismatch");
+    try
+    {
+        var writer = new SchemaCaptureArtifactWriter();
+        writer.WriteCapture(Path.Combine(root, "capture-1"), "capture-1",
+            CaptureSource(BaseSnapshot(includeIndex: true), serverInstance: "SQL01\\MAIN", databaseName: "Orders"));
+        writer.WriteCapture(Path.Combine(root, "capture-2"), "capture-2",
+            CaptureSource(BaseSnapshot(includeIndex: true), serverInstance: "SQL02\\MAIN", databaseName: "OrdersReplica"));
+        var resultPath = Path.Combine(root, "comparison-result.json");
+        var exit = await QualificationCli.RunAsync([
+            "compare-schema-captures", "--environment", "TEST",
+            "--capture-1", Path.Combine(root, "capture-1"), "--capture-2", Path.Combine(root, "capture-2"),
+            "--output", Path.Combine(root, "comparison"), "--result", resultPath
+        ]);
+        Equal(7, exit);
+        var result = JsonDocument.Parse(File.ReadAllText(resultPath)).RootElement;
+        True(result.GetProperty("deterministic").GetBoolean());
+        Equal("SCHEMA_HASHES_MATCH", result.GetProperty("diagnosticCode").GetString());
+        True(!result.GetProperty("identityConsistent").GetBoolean());
+        Equal("OBSERVED_DATABASE_IDENTITY_MISMATCH", result.GetProperty("identityDiagnosticCode").GetString());
+        True(!result.TryGetProperty("observedServerInstance", out _));
+        True(!result.TryGetProperty("observedDatabaseName", out _));
+        var serialized = result.GetRawText();
+        True(!serialized.Contains("SQL01", StringComparison.Ordinal));
+        True(!serialized.Contains("SQL02", StringComparison.Ordinal));
+        True(!serialized.Contains("Orders", StringComparison.Ordinal));
     }
     finally { DeleteTemp(root); }
 }
@@ -3920,10 +4031,13 @@ static SchemaSnapshot BaseSnapshot(bool includeIndex, bool nullable = false, lon
 static SchemaCaptureSourceResult CaptureSource(
     SchemaSnapshot snapshot,
     MetricsAvailability metricsAvailability = MetricsAvailability.Complete,
-    string? metricsDiagnosticCode = null) => new()
+    string? metricsDiagnosticCode = null,
+    string serverInstance = "SQLNODE01\\INSTANCE",
+    string databaseName = "DatabaseForTests") => new()
 {
     Snapshot = snapshot,
-    DatabaseName = "DatabaseForTests",
+    ServerInstance = serverInstance,
+    DatabaseName = databaseName,
     ServerVersion = "16.0.1000.6",
     ServerMajorVersion = 16,
     MetricsAvailability = metricsAvailability,

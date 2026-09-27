@@ -126,6 +126,7 @@ write_outputs() {
   local status="$1" deterministic="$2" hash1="${3-}" hash2="${4-}" coverage="${5-}" metrics="${6-}"
   local registry_status="${7-}" drift_status="${8-}" gate_status="${9-}" gate_reason="${10-}"
   local baseline_candidate="${11-false}" observed_hash="${12-}" certified_hash="${13-}"
+  local observed_server_instance="${14-}" observed_database_name="${15-}" observed_identity_json="${16-}"
   {
     printf 'status=%s\n' "$status"
     printf 'deterministic=%s\n' "$deterministic"
@@ -141,6 +142,9 @@ write_outputs() {
     printf 'gate_status=%s\n' "$gate_status"
     printf 'gate_reason=%s\n' "$gate_reason"
     printf 'baseline_candidate=%s\n' "$baseline_candidate"
+    printf 'observed_server_instance=%s\n' "$observed_server_instance"
+    printf 'observed_database_name=%s\n' "$observed_database_name"
+    printf 'observed_database_identity_json=%s\n' "$observed_identity_json"
   } >> "$GITHUB_OUTPUT"
 }
 
@@ -265,12 +269,35 @@ fi
 
 STATUS="$(safe_status "$(jq -r '.status // "FAIL_SCHEMA_CAPTURE"' "$COMPARISON_RESULT" 2>/dev/null)")"
 DIAGNOSTIC="$(safe_diagnostic "$(jq -r '.diagnosticCode // "UNKNOWN_SAFE_DIAGNOSTIC"' "$COMPARISON_RESULT" 2>/dev/null)")"
+IDENTITY_CONSISTENT="$(jq -r '.identityConsistent // false' "$COMPARISON_RESULT" 2>/dev/null)"
+IDENTITY_DIAGNOSTIC="$(safe_diagnostic "$(jq -r '.identityDiagnosticCode // "OBSERVED_DATABASE_IDENTITY_MISMATCH"' "$COMPARISON_RESULT" 2>/dev/null)")"
 HASH_1="$(jq -r '.capture1SchemaHash // empty' "$COMPARISON_RESULT" 2>/dev/null)"
 HASH_2="$(jq -r '.capture2SchemaHash // empty' "$COMPARISON_RESULT" 2>/dev/null)"
 DETERMINISTIC="$(jq -r '.deterministic // false' "$COMPARISON_RESULT" 2>/dev/null)"
 if [[ ! "$HASH_1" =~ ^[0-9a-f]{64}$ ]]; then HASH_1=''; fi
 if [[ ! "$HASH_2" =~ ^[0-9a-f]{64}$ ]]; then HASH_2=''; fi
 if [[ "$DETERMINISTIC" != 'true' ]]; then DETERMINISTIC='false'; fi
+if [[ "$IDENTITY_CONSISTENT" != 'true' ]]; then
+  IDENTITY_CONSISTENT='false'
+  if [[ "$DETERMINISTIC" == 'true' ]]; then
+    STATUS='FAIL_SCHEMA_CAPTURE'
+    DIAGNOSTIC="$IDENTITY_DIAGNOSTIC"
+  fi
+fi
+
+OBSERVED_SERVER_INSTANCE="$(jq -r '.observedServerInstance // empty' "$COMPARISON_RESULT" 2>/dev/null)"
+OBSERVED_DATABASE_NAME="$(jq -r '.observedDatabaseName // empty' "$COMPARISON_RESULT" 2>/dev/null)"
+OBSERVED_DATABASE_IDENTITY_JSON=''
+if [[ "$DETERMINISTIC" == 'true' && "$IDENTITY_CONSISTENT" == 'true' ]]; then
+  if [[ ! "$OBSERVED_SERVER_INSTANCE" =~ ^[A-Za-z0-9][A-Za-z0-9._\\-]{0,254}$ ]] \
+    || [[ -z "$OBSERVED_DATABASE_NAME" ]] \
+    || [[ ${#OBSERVED_DATABASE_NAME} -gt 128 ]] \
+    || [[ "$OBSERVED_DATABASE_NAME" =~ [[:cntrl:]] ]]; then
+    write_failure_summary FAIL_SCHEMA_CAPTURE OBSERVED_DATABASE_IDENTITY_INVALID 6
+    exit 6
+  fi
+  OBSERVED_DATABASE_IDENTITY_JSON="$(jq -cn --arg serverInstance "$OBSERVED_SERVER_INSTANCE" --arg databaseName "$OBSERVED_DATABASE_NAME" '{serverInstance:$serverInstance,databaseName:$databaseName}')"
+fi
 
 DATABASE_NAME="$(safe_value "$(jq -r '.databaseName // empty' "$CAPTURE_1_RESULT")")"
 SERVER_VERSION="$(safe_value "$(jq -r '.serverVersion // empty' "$CAPTURE_1_RESULT")")"
@@ -288,7 +315,7 @@ REGISTRY_EVALUATION_EXIT=0
 REGISTRY_FORMAT_VERSION=''
 REGISTRY_COMMIT_SHA=''
 
-if [[ $COMPARISON_EXIT -eq 0 && "$DETERMINISTIC" == 'true' ]]; then
+if [[ $COMPARISON_EXIT -eq 0 && "$DETERMINISTIC" == 'true' && "$IDENTITY_CONSISTENT" == 'true' ]]; then
   set +e
   dotnet "$BUILD_DIRECTORY/DatabaseReleaseQualification.dll" evaluate-database-state \
     --environment TEST \
@@ -404,7 +431,8 @@ if [[ -n "${GITHUB_STEP_SUMMARY-}" ]]; then
 fi
 write_outputs "$STATUS" "$DETERMINISTIC" "$HASH_1" "$HASH_2" "$SCHEMA_COVERAGE" "$METRICS_AVAILABILITY" \
   "$REGISTRY_STATUS" "$DRIFT_STATUS" "$GATE_STATUS" "$GATE_REASON" "$BASELINE_CANDIDATE" \
-  "$OBSERVED_SCHEMA_HASH" "$CERTIFIED_SCHEMA_HASH"
+  "$OBSERVED_SCHEMA_HASH" "$CERTIFIED_SCHEMA_HASH" "$OBSERVED_SERVER_INSTANCE" "$OBSERVED_DATABASE_NAME" \
+  "$OBSERVED_DATABASE_IDENTITY_JSON"
 
 if [[ $COMPARISON_EXIT -ne 0 ]]; then
   echo "Schema capture comparison failed: $STATUS / $DIAGNOSTIC" >&2

@@ -18,6 +18,9 @@ var tests = new List<(string Name, Func<Task> Run)>
     ("cancelación de lookup bloquea dependencias", LookupCancellation),
     ("target fallido no contamina conexión servidor", TargetFailure),
     ("target conserva autenticación timeout y cancelación", TargetExactFailures),
+    ("target exitoso publica identidad SQL exacta", TargetIdentitySuccess),
+    ("identidad target ausente falla cerrado", TargetIdentityMissing),
+    ("campos de identidad target vacíos fallan cerrado", TargetIdentityBlankFields),
     ("metadata suficiente", MetadataSufficient),
     ("metadata insuficiente", MetadataInsufficient),
     ("fallo de metadata", MetadataFailure),
@@ -67,6 +70,12 @@ Console.WriteLine($"OK: {tests.Count} casos de SQL Discovery V2");
 return 0;
 
 static SqlDiscoveryTarget Target() => new("Server=opaque.invalid;Integrated Security=true", "opaque_database");
+
+static ObservedIdentityResult AvailableIdentity(string serverInstance = "SQLNODE01\\INSTANCE", string databaseName = "ObservedDb") =>
+    new(ObservedIdentityStatus.Available, new(serverInstance, databaseName));
+
+static ObservedIdentityResult UnavailableIdentity() =>
+    new(ObservedIdentityStatus.Unavailable, Diagnostic: new("OBSERVED_DATABASE_IDENTITY", "OBSERVED_DATABASE_IDENTITY_UNAVAILABLE"));
 
 static RecordingTransport SuccessfulTransport() => new();
 
@@ -210,7 +219,7 @@ static async Task TargetFailure()
 
 static async Task TargetExactFailures()
 {
-    foreach (var item in new (Func<CancellationToken, Task> Action, ConnectionStatus Expected, string Raw)[]
+    foreach (var item in new (Func<CancellationToken, Task<ObservedIdentityResult>> Action, ConnectionStatus Expected, string Raw)[]
     {
         (_ => throw new SqlDiscoveryAuthenticationException(), ConnectionStatus.AuthenticationFailed, "AUTHENTICATION_FAILED"),
         (_ => throw new TimeoutException(), ConnectionStatus.TimedOut, "TIMEOUT")
@@ -224,10 +233,51 @@ static async Task TargetExactFailures()
     }
     using var source = new CancellationTokenSource();
     var cancelled = SuccessfulTransport();
-    cancelled.ConnectTarget = token => { source.Cancel(); return Task.FromCanceled(token); };
+    cancelled.ConnectTarget = token => { source.Cancel(); return Task.FromCanceled<ObservedIdentityResult>(token); };
     var cancelledResult = await Discover(cancelled, source.Token);
     Equal(ConnectionStatus.Cancelled, cancelledResult.TargetConnection.Status);
     Equal("CANCELLED", Status(new SqlDiscoveryOrchestratorV2(cancelled).ProjectSources(cancelledResult), "targetConnectionSource"));
+}
+
+static async Task TargetIdentitySuccess()
+{
+    var transport = SuccessfulTransport();
+    transport.ConnectTarget = _ => Task.FromResult(AvailableIdentity("SQLNODE01\\INSTANCE", "ObservedDb"));
+    var result = await Discover(transport);
+    Equal(ConnectionStatus.Succeeded, result.TargetConnection.Status);
+    Equal("SQLNODE01\\INSTANCE", result.ObservedIdentity.Identity?.ServerInstance);
+    Equal("ObservedDb", result.ObservedIdentity.Identity?.DatabaseName);
+    False(result.ObservedIdentity.Identity?.DatabaseName == Target().DatabaseName);
+}
+
+static async Task TargetIdentityMissing()
+{
+    var transport = SuccessfulTransport();
+    transport.ConnectTarget = _ => Task.FromResult(UnavailableIdentity());
+    var result = await Discover(transport);
+    Equal(ConnectionStatus.Succeeded, result.TargetConnection.Status);
+    Equal(ObservedIdentityStatus.Unavailable, result.ObservedIdentity.Status);
+    True(result.ObservedIdentity.Identity is null);
+    Equal(MetadataStatus.Sufficient, result.Metadata.Status);
+    var projection = new SqlDiscoveryOrchestratorV2(transport).ProjectSources(result);
+    False(projection.IsRepresentable);
+    Contains("OBSERVED_DATABASE_IDENTITY_UNAVAILABLE", projection.Gaps);
+}
+
+static async Task TargetIdentityBlankFields()
+{
+    foreach (var identity in new[]
+    {
+        AvailableIdentity("", "ObservedDb"),
+        AvailableIdentity("SQLNODE01\\INSTANCE", "")
+    })
+    {
+        var transport = SuccessfulTransport();
+        transport.ConnectTarget = _ => Task.FromResult(identity);
+        var result = await Discover(transport);
+        Equal(ConnectionStatus.Succeeded, result.TargetConnection.Status);
+        False(new SqlDiscoveryOrchestratorV2(transport).ProjectSources(result).IsRepresentable);
+    }
 }
 
 static async Task MetadataSufficient() => Equal(MetadataStatus.Sufficient, (await Discover(SuccessfulTransport())).Metadata.Status);
@@ -382,6 +432,12 @@ static Task StaticTransportGuards()
     True(source.Contains("SqlConnectionEncryptOption.Strict", StringComparison.Ordinal));
     True(source.Contains("TrustServerCertificate = false", StringComparison.Ordinal));
     True(source.Contains("ORDER BY MigrationId ASC", StringComparison.Ordinal));
+    var targetMethod = source[(source.IndexOf("ConnectTargetAsync", StringComparison.Ordinal))..source.IndexOf("InspectMetadataAsync", StringComparison.Ordinal)];
+    Equal(1, targetMethod.Split("CreateConnection(", StringSplitOptions.None).Length - 1);
+    True(targetMethod.Contains("OpenAsync(connection", StringComparison.Ordinal));
+    True(targetMethod.Contains("CreateCommand(connection", StringComparison.Ordinal));
+    True(targetMethod.Contains("SERVERPROPERTY(N'ServerName')", StringComparison.Ordinal));
+    True(targetMethod.Contains("DB_NAME()", StringComparison.Ordinal));
     return Task.CompletedTask;
 }
 
@@ -558,14 +614,16 @@ sealed class RecordingTransport : ISqlDiscoveryTransport
     public List<CancellationToken> SeenTokens { get; } = [];
     public Func<CancellationToken, Task> ConnectServer { get; set; } = _ => Task.CompletedTask;
     public Func<CancellationToken, Task<DatabaseLookupResult>> Lookup { get; set; } = _ => Task.FromResult(new DatabaseLookupResult(DatabaseLookupStatus.Found));
-    public Func<CancellationToken, Task> ConnectTarget { get; set; } = _ => Task.CompletedTask;
+    public Func<CancellationToken, Task<ObservedIdentityResult>> ConnectTarget { get; set; } = _ =>
+        Task.FromResult(new ObservedIdentityResult(ObservedIdentityStatus.Available,
+            new ObservedDatabaseIdentity("SQLNODE01\\INSTANCE", "ObservedDb")));
     public Func<CancellationToken, Task<MetadataResult>> Metadata { get; set; } = _ => Task.FromResult(new MetadataResult(MetadataStatus.Sufficient));
     public Func<CancellationToken, Task<PhysicalResult>> Physical { get; set; } = _ => Task.FromResult(new PhysicalResult(PhysicalStatus.Complete, 5));
     public Func<CancellationToken, Task<HistoryResult>> History { get; set; } = _ => Task.FromResult(new HistoryResult(HistoryStatus.Present, ["20260101000000_A"]));
 
     public Task ConnectServerAsync(SqlDiscoveryTarget target, CancellationToken token) => Invoke("server", token, ConnectServer);
     public Task<DatabaseLookupResult> LookupDatabaseAsync(SqlDiscoveryTarget target, CancellationToken token) => Invoke("lookup", token, Lookup);
-    public Task ConnectTargetAsync(SqlDiscoveryTarget target, CancellationToken token) => Invoke("target", token, ConnectTarget);
+    public Task<ObservedIdentityResult> ConnectTargetAsync(SqlDiscoveryTarget target, CancellationToken token) => Invoke("target", token, ConnectTarget);
     public Task<MetadataResult> InspectMetadataAsync(SqlDiscoveryTarget target, CancellationToken token) => Invoke("metadata", token, Metadata);
     public Task<PhysicalResult> ObservePhysicalAsync(SqlDiscoveryTarget target, CancellationToken token) => Invoke("physical", token, Physical);
     public Task<HistoryResult> ObserveHistoryAsync(SqlDiscoveryTarget target, CancellationToken token) => Invoke("history", token, History);

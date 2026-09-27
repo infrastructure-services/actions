@@ -21,7 +21,8 @@ const sqlEvidence = targetStatus => ({
   targetConnectionSource: { status: targetStatus },
   metadataSource: { status: targetStatus === "SUCCEEDED" ? "SUFFICIENT" : "NOT_ATTEMPTED" },
   physicalSource: { status: targetStatus === "SUCCEEDED" ? "OBSERVED" : "NOT_ATTEMPTED", ...(targetStatus === "SUCCEEDED" ? { businessObjectCount: 2 } : {}) },
-  historySource: { status: targetStatus === "SUCCEEDED" ? "PRESENT" : "NOT_ATTEMPTED", ...(targetStatus === "SUCCEEDED" ? { migrationCount: 1, migrationIds: ["20260101000000_A"] } : {}) }
+  historySource: { status: targetStatus === "SUCCEEDED" ? "PRESENT" : "NOT_ATTEMPTED", ...(targetStatus === "SUCCEEDED" ? { migrationCount: 1, migrationIds: ["20260101000000_A"] } : {}) },
+  ...(targetStatus === "SUCCEEDED" ? { observedDatabaseIdentity: { serverInstance: "SQLNODE01\\INSTANCE", databaseName: "ObservedDb" } } : {})
 });
 const sqlExecutor = (evidence, observe = () => {}) => {
   let call = 0;
@@ -50,6 +51,31 @@ try {
     const env = sqlEnv("sql-error");
     assert.throws(() => runPublicSqlDiscovery(env, () => ({ status: 1, stdout: "", stderr: env.SQL_SERVER_CONNECTION })), /SQL_DISCOVERY_RESTORE_FAILED/);
     assert.equal(fs.existsSync(env.GITHUB_OUTPUT), false);
+  });
+  test("SQL falla cerrado sin identidad target", () => {
+    const env = sqlEnv("sql-missing-identity");
+    const evidence = sqlEvidence("SUCCEEDED"); delete evidence.observedDatabaseIdentity;
+    assert.throws(() => runPublicSqlDiscovery(env, sqlExecutor(evidence)), /EVIDENCE_INVALID/);
+    assert.equal(fs.existsSync(env.GITHUB_OUTPUT), false);
+  });
+  test("SQL no publica outputs parciales si la identidad bloquea el CLI", () => {
+    const env = sqlEnv("sql-identity-cli-blocked");
+    let call = 0;
+    const execute = () => (++call < 3
+      ? { status: 0, stdout: "restore/build log\n", stderr: "" }
+      : { status: 75, stdout: "", stderr: "SQL_DISCOVERY_PROJECTION_BLOCKED" });
+    assert.throws(() => runPublicSqlDiscovery(env, execute), /SQL_DISCOVERY_EXECUTION_FAILED/);
+    assert.equal(fs.existsSync(env.GITHUB_OUTPUT), false);
+  });
+  test("SQL publica outputs de identidad observada", () => {
+    const env = sqlEnv("sql-identity");
+    runPublicSqlDiscovery(env, sqlExecutor(sqlEvidence("SUCCEEDED")));
+    const persisted = fs.readFileSync(env.GITHUB_OUTPUT, "utf8");
+    assert.match(persisted, /observed-server-instance[\s\S]*SQLNODE01\\INSTANCE/u);
+    assert.match(persisted, /observed-database-name[\s\S]*ObservedDb/u);
+    const evidenceOutput = persisted.match(/evidence-json<<SQL_DISCOVERY_V2_EOF\n([^\n]+)/u)?.[1] ?? "";
+    assert.equal(evidenceOutput.includes("observedDatabaseIdentity"), false);
+    assert.equal(persisted.includes(env.SQL_SERVER_CONNECTION), false);
   });
   test("SQL mantiene secreto fuera de command line, evidence y outputs", () => {
     const env = sqlEnv("sql-secret-boundary");

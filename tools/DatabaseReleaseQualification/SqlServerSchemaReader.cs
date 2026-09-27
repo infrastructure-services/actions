@@ -309,6 +309,7 @@ public sealed class SqlServerSchemaReader
         return new SchemaCaptureSourceResult
         {
             Snapshot = snapshot,
+            ServerInstance = server.ServerInstance,
             DatabaseName = server.DatabaseName,
             ServerVersion = server.ServerVersion,
             ServerMajorVersion = server.MajorVersion,
@@ -317,16 +318,17 @@ public sealed class SqlServerSchemaReader
         };
     }
 
-    private static async Task<(string DatabaseName, string ServerVersion, int MajorVersion)> ReadServerMetadataAsync(
+    private static async Task<(string ServerInstance, string DatabaseName, string ServerVersion, int MajorVersion)> ReadServerMetadataAsync(
         SqlConnection connection,
         CancellationToken cancellationToken)
     {
         try
         {
-            var values = new List<(string DatabaseName, string ServerVersion)>();
+            var values = new List<(string ServerInstance, string DatabaseName, string ServerVersion)>();
             await ReadAsync(connection, ServerMetadataSql, reader =>
-                values.Add((Text(reader, 0), Text(reader, 1))), cancellationToken);
-            if (values.Count != 1 || string.IsNullOrWhiteSpace(values[0].DatabaseName)
+                values.Add((Text(reader, 0), Text(reader, 1), Text(reader, 2))), cancellationToken);
+            if (values.Count != 1
+                || !ObservedDatabaseIdentityContract.IsValid(values[0].ServerInstance, values[0].DatabaseName)
                 || string.IsNullOrWhiteSpace(values[0].ServerVersion))
             {
                 throw new InvalidOperationException("SERVER_METADATA_UNAVAILABLE");
@@ -337,7 +339,7 @@ public sealed class SqlServerSchemaReader
             {
                 throw new InvalidOperationException("SERVER_VERSION_INVALID");
             }
-            return (values[0].DatabaseName, values[0].ServerVersion, majorVersion);
+            return (values[0].ServerInstance, values[0].DatabaseName, values[0].ServerVersion, majorVersion);
         }
         catch (SchemaCaptureException)
         {
@@ -414,7 +416,10 @@ public sealed class SqlServerSchemaReader
     private const string UserSchemaFilter = "s.name NOT IN (N'sys', N'INFORMATION_SCHEMA', N'cicd') AND NOT EXISTS (SELECT 1 FROM sys.database_principals AS dp WHERE dp.principal_id = s.principal_id AND dp.type = N'R' AND dp.is_fixed_role = 1)";
 
     private const string ServerMetadataSql = """
-        SELECT DB_NAME(), CONVERT(nvarchar(128), SERVERPROPERTY(N'ProductVersion'));
+        SELECT
+            CONVERT(nvarchar(128), SERVERPROPERTY(N'ServerName')),
+            DB_NAME(),
+            CONVERT(nvarchar(128), SERVERPROPERTY(N'ProductVersion'));
         """;
 
     private static readonly string SchemasSql = $"""

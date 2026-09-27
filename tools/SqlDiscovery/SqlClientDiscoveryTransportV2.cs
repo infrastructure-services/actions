@@ -1,4 +1,5 @@
 using System.Data;
+using System.Text.RegularExpressions;
 using Microsoft.Data.SqlClient;
 
 namespace SqlDiscovery.V2;
@@ -40,10 +41,29 @@ public sealed class SqlClientDiscoveryTransportV2(int connectionTimeoutSeconds =
             : new(DatabaseLookupStatus.VisibilityInsufficient, new("DATABASE_LOOKUP", "VISIBILITY_INSUFFICIENT"));
     }
 
-    public async Task ConnectTargetAsync(SqlDiscoveryTarget target, CancellationToken cancellationToken)
+    public async Task<ObservedIdentityResult> ConnectTargetAsync(SqlDiscoveryTarget target, CancellationToken cancellationToken)
     {
         await using var connection = CreateConnection(target, target.DatabaseName);
         await OpenAsync(connection, cancellationToken);
+        try
+        {
+            await using var command = CreateCommand(connection, """
+                SELECT
+                    CONVERT(nvarchar(128), SERVERPROPERTY(N'ServerName')),
+                    DB_NAME();
+                """);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken) || reader.IsDBNull(0) || reader.IsDBNull(1))
+                return IdentityUnavailable();
+            var identity = new ObservedDatabaseIdentity(reader.GetString(0), reader.GetString(1));
+            return ObservedIdentityValidator.IsValid(identity)
+                ? new(ObservedIdentityStatus.Available, identity)
+                : IdentityUnavailable();
+        }
+        catch
+        {
+            return IdentityUnavailable();
+        }
     }
 
     public async Task<MetadataResult> InspectMetadataAsync(SqlDiscoveryTarget target, CancellationToken cancellationToken)
@@ -137,5 +157,18 @@ public sealed class SqlClientDiscoveryTransportV2(int connectionTimeoutSeconds =
     }
 
     private SqlCommand CreateCommand(SqlConnection connection, string sql) => new(sql, connection) { CommandTimeout = CommandTimeoutSeconds };
+    private static ObservedIdentityResult IdentityUnavailable() =>
+        new(ObservedIdentityStatus.Unavailable, Diagnostic: new("OBSERVED_DATABASE_IDENTITY", "OBSERVED_DATABASE_IDENTITY_UNAVAILABLE"));
     private static int RequirePositive(int value, string name) => value > 0 ? value : throw new ArgumentOutOfRangeException(name);
+}
+
+internal static partial class ObservedIdentityValidator
+{
+    [GeneratedRegex(@"^[A-Za-z0-9][A-Za-z0-9._\\-]{0,254}$", RegexOptions.CultureInvariant)]
+    private static partial Regex ServerInstancePattern();
+
+    public static bool IsValid(ObservedDatabaseIdentity identity) =>
+        ServerInstancePattern().IsMatch(identity.ServerInstance)
+        && identity.DatabaseName.Length is >= 1 and <= 128
+        && !identity.DatabaseName.Any(character => character < ' ' || character == '\u007f');
 }
