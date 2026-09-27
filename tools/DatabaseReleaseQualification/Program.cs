@@ -165,6 +165,7 @@ public static class QualificationCli
                 diagnosticCode = "SCHEMA_CAPTURE_COMPLETE",
                 artifact.CaptureDirectory,
                 artifact.SchemaHash,
+                artifact.Metadata.ServerInstance,
                 artifact.Metadata.DatabaseName,
                 artifact.Metadata.ServerVersion,
                 artifact.Metadata.ServerMajorVersion,
@@ -210,7 +211,9 @@ public static class QualificationCli
                 comparison.DiagnosticCode,
                 comparison.Deterministic,
                 comparison.Capture1SchemaHash,
-                comparison.Capture2SchemaHash
+                comparison.Capture2SchemaHash,
+                comparison.ObservedServerInstance,
+                comparison.ObservedDatabaseName
             });
             Console.WriteLine($"Schema capture determinism: {comparison.Deterministic.ToString().ToLowerInvariant()}.");
             return Task.FromResult(comparison.Deterministic ? 0 : 7);

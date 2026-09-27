@@ -20,6 +20,15 @@ outputs:
   evidence-json:
     description: Fuentes SQL V2 estructuradas y sanitizadas.
     value: ${{ steps.discover.outputs.evidence-json }}
+  observed-server-instance:
+    description: SERVERPROPERTY(ServerName) observado sobre la conexión target.
+    value: ${{ steps.discover.outputs.observed-server-instance }}
+  observed-database-name:
+    description: DB_NAME() observado sobre la conexión target.
+    value: ${{ steps.discover.outputs.observed-database-name }}
+  observed-database-identity-json:
+    description: Identidad SQL observada y sanitizada; vacía si target no fue exitoso.
+    value: ${{ steps.discover.outputs.observed-database-identity-json }}
   connection-status:
     value: ${{ steps.discover.outputs.connection-status }}
   database-lookup-status:

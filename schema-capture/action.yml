@@ -64,6 +64,15 @@ outputs:
   observed-schema-hash:
     description: SHA256 observado; nunca se promueve automáticamente a certificado.
     value: ${{ steps.capture.outputs.observed_schema_hash }}
+  observed-server-instance:
+    description: SERVERPROPERTY(ServerName) observado y coincidente en ambas capturas.
+    value: ${{ steps.capture.outputs.observed_server_instance }}
+  observed-database-name:
+    description: DB_NAME() observado y coincidente en ambas capturas.
+    value: ${{ steps.capture.outputs.observed_database_name }}
+  observed-database-identity-json:
+    description: Identidad SQL observada reconciliada sólo cuando ambas capturas coinciden.
+    value: ${{ steps.capture.outputs.observed_database_identity_json }}
   certified-schema-hash:
     description: SHA256 certificado en registry, vacío cuando todavía no existe.
     value: ${{ steps.capture.outputs.certified_schema_hash }}

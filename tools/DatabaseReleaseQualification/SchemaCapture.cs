@@ -55,6 +55,7 @@ public static class SchemaCaptureErrorClassifier
 public sealed class SchemaCaptureSourceResult
 {
     public required SchemaSnapshot Snapshot { get; init; }
+    public required string ServerInstance { get; init; }
     public required string DatabaseName { get; init; }
     public required string ServerVersion { get; init; }
     public int ServerMajorVersion { get; init; }
@@ -69,6 +70,7 @@ public sealed class SchemaCaptureMetadata
     public string Status { get; init; } = SchemaCaptureStatuses.Success;
     public string IdentityPurpose { get; init; } = "INSPECTION";
     public string Environment { get; init; } = "TEST";
+    public required string ServerInstance { get; init; }
     public required string DatabaseName { get; init; }
     public required string ServerVersion { get; init; }
     public int ServerMajorVersion { get; init; }
@@ -95,6 +97,8 @@ public sealed class SchemaCaptureComparison
     public required string Capture2SchemaHash { get; init; }
     public bool Deterministic { get; init; }
     public required string DiagnosticCode { get; init; }
+    public string? ObservedServerInstance { get; init; }
+    public string? ObservedDatabaseName { get; init; }
     public required SchemaDiff SchemaDiff { get; init; }
 }
 
@@ -117,6 +121,18 @@ public static class SchemaCaptureSqlGuard
     }
 }
 
+public static class ObservedDatabaseIdentityContract
+{
+    private static readonly Regex ServerInstance = new(
+        @"^[A-Za-z0-9][A-Za-z0-9._\\-]{0,254}$",
+        RegexOptions.CultureInvariant);
+
+    public static bool IsValid(string? serverInstance, string? databaseName) =>
+        serverInstance is not null && ServerInstance.IsMatch(serverInstance)
+        && databaseName is not null && databaseName.Length is >= 1 and <= 128
+        && !databaseName.Any(character => character < ' ' || character == '\u007f');
+}
+
 public sealed class SchemaCaptureArtifactWriter
 {
     public SchemaCaptureArtifact WriteCapture(
@@ -127,12 +143,15 @@ public sealed class SchemaCaptureArtifactWriter
         ArgumentException.ThrowIfNullOrWhiteSpace(captureDirectory);
         ArgumentException.ThrowIfNullOrWhiteSpace(captureId);
         ArgumentNullException.ThrowIfNull(source);
+        if (!ObservedDatabaseIdentityContract.IsValid(source.ServerInstance, source.DatabaseName))
+            throw new InvalidOperationException("OBSERVED_DATABASE_IDENTITY_INVALID");
         Directory.CreateDirectory(captureDirectory);
 
         var canonical = SchemaCanonicalizer.Canonicalize(source.Snapshot);
         var metadata = new SchemaCaptureMetadata
         {
             CaptureId = captureId,
+            ServerInstance = source.ServerInstance,
             DatabaseName = source.DatabaseName,
             ServerVersion = source.ServerVersion,
             ServerMajorVersion = source.ServerMajorVersion,
@@ -172,15 +191,24 @@ public sealed class SchemaCaptureArtifactWriter
         var firstSchema = ReadCanonical(first.CanonicalSchemaPath, first.SchemaHash);
         var secondSchema = ReadCanonical(second.CanonicalSchemaPath, second.SchemaHash);
         var diff = SchemaComparer.Compare(firstSchema, secondSchema);
-        var deterministic = string.Equals(first.SchemaHash, second.SchemaHash, StringComparison.Ordinal)
+        var structuralMatch = string.Equals(first.SchemaHash, second.SchemaHash, StringComparison.Ordinal)
             && diff.IsEquivalent;
+        var identityMatch = ObservedDatabaseIdentityContract.IsValid(first.Metadata.ServerInstance, first.Metadata.DatabaseName)
+            && ObservedDatabaseIdentityContract.IsValid(second.Metadata.ServerInstance, second.Metadata.DatabaseName)
+            && string.Equals(first.Metadata.ServerInstance, second.Metadata.ServerInstance, StringComparison.Ordinal)
+            && string.Equals(first.Metadata.DatabaseName, second.Metadata.DatabaseName, StringComparison.Ordinal);
+        var deterministic = structuralMatch && identityMatch;
         var comparison = new SchemaCaptureComparison
         {
             Status = deterministic ? SchemaCaptureStatuses.Success : SchemaCaptureStatuses.Nondeterministic,
             Capture1SchemaHash = first.SchemaHash,
             Capture2SchemaHash = second.SchemaHash,
             Deterministic = deterministic,
-            DiagnosticCode = deterministic ? "SCHEMA_HASHES_MATCH" : "CONCURRENT_DDL_OR_NONDETERMINISTIC_CAPTURE",
+            DiagnosticCode = deterministic ? "SCHEMA_HASHES_AND_IDENTITY_MATCH"
+                : !identityMatch ? "OBSERVED_DATABASE_IDENTITY_MISMATCH"
+                : "CONCURRENT_DDL_OR_NONDETERMINISTIC_CAPTURE",
+            ObservedServerInstance = identityMatch ? first.Metadata.ServerInstance : null,
+            ObservedDatabaseName = identityMatch ? first.Metadata.DatabaseName : null,
             SchemaDiff = diff
         };
         WriteJson(Path.Combine(comparisonDirectory, "determinism.json"), comparison);

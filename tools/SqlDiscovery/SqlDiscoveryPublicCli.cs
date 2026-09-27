@@ -39,6 +39,11 @@ public static class SqlDiscoveryPublicCli
                     _ => throw new InvalidOperationException("SERVER_CONNECTION_STATE_INVALID")
                 }
             };
+            if (result.TargetConnection.Status == ConnectionStatus.Succeeded)
+            {
+                publicEvidence["observedDatabaseIdentity"] = result.ObservedIdentity.Identity
+                    ?? throw new InvalidOperationException("TARGET_IDENTITY_REQUIRED");
+            }
             Console.WriteLine(JsonSerializer.Serialize(publicEvidence));
             return 0;
         }
