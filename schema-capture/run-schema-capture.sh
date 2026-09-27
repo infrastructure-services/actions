@@ -279,7 +279,10 @@ if [[ ! "$HASH_2" =~ ^[0-9a-f]{64}$ ]]; then HASH_2=''; fi
 if [[ "$DETERMINISTIC" != 'true' ]]; then DETERMINISTIC='false'; fi
 if [[ "$IDENTITY_CONSISTENT" != 'true' ]]; then
   IDENTITY_CONSISTENT='false'
-  if [[ "$DETERMINISTIC" == 'true' ]]; then DIAGNOSTIC="$IDENTITY_DIAGNOSTIC"; fi
+  if [[ "$DETERMINISTIC" == 'true' ]]; then
+    STATUS='FAIL_SCHEMA_CAPTURE'
+    DIAGNOSTIC="$IDENTITY_DIAGNOSTIC"
+  fi
 fi
 
 OBSERVED_SERVER_INSTANCE="$(jq -r '.observedServerInstance // empty' "$COMPARISON_RESULT" 2>/dev/null)"

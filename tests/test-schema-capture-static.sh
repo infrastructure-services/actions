@@ -184,6 +184,21 @@ do
   fi
 done
 
+IDENTITY_GATE_BLOCK="$(sed -n '/if \[\[ "$IDENTITY_CONSISTENT" != '\''true'\'' \]\]; then/,/^fi$/p' "$CAPTURE_RUNNER")"
+for required_identity_gate_line in \
+  "STATUS='FAIL_SCHEMA_CAPTURE'" \
+  'DIAGNOSTIC="$IDENTITY_DIAGNOSTIC"'
+do
+  if ! grep -Fq "$required_identity_gate_line" <<<"$IDENTITY_GATE_BLOCK"; then
+    echo "FAIL: identity mismatch no produce failure global sanitizado: $required_identity_gate_line"
+    exit 1
+  fi
+done
+if ! grep -Fq 'if [[ "$DETERMINISTIC" == '\''true'\'' && "$IDENTITY_CONSISTENT" == '\''true'\'' ]]; then' "$CAPTURE_RUNNER"; then
+  echo 'FAIL: outputs de observed identity no están condicionados por ambos gates.'
+  exit 1
+fi
+
 for version_guard in '>= 11' '>= 12' '>= 13' '>= 14' '>= 16'; do
   if ! grep -Fq "$version_guard" "$READER"; then
     echo "FAIL: falta degradación/versionado SQL Server: $version_guard"
