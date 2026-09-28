@@ -27,6 +27,10 @@ inputs:
     required: false
     default: "[]"
 
+outputs:
+  digest:
+    description: Digest de la iamgen generada en build
+    value: ${{ steps.build.outputs.secret_value }}
 
 runs:
   using: "composite"
@@ -77,6 +81,7 @@ runs:
           password: ${{ inputs.ACR_PASSWORD }}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v7
         env: 
           DOCKER_BUILD_RECORD_UPLOAD: "false"
