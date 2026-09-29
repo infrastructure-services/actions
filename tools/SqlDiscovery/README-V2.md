@@ -17,7 +17,7 @@ Este incremento agrega un núcleo aislado; no está conectado a `action.yml`, wo
 - Lookup, metadata, física e history conservan `TIMEOUT` y `CANCELLED` sin normalizarlos como error ni como etapa no intentada.
 - Evidencia raw V2 histórica sin `targetConnectionSource` continúa parseando. El adapter no inventa éxito: si lookup encontró la base, la ausencia o cualquier estado target distinto de `SUCCEEDED` bloquea antes del classifier. Si la base está confirmadamente ausente, target `NOT_ATTEMPTED` es válido.
 - Una observación física parcial no publica counts. La consulta completa cuenta objetos de catálogo no enviados por Microsoft y excluye sólo la tabla EF conocida y sus objetos hijos; no clasifica schemas por nombre.
-- `technicalObjectCount` permanece ausente: la taxonomía técnica gobernada no está cerrada. Por ello un resultado físico cero no acredita elegibilidad `NEW_EF` a través del adapter vigente.
+- El transporte produce `technicalObjectCount` y coverage completa sólo tras evaluar [EMPTY_FOR_NEW_EF V1](EMPTY_FOR_NEW_EF_V1.md). Preserva el count histórico de `sys.objects` y añade categorías complementarias disjuntas. Evidencia histórica sin taxonomía sigue parseando, pero cero sin coverage V1 nunca acredita `EMPTY`. Fallos o inspecciones parciales no publican counts acreditados.
 - EF history distingue ausencia, presencia vacía, presencia con filas, ilegibilidad, estructura inválida, error técnico y no intentada. La estructura exige las columnas EF conocidas y una PK sobre `MigrationId`; los IDs se conservan, incluidos duplicados recibidos desde un transporte doble. `MigrationId ASC` es sólo orden canónico de lectura.
 
 ## Pruebas

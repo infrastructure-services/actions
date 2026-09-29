@@ -1,9 +1,17 @@
 using System.Diagnostics;
+using System.Data;
 using System.Text.Json;
 using SqlDiscovery.V2;
 
 var tests = new List<(string Name, Func<Task> Run)>
 {
+    ("V1 exact standard schemas and SELECT-only coverage", TaxonomySqlContract),
+    ("V1 reader zero positive and each complementary category", TaxonomyReader),
+    ("V1 partial permissions malformed and overflowing reads fail closed", TaxonomyReaderFailures),
+    ("V1 complete SQL projection reaches real NEW_EF", IntegrationNewEfComplete),
+    ("V1 complementary objects block real NEW_EF", IntegrationNewEfComplementary),
+    ("V1 forged aggregate and taxonomy fail projection", TaxonomyProjectionFailure),
+    ("history spoof and revoked metadata never become ABSENT", HistoryStructureBoundary),
     ("conexión exitosa y orden completo", FullSuccess),
     ("fallo de autenticación sanitizado", AuthenticationFailure),
     ("fallo de transporte sanitizado", TransportFailure),
@@ -78,6 +86,122 @@ static ObservedIdentityResult UnavailableIdentity() =>
     new(ObservedIdentityStatus.Unavailable, Diagnostic: new("OBSERVED_DATABASE_IDENTITY", "OBSERVED_DATABASE_IDENTITY_UNAVAILABLE"));
 
 static RecordingTransport SuccessfulTransport() => new();
+
+static Task TaxonomySqlContract()
+{
+    EqualSequence(new[] { "dbo", "guest", "sys", "INFORMATION_SCHEMA", "db_accessadmin", "db_backupoperator",
+        "db_datareader", "db_datawriter", "db_ddladmin", "db_denydatareader", "db_denydatawriter", "db_owner", "db_securityadmin" }, EmptyForNewEfV1.StandardSchemas);
+    False(EmptyForNewEfV1.StandardSchemas.Contains("cicd"));
+    var sql = EmptyForNewEfV1.Sql;
+    foreach (var catalog in new[] { "sys.objects", "sys.schemas", "sys.types", "sys.table_types", "sys.triggers", "sys.partition_functions", "sys.partition_schemes", "sys.assemblies", "sys.xml_schema_collections", "sys.fulltext_catalogs" }) True(sql.Contains(catalog));
+    True(sql.Contains("Latin1_General_100_BIN2"));
+    False(sql.Contains("is_fixed_role"));
+    False(sql.Contains("N'cicd'"));
+    True(sql.Contains("b.object_id = tt.type_table_object_id"));
+    True(sql.Contains("b.object_id = tr.object_id"));
+    True(sql.Contains("tr.parent_class = 0 AND tr.is_ms_shipped = 0"));
+    True(sql.Contains("HAS_PERMS_BY_NAME(DB_NAME(), N'DATABASE', N'VIEW DEFINITION')"));
+    // With history absent OBJECT_ID is NULL. NOT(parent_id = NULL) would hide
+    // every user object through SQL's UNKNOWN predicate and falsely prove empty.
+    True(sql.Contains("OBJECT_ID(N'dbo.__EFMigrationsHistory', N'U') IS NULL"));
+    True(sql.Contains("OR o.parent_object_id <> OBJECT_ID(N'dbo.__EFMigrationsHistory', N'U')"));
+    foreach (var forbidden in new[] { "INSERT ", "UPDATE ", "DELETE ", "MERGE ", "EXEC ", "CREATE ", "ALTER ", "DROP ", "TRUNCATE ", "ExecuteNonQuery" }) False(sql.Contains(forbidden, StringComparison.OrdinalIgnoreCase));
+    return Task.CompletedTask;
+}
+
+static DataTable TaxonomyTable()
+{
+    var table = new DataTable();
+    table.Columns.Add("visibility", typeof(int)); table.Columns.Add("business", typeof(long));
+    foreach (var category in EmptyForNewEfV1.Categories) table.Columns.Add(category, typeof(long));
+    return table;
+}
+static object[] TaxonomyRow() => new object[] { 1, 0L }.Concat(EmptyForNewEfV1.Categories.Select(_ => (object)0L)).ToArray();
+
+static async Task TaxonomyReader()
+{
+    for (var index = -1; index < EmptyForNewEfV1.Categories.Count; index++)
+    {
+        var table = TaxonomyTable(); var row = TaxonomyRow(); if (index >= 0) row[index + 2] = 1L; table.Rows.Add(row);
+        using var reader = table.CreateDataReader(); var result = await EmptyForNewEfV1.ReadAsync(reader, default);
+        Equal(PhysicalStatus.Complete, result.Status); Equal(0L, result.BusinessObjectCount!.Value);
+        Equal(index < 0 ? 0L : 1L, result.TechnicalObjectCount!.Value); True(EmptyForNewEfV1.Valid(result));
+    }
+}
+
+static async Task TaxonomyReaderFailures()
+{
+    for (var variant = 0; variant < 7; variant++)
+    {
+        var table = TaxonomyTable(); var row = TaxonomyRow();
+        if (variant == 0) row[0] = 0;
+        if (variant == 1) row[2] = DBNull.Value;
+        if (variant == 2) row[2] = -1L;
+        if (variant == 3) row[2] = EmptyForNewEfV1.MaxSafeCount + 1;
+        if (variant == 4) { row[2] = EmptyForNewEfV1.MaxSafeCount; row[3] = 1L; }
+        if (variant != 5) table.Rows.Add(row);
+        if (variant == 6) table.Rows.Add(TaxonomyRow());
+        using var reader = table.CreateDataReader(); var result = await EmptyForNewEfV1.ReadAsync(reader, default);
+        Equal(PhysicalStatus.Partial, result.Status); True(result.TechnicalObjectCount is null); True(result.BusinessObjectCount is null);
+    }
+    var shortTable = TaxonomyTable(); shortTable.Columns.RemoveAt(9);
+    using var shortReader = shortTable.CreateDataReader(); Equal(PhysicalStatus.Partial, (await EmptyForNewEfV1.ReadAsync(shortReader, default)).Status);
+    var first = TaxonomyTable(); first.Rows.Add(TaxonomyRow()); var second = TaxonomyTable();
+    using var extraReader = new DataTableReader(new[] { first, second });
+    Equal(PhysicalStatus.Partial, (await EmptyForNewEfV1.ReadAsync(extraReader, default)).Status);
+}
+
+static async Task<(int ExitCode, JsonDocument Json)> NewPipeline(PhysicalResult physical)
+{
+    var transport = SuccessfulTransport(); transport.Physical = _ => Task.FromResult(physical);
+    transport.History = _ => Task.FromResult(new HistoryResult(HistoryStatus.Absent));
+    var projection = new SqlDiscoveryOrchestratorV2(transport).ProjectSources(await Discover(transport));
+    var envelope = Envelope(projection, "NEW", "EF_MIGRATIONS", new { status = "PRESENT_VALID", migrations = new { count = 1, ids = new[] { "20260101000000_First" } } },
+        new { status = "NOT_EVALUATED" }, new { status = "NOT_EVALUATED" }, new { status = "NOT_REQUIRED" });
+    return RunPipeline(envelope);
+}
+static async Task IntegrationNewEfComplete()
+{
+    var pipeline = await NewPipeline(EmptyForNewEfV1.Complete(0, new long[EmptyForNewEfV1.Categories.Count]));
+    Equal(0, pipeline.ExitCode); var classification = pipeline.Json.RootElement.GetProperty("classificationResult");
+    Equal("NEW_EF", classification.GetProperty("inferences").GetProperty("scenario").GetString());
+    Equal("ELIGIBLE_FOR_NEXT_READ_ONLY_STAGE", classification.GetProperty("decision").GetProperty("status").GetString());
+}
+static async Task IntegrationNewEfComplementary()
+{
+    for (var index = 0; index < EmptyForNewEfV1.Categories.Count; index++)
+    {
+        var counts = new long[EmptyForNewEfV1.Categories.Count]; counts[index] = 1;
+        var pipeline = await NewPipeline(EmptyForNewEfV1.Complete(0, counts));
+        Equal("BLOCKED_NEW_TECHNICAL_ONLY_UNDECIDED", pipeline.Json.RootElement.GetProperty("classificationResult").GetProperty("decision").GetProperty("primaryBlock").GetString());
+    }
+}
+static async Task TaxonomyProjectionFailure()
+{
+    var transport = SuccessfulTransport(); var complete = EmptyForNewEfV1.Complete(0, new long[EmptyForNewEfV1.Categories.Count]);
+    transport.Physical = _ => Task.FromResult(complete with { TechnicalObjectCount = 1 });
+    False(new SqlDiscoveryOrchestratorV2(transport).ProjectSources(await Discover(transport)).IsRepresentable);
+    transport.Physical = _ => Task.FromResult(complete with { Taxonomy = complete.Taxonomy! with { Version = 2 } });
+    False(new SqlDiscoveryOrchestratorV2(transport).ProjectSources(await Discover(transport)).IsRepresentable);
+}
+
+static async Task HistoryStructureBoundary()
+{
+    foreach (var (flags, expected) in new[] {
+        (new[] { 0, 0, 0, 1 }, (HistoryStatus?)HistoryStatus.Absent),
+        (new[] { 0, 0, 0, 0 }, (HistoryStatus?)HistoryStatus.Unreadable),
+        (new[] { 1, 1, 0, 1 }, (HistoryStatus?)HistoryStatus.InvalidStructure),
+        (new[] { 1, 0, 0, 1 }, (HistoryStatus?)HistoryStatus.Unreadable),
+        (new[] { 1, 1, 1, 1 }, (HistoryStatus?)null),
+        (new[] { 0, 1, 1, 1 }, (HistoryStatus?)HistoryStatus.TechnicalError),
+        (new[] { 2, 1, 1, 1 }, (HistoryStatus?)HistoryStatus.TechnicalError)
+    })
+    {
+        var table = new DataTable(); for (var i = 0; i < 4; i++) table.Columns.Add($"flag{i}", typeof(int));
+        table.Rows.Add(flags.Cast<object>().ToArray()); using var reader = table.CreateDataReader();
+        Equal(expected, (await SqlClientDiscoveryTransportV2.ReadHistoryStructureAsync(reader, default))?.Status);
+    }
+}
 
 static async Task<SqlDiscoveryResult> Discover(RecordingTransport transport, CancellationToken token = default) =>
     await new SqlDiscoveryOrchestratorV2(transport).DiscoverAsync(Target(), token);
@@ -432,6 +556,9 @@ static Task StaticTransportGuards()
     True(source.Contains("SqlConnectionEncryptOption.Strict", StringComparison.Ordinal));
     True(source.Contains("TrustServerCertificate = false", StringComparison.Ordinal));
     True(source.Contains("ORDER BY MigrationId ASC", StringComparison.Ordinal));
+    // The physical predicate excludes this name for compatibility. History must
+    // also reject a view/synonym/procedure impersonating the excluded table.
+    True(source.Contains("CASE WHEN OBJECT_ID(N'dbo.__EFMigrationsHistory') IS NULL THEN 0 ELSE 1 END"));
     var targetMethod = source[(source.IndexOf("ConnectTargetAsync", StringComparison.Ordinal))..source.IndexOf("InspectMetadataAsync", StringComparison.Ordinal)];
     Equal(1, targetMethod.Split("CreateConnection(", StringSplitOptions.None).Length - 1);
     True(targetMethod.Contains("OpenAsync(connection", StringComparison.Ordinal));

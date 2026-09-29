@@ -24,7 +24,9 @@ public sealed record ConnectionResult(
     StageDiagnostic? Diagnostic = null);
 public sealed record DatabaseLookupResult(DatabaseLookupStatus Status, StageDiagnostic? Diagnostic = null);
 public sealed record MetadataResult(MetadataStatus Status, StageDiagnostic? Diagnostic = null);
-public sealed record PhysicalResult(PhysicalStatus Status, long? BusinessObjectCount = null, StageDiagnostic? Diagnostic = null);
+public sealed record PhysicalTaxonomy(int Version, string Coverage, IReadOnlyDictionary<string, long>? Counts = null);
+public sealed record PhysicalResult(PhysicalStatus Status, long? BusinessObjectCount = null, StageDiagnostic? Diagnostic = null,
+    long? TechnicalObjectCount = null, PhysicalTaxonomy? Taxonomy = null);
 
 public sealed record HistoryResult
 {

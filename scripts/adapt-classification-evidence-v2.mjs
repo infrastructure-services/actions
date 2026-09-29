@@ -4,8 +4,9 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { validateTaxonomy, physicalState as derivePhysicalState } from "./empty-for-new-ef-v1.mjs";
 
-const ADAPTER_VERSION = "1";
+const ADAPTER_VERSION = "2";
 const MAX_COUNT = Number.MAX_SAFE_INTEGER;
 const MIGRATION_ID_PATTERN = /^[0-9]{14}_[A-Za-z0-9_]+$/;
 
@@ -123,7 +124,7 @@ export function validateContract(raw) {
     checkEnum(raw.targetConnection.status, ENUMS.targetConnection, "targetConnection.status", errors);
   }
 
-  if (checkObject(raw.physical, "physical", ["status"], errors, ["status", "businessObjectCount", "technicalObjectCount"])) {
+  if (checkObject(raw.physical, "physical", ["status"], errors, ["status", "businessObjectCount", "technicalObjectCount", "taxonomy"])) {
     checkEnum(raw.physical.status, ENUMS.physical, "physical.status", errors);
     if (raw.physical.status === "OBSERVED") {
       for (const key of ["businessObjectCount"]) {
@@ -133,6 +134,8 @@ export function validateContract(raw) {
     for (const key of ["businessObjectCount", "technicalObjectCount"]) {
       if (Object.hasOwn(raw.physical, key)) checkCount(raw.physical[key], `physical.${key}`, errors);
     }
+    const taxonomyError = validateTaxonomy(raw.physical);
+    if (taxonomyError) errors.push(issue(taxonomyError, "physical.taxonomy", "Physical taxonomy evidence is invalid or incoherent."));
   }
 
   if (checkObject(raw.history, "history", ["status"], errors, ["status", "migrationCount", "migrationIds"])) {
@@ -271,10 +274,7 @@ export function relationFor(raw) {
 }
 
 export function normalize(raw) {
-  const physicalState = raw.physical.status !== "OBSERVED" ? "UNKNOWN"
-    : raw.physical.businessObjectCount > 0 ? "POPULATED"
-      : !Object.hasOwn(raw.physical, "technicalObjectCount") ? "UNKNOWN"
-        : raw.physical.technicalObjectCount > 0 ? "TECHNICAL_ONLY" : "EMPTY";
+  const physicalState = derivePhysicalState(raw.physical);
   const historyState = raw.history.status === "PRESENT"
     ? (raw.history.migrationCount === 0 ? "EMPTY" : "PRESENT")
     : raw.history.status === "NOT_ATTEMPTED" ? "UNKNOWN" : raw.history.status;

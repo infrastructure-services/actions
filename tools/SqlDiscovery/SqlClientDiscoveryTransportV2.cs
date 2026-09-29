@@ -1,4 +1,5 @@
 using System.Data;
+using System.Data.Common;
 using System.Text.RegularExpressions;
 using Microsoft.Data.SqlClient;
 
@@ -79,15 +80,9 @@ public sealed class SqlClientDiscoveryTransportV2(int connectionTimeoutSeconds =
     {
         await using var connection = CreateConnection(target, target.DatabaseName);
         await OpenAsync(connection, cancellationToken);
-        await using var command = CreateCommand(connection, """
-            SELECT COUNT_BIG(*)
-            FROM sys.objects AS o
-            WHERE o.is_ms_shipped = 0
-              AND NOT (SCHEMA_NAME(o.schema_id) = N'dbo' AND OBJECT_NAME(o.object_id) = N'__EFMigrationsHistory')
-              AND NOT (o.parent_object_id = OBJECT_ID(N'dbo.__EFMigrationsHistory', N'U'));
-            """);
-        var count = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken));
-        return new(PhysicalStatus.Complete, count);
+        await using var command = CreateCommand(connection, EmptyForNewEfV1.Sql);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await EmptyForNewEfV1.ReadAsync(reader, cancellationToken);
     }
 
     public async Task<HistoryResult> ObserveHistoryAsync(SqlDiscoveryTarget target, CancellationToken cancellationToken)
@@ -96,7 +91,7 @@ public sealed class SqlClientDiscoveryTransportV2(int connectionTimeoutSeconds =
         await OpenAsync(connection, cancellationToken);
         await using var structure = CreateCommand(connection, """
             SELECT
-                CASE WHEN OBJECT_ID(N'dbo.__EFMigrationsHistory', N'U') IS NULL THEN 0 ELSE 1 END,
+                CASE WHEN OBJECT_ID(N'dbo.__EFMigrationsHistory') IS NULL THEN 0 ELSE 1 END,
                 CASE WHEN HAS_PERMS_BY_NAME(N'dbo.__EFMigrationsHistory', N'OBJECT', N'SELECT') = 1 THEN 1 ELSE 0 END,
                 CASE WHEN EXISTS (
                     SELECT 1
@@ -119,13 +114,12 @@ public sealed class SqlClientDiscoveryTransportV2(int connectionTimeoutSeconds =
                         ON c.object_id = ic.object_id AND c.column_id = ic.column_id
                     WHERE i.object_id = OBJECT_ID(N'dbo.__EFMigrationsHistory', N'U')
                       AND i.is_primary_key = 1 AND c.name = N'MigrationId'
-                ) THEN 1 ELSE 0 END;
+                ) THEN 1 ELSE 0 END,
+                CASE WHEN HAS_PERMS_BY_NAME(DB_NAME(), N'DATABASE', N'VIEW DEFINITION') = 1 THEN 1 ELSE 0 END;
             """);
         await using var reader = await structure.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken)) return new(HistoryStatus.TechnicalError, diagnostic: new("HISTORY", "EMPTY_STRUCTURE_RESULT"));
-        if (reader.GetInt32(0) == 0) return new(HistoryStatus.Absent);
-        if (reader.GetInt32(1) == 0) return new(HistoryStatus.Unreadable, diagnostic: new("HISTORY", "SELECT_INSUFFICIENT"));
-        if (reader.GetInt32(2) == 0) return new(HistoryStatus.InvalidStructure, diagnostic: new("HISTORY", "STRUCTURE_INVALID"));
+        var structureResult = await ReadHistoryStructureAsync(reader, cancellationToken);
+        if (structureResult is not null) return structureResult;
         await reader.CloseAsync();
 
         await using var rows = CreateCommand(connection, "SELECT MigrationId FROM dbo.__EFMigrationsHistory ORDER BY MigrationId ASC;");
@@ -133,6 +127,23 @@ public sealed class SqlClientDiscoveryTransportV2(int connectionTimeoutSeconds =
         var ids = new List<string>();
         while (await historyReader.ReadAsync(cancellationToken)) ids.Add(historyReader.GetString(0));
         return ids.Count == 0 ? new(HistoryStatus.Empty, ids) : new(HistoryStatus.Present, ids);
+    }
+
+    // Pure reader boundary: tests exercise structure/permissions without SQL access.
+    public static async Task<HistoryResult?> ReadHistoryStructureAsync(DbDataReader reader, CancellationToken token)
+    {
+        if (!await reader.ReadAsync(token) || reader.FieldCount != 4 || Enumerable.Range(0, 4).Any(reader.IsDBNull))
+            return new(HistoryStatus.TechnicalError, diagnostic: new("HISTORY", "STRUCTURE_RESULT_INVALID"));
+        var flags = Enumerable.Range(0, 4).Select(reader.GetInt32).ToArray();
+        if (flags.Any(value => value is not (0 or 1)) || await reader.ReadAsync(token) || await reader.NextResultAsync(token))
+            return new(HistoryStatus.TechnicalError, diagnostic: new("HISTORY", "STRUCTURE_RESULT_INVALID"));
+        if (flags[0] == 0 && (flags[1] != 0 || flags[2] != 0))
+            return new(HistoryStatus.TechnicalError, diagnostic: new("HISTORY", "STRUCTURE_RESULT_INVALID"));
+        if (flags[3] != 1) return new(HistoryStatus.Unreadable, diagnostic: new("HISTORY", "METADATA_INSUFFICIENT"));
+        if (flags[0] == 0) return new(HistoryStatus.Absent);
+        if (flags[1] == 0) return new(HistoryStatus.Unreadable, diagnostic: new("HISTORY", "SELECT_INSUFFICIENT"));
+        if (flags[2] == 0) return new(HistoryStatus.InvalidStructure, diagnostic: new("HISTORY", "STRUCTURE_INVALID"));
+        return null;
     }
 
     private SqlConnection CreateConnection(SqlDiscoveryTarget target, string catalog)

@@ -12,6 +12,7 @@ run_case() {
     const [lifecycle,mode,physical,repository,history,relation,schema,registry,onboarding]=process.argv.slice(1);
     const ids=["20240101010101_Initial","20240202020202_AddOrders"];
     const root={contractVersion:2,declarations:{databaseLifecycle:lifecycle,changeManagementMode:mode},connection:{status:"SUCCEEDED"},databaseLookup:{status:"FOUND"},targetConnection:{status:"SUCCEEDED"},metadata:{status:"SUFFICIENT"},physical:{status:"OBSERVED",businessObjectCount:physical==="EMPTY"?0:5,technicalObjectCount:physical==="TECHNICAL_ONLY"?1:0},history:{status:history},repository:{status:repository},schema:{status:schema},registry:{status:registry},onboarding:{status:onboarding}};
+    if(physical==="EMPTY") root.physical.taxonomy={version:1,coverage:"COMPLETE",counts:{customSchemas:0,userDefinedTypes:0,databaseTriggers:0,partitionFunctions:0,partitionSchemes:0,userAssemblies:0,xmlSchemaCollections:0,fullTextCatalogs:0}};
     if(history==="PRESENT"){root.history.migrationIds=relation==="VALID_PREFIX"?[ids[0]]:ids;root.history.migrationCount=root.history.migrationIds.length;}
     if(repository==="PRESENT_VALID"){root.repository.migrations={count:ids.length,ids};}
     process.stdout.write(JSON.stringify(root));
