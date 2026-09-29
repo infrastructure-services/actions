@@ -30,7 +30,7 @@ inputs:
 outputs:
   digest:
     description: Digest de la iamgen generada en build
-    value: ${{ steps.build.outputs.secret_value }}
+    value: ${{ steps.build.outputs.digest }}
 
 runs:
   using: "composite"
