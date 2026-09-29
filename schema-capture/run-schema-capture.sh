@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
+# The dedicated producer selects this stage before any Registry lookup occurs.
+# The ordinary action has no opt-out and retains its Registry V1 contract.
+BOOTSTRAP_READONLY=false
+if [[ $# -eq 1 && "$1" == '--new-ef-bootstrap-readonly' && "${GITHUB_ACTION_PATH##*/}" == 'schema-capture-new-ef-bootstrap' ]]; then
+  BOOTSTRAP_READONLY=true
+elif [[ $# -ne 0 ]]; then
+  echo 'Schema capture rechazado: entrypoint inválido.' >&2
+  exit 2
+fi
+
 ENGINE_PROJECT="$GITHUB_ACTION_PATH/../tools/DatabaseReleaseQualification/DatabaseReleaseQualification.csproj"
 NUGET_CONFIG="$GITHUB_ACTION_PATH/../tools/DatabaseReleaseQualification/NuGet.Config"
 BUILD_DIRECTORY="$RUNNER_TEMP/database-schema-capture-engine-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}"
@@ -30,6 +40,7 @@ else
   ARTIFACT_DIRECTORY="$GITHUB_WORKSPACE/$OUTPUT_DIRECTORY"
 fi
 
+if [[ "$BOOTSTRAP_READONLY" == false ]]; then
 if [[ ! "$APPLICATION_ID_VALUE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
   echo "Database state evaluation rechazada: application ID inválido o ausente." >&2
   exit 2
@@ -59,6 +70,13 @@ REGISTRY_FILE_SHA256_AT_START="$(file_sha256 "$REGISTRY_FILE_PATH")"
 if [[ "$REGISTRY_FILE_SHA256_AT_START" != "${REGISTRY_FILE_SHA256_VALUE,,}" ]]; then
   echo "Database state evaluation rechazada: registry file SHA256 no coincide." >&2
   exit 2
+fi
+else
+  # Reject supplied evaluation context instead of discarding an observed result.
+  if [[ -n "$REGISTRY_FILE_VALUE$REGISTRY_REPOSITORY_VALUE$REGISTRY_REF_VALUE$REGISTRY_COMMIT_SHA_VALUE$REGISTRY_LOGICAL_FILE_PATH_VALUE$REGISTRY_FILE_SHA256_VALUE" ]]; then
+    echo 'Bootstrap rechazado: contexto Registry V1 no permitido.' >&2
+    exit 2
+  fi
 fi
 
 CAPTURE_1_DIRECTORY="$ARTIFACT_DIRECTORY/capture-1"
@@ -315,7 +333,7 @@ REGISTRY_EVALUATION_EXIT=0
 REGISTRY_FORMAT_VERSION=''
 REGISTRY_COMMIT_SHA=''
 
-if [[ $COMPARISON_EXIT -eq 0 && "$DETERMINISTIC" == 'true' && "$IDENTITY_CONSISTENT" == 'true' ]]; then
+if [[ $COMPARISON_EXIT -eq 0 && "$DETERMINISTIC" == 'true' && "$IDENTITY_CONSISTENT" == 'true' && "$BOOTSTRAP_READONLY" == false ]]; then
   set +e
   dotnet "$BUILD_DIRECTORY/DatabaseReleaseQualification.dll" evaluate-database-state \
     --environment TEST \
@@ -371,6 +389,14 @@ if [[ $COMPARISON_EXIT -eq 0 && "$DETERMINISTIC" == 'true' && "$IDENTITY_CONSIST
   if [[ -n "$CERTIFIED_SCHEMA_HASH" && ! "$CERTIFIED_SCHEMA_HASH" =~ ^[0-9a-fA-F]{64}$ ]]; then CERTIFIED_SCHEMA_HASH=''; fi
   if [[ "$REGISTRY_FORMAT_VERSION" != '1' ]]; then REGISTRY_FORMAT_VERSION=''; fi
   if [[ ! "$REGISTRY_COMMIT_SHA" =~ ^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$ ]]; then REGISTRY_COMMIT_SHA=''; fi
+fi
+
+if [[ $COMPARISON_EXIT -eq 0 && "$DETERMINISTIC" == 'true' && "$IDENTITY_CONSISTENT" == 'true' && "$BOOTSTRAP_READONLY" == true ]]; then
+  REGISTRY_STATUS='NOT_EVALUATED'
+  DRIFT_STATUS='NOT_EVALUATED'
+  GATE_STATUS='BLOCKED'
+  GATE_REASON='NEW_EF_CERTIFICATION_NOT_EVALUATED'
+  OBSERVED_SCHEMA_HASH="$HASH_1"
 fi
 
 CERTIFIED_SCHEMA_HASH_SUMMARY="$CERTIFIED_SCHEMA_HASH"

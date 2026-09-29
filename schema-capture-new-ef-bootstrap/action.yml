@@ -1,0 +1,50 @@
+name: NEW EF bootstrap Schema Capture (Read Only)
+description: Captura observada TEST; no ejecuta Registry V1 ni certifica. Sólo consumidor gobernado NEW EF.
+inputs:
+  connection-string:
+    description: Identidad dedicada a inspección SELECT-only.
+    required: true
+  environment-name:
+    description: Ambiente permitido.
+    default: TEST
+  output-directory:
+    description: Directorio de evidencia observada.
+    default: artifacts/db-schema-capture-new/TEST
+  dotnet-version:
+    description: SDK del engine existente.
+    default: 10.0.x
+outputs:
+  status:
+    description: SUCCESS o FAIL sanitizado.
+    value: ${{ steps.capture.outputs.status }}
+  deterministic:
+    description: Concordancia de ambas capturas observadas.
+    value: ${{ steps.capture.outputs.deterministic }}
+  observed-database-identity-json:
+    description: Identidad SQL observada reconciliada.
+    value: ${{ steps.capture.outputs.observed_database_identity_json }}
+  registry-status:
+    description: NOT_EVALUATED sólo después de captura exitosa; evaluación de certificación no ejecutada.
+    value: ${{ steps.capture.outputs.registry_status }}
+  drift-status:
+    description: NOT_EVALUATED; no compara contra schema certificado.
+    value: ${{ steps.capture.outputs.drift_status }}
+  gate-status:
+    description: BLOCKED; este productor nunca habilita release.
+    value: ${{ steps.capture.outputs.gate_status }}
+  gate-reason:
+    description: NEW_EF_CERTIFICATION_NOT_EVALUATED tras captura exitosa.
+    value: ${{ steps.capture.outputs.gate_reason }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: ${{ inputs.dotnet-version }}
+    - id: capture
+      shell: bash
+      env:
+        DB_CONNECTION: ${{ inputs.connection-string }}
+        ENVIRONMENT_NAME: ${{ inputs.environment-name }}
+        OUTPUT_DIRECTORY: ${{ inputs.output-directory }}
+      run: bash "$GITHUB_ACTION_PATH/run-schema-capture.sh"
