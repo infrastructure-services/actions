@@ -76,7 +76,7 @@ function validateEvidenceItem(item) {
 
 function validateAuthority(envelope) {
   const root = ["contractVersion", "targetId", "governance", "sourceProvenance", "observations", "evidence"];
-  if (!exact(envelope, root) || envelope.contractVersion !== 1 || !TARGET_ID.test(envelope.targetId) ||
+  if (!exact(envelope, root) || ![1, 2].includes(envelope.contractVersion) || !TARGET_ID.test(envelope.targetId) ||
       !validGovernance(envelope.governance) || !validProvenance(envelope.sourceProvenance)) return outcome(65, "INVALID_EVIDENCE", "GOVERNANCE_CONTRACT_INVALID");
   if (!exact(envelope.observations, OBSERVATION_KEYS) || OBSERVATION_KEYS.some(key => !enumValue(envelope.observations[key], key))) {
     return outcome(65, "INVALID_EVIDENCE", "OBSERVATION_CONTRACT_INVALID");
@@ -114,12 +114,12 @@ function derivedHistory(source) {
   return source.migrationCount === 0 ? "EMPTY" : "PRESENT";
 }
 
-function sourcesCoherent(authority, sources) {
+function sourcesCoherent(authority, sources, bootstrap) {
   if (!plain(sources) || sources.declarationsSource?.databaseLifecycle !== authority.governance.databaseLifecycle ||
       sources.declarationsSource?.changeManagementMode !== authority.governance.changeManagementMode) return false;
   const observed = authority.observations;
   const registryCompatible = observed.registryState === "TARGET_REGISTERED"
-    ? ["BASELINE_REQUIRED", "CERTIFIED"].includes(sources.registrySource?.status)
+    ? [...(bootstrap ? ["NOT_EVALUATED"] : []), "BASELINE_REQUIRED", "CERTIFIED"].includes(sources.registrySource?.status)
     : observed.registryState === sources.registrySource?.status;
   return observed.physicalState === derivedPhysical(sources.physicalSource ?? {}) &&
     observed.repositoryState === sources.repositorySource?.status &&
@@ -127,13 +127,27 @@ function sourcesCoherent(authority, sources) {
     registryCompatible && observed.schemaRelation === sources.schemaSource?.status && observed.onboardingState === sources.onboardingSource?.status;
 }
 
-export function composeGovernedClassification(input) {
-  if (!exact(input, ["compositionContractVersion", "governanceEnvelope", "classificationSources"]) || input.compositionContractVersion !== 1) {
+function compose(input) {
+  if (!exact(input, ["compositionContractVersion", "governanceEnvelope", "classificationSources"]) || ![1, 2].includes(input.compositionContractVersion)) {
     return outcome(65, "INVALID_EVIDENCE", "COMPOSITION_CONTRACT_INVALID");
   }
   const invalidAuthority = validateAuthority(input.governanceEnvelope);
   if (invalidAuthority) return invalidAuthority;
-  if (!sourcesCoherent(input.governanceEnvelope, input.classificationSources)) return outcome(66, "BLOCKED", "BLOCKED_CROSS_SOURCE_CONTRADICTION");
+  const bootstrap = input.compositionContractVersion === 2;
+  if (input.governanceEnvelope.contractVersion !== input.compositionContractVersion) return outcome(65, "INVALID_EVIDENCE", "COMPOSITION_VERSION_MISMATCH");
+  if (bootstrap) {
+    const authority = input.governanceEnvelope;
+    const capture = authority.evidence.find(item => item.evidenceKind === "SCHEMA_CAPTURE").sourceProvenance;
+    const registry = authority.evidence.find(item => item.evidenceKind === "REGISTRY").sourceProvenance;
+    if (authority.governance.databaseLifecycle !== "NEW" || authority.governance.changeManagementMode !== "EF_MIGRATIONS" ||
+        capture.sourceRepository !== "infrastructure-services/actions" || capture.sourcePath !== "schema-capture-new-ef-bootstrap/action.yml" ||
+        Object.keys(registry).some(key => registry[key] !== authority.sourceProvenance[key]) ||
+        authority.observations.registryState !== "TARGET_REGISTERED" || authority.observations.schemaRelation !== "NOT_EVALUATED" ||
+        input.classificationSources?.registrySource?.status !== "NOT_EVALUATED" || input.classificationSources?.schemaSource?.status !== "NOT_EVALUATED") {
+      return outcome(66, "BLOCKED", "BLOCKED_BOOTSTRAP_SOURCE_CONTRACT");
+    }
+  }
+  if (!sourcesCoherent(input.governanceEnvelope, input.classificationSources, bootstrap)) return outcome(66, "BLOCKED", "BLOCKED_CROSS_SOURCE_CONTRADICTION");
 
   const observations = input.governanceEnvelope.observations;
   const { databaseLifecycle, changeManagementMode } = input.governanceEnvelope.governance;
@@ -145,7 +159,7 @@ export function composeGovernedClassification(input) {
   if (observations.schemaRelation === "DRIFT_DETECTED") return outcome(66, "BLOCKED", "BLOCKED_SCHEMA_DRIFT");
   if (observations.onboardingState === "BLOCKED") return outcome(66, "BLOCKED", "BLOCKED_ONBOARDING");
   if (Object.values(observations).includes("ERROR")) return outcome(75, "TECHNICAL_ERROR", "SOURCE_TECHNICAL_ERROR");
-  if (Object.values(observations).includes("NOT_ATTEMPTED") || observations.schemaRelation === "NOT_EVALUATED") {
+  if (Object.values(observations).includes("NOT_ATTEMPTED") || (!bootstrap && observations.schemaRelation === "NOT_EVALUATED")) {
     return outcome(68, "NOT_EVALUATED", "SOURCE_STAGE_NOT_ATTEMPTED");
   }
   if (Object.values(observations).includes("UNKNOWN") || observations.schemaRelation === "INSUFFICIENT_EVIDENCE") {
@@ -159,7 +173,7 @@ export function composeGovernedClassification(input) {
   return {
     exitCode: adapted.exitCode,
     result: {
-      compositionContractVersion: 1,
+      compositionContractVersion: input.compositionContractVersion,
       status: adapted.result.adapterStatus,
       reason: adapted.result.adapterStatus,
       classificationInvoked: adapted.result.classificationInvoked,
@@ -170,6 +184,12 @@ export function composeGovernedClassification(input) {
       classification: adapted.result
     }
   };
+}
+
+export function composeGovernedClassification(input) {
+  const composed = compose(input);
+  if (input?.compositionContractVersion === 2) composed.result.compositionContractVersion = 2;
+  return composed;
 }
 
 export function parseInput(text) {
