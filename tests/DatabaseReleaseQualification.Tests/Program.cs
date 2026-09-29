@@ -203,6 +203,9 @@ var tests = new (string Name, Func<Task> Run)[]
     ("Evidence ID conserva semántica case-sensitive", CommitProtocolEvidenceIdIsCaseSensitive)
 };
 
+tests = args.Contains("--recovery-coverage", StringComparer.Ordinal)
+    ? RecoveryCoverageTests.Cases
+    : tests.Concat(RecoveryCoverageTests.Cases).ToArray();
 var failed = 0;
 foreach (var test in tests)
 {
@@ -4206,17 +4209,21 @@ static void SequenceEqual(byte[] expected, byte[] actual)
     if (!expected.SequenceEqual(actual)) throw new InvalidOperationException("Byte sequences differ.");
 }
 
-internal sealed class FakeRehearsalDatabase(params SchemaSnapshot[] snapshots) : IRehearsalDatabase
+internal sealed class FakeRehearsalDatabase(params SchemaSnapshot[] snapshots) : IRehearsalDatabase, IRecoverySecurityEvidenceProvider
 {
     private readonly Queue<SchemaSnapshot> _snapshots = new(snapshots);
     public int CaptureCount { get; private set; }
     public List<(string Role, string Hash)> Executions { get; } = [];
+    private SchemaSnapshot? current;
+    public Task<RecoverySecuritySnapshot> CaptureSecurityAsync(RecoverySecurityScope scope, RecoveryPhase phase, CancellationToken cancellationToken = default)
+        => Task.FromResult(RecoveryCoverageTests.Security(scope, phase, current!));
 
     public Task<SchemaSnapshot> CaptureSchemaAsync(CancellationToken cancellationToken = default)
     {
         CaptureCount++;
         if (_snapshots.Count == 0) throw new InvalidOperationException("Unexpected schema capture.");
-        return Task.FromResult(_snapshots.Dequeue());
+        current = _snapshots.Dequeue();
+        return Task.FromResult(current);
     }
 
     public Task ExecuteSqlAsync(ReleaseScript script, string expectedSha256, CancellationToken cancellationToken = default)
@@ -4228,7 +4235,7 @@ internal sealed class FakeRehearsalDatabase(params SchemaSnapshot[] snapshots) :
     }
 }
 
-internal sealed class FakeDataRollbackContract(DataRollbackValidity result) : IDataRollbackValidationContract
+internal sealed class FakeDataRollbackContract(DataRollbackValidity result) : IDataRollbackValidationContract, IDataReapplyValidationContract
 {
     public bool PreCaptured { get; private set; }
     public Task CapturePreDataAsync(CancellationToken cancellationToken = default)
@@ -4237,6 +4244,8 @@ internal sealed class FakeDataRollbackContract(DataRollbackValidity result) : ID
         return Task.CompletedTask;
     }
     public Task<DataRollbackValidity> ValidateRollbackDataAsync(CancellationToken cancellationToken = default) => Task.FromResult(result);
+    public Task CapturePostDataAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+    public Task<DataRollbackValidity> ValidateReapplyDataAsync(CancellationToken cancellationToken = default) => Task.FromResult(result);
 }
 
 internal sealed class CommitBarrierFaultInjector(Barrier barrier) : ICertificationCommitFaultInjector

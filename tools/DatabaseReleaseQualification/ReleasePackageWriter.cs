@@ -76,6 +76,9 @@ public sealed class ReleasePackageWriter
         ValidateSegment(release.ReleaseId, "RELEASE_ID");
         ValidateSegment(attestationId, "ATTESTATION_ID");
         ValidateSegment(release.Environment, "ENVIRONMENT");
+        if (rehearsal.RecoveryCoverage is { } coverage
+            && (coverage.ForwardHash != forward.Sha256 || coverage.RollbackHash != rollback.Sha256))
+            throw new InvalidOperationException("RECOVERY_COVERAGE_PAYLOAD_MISMATCH");
 
         var normalizedRoot = Path.GetFullPath(outputRoot) + Path.DirectorySeparatorChar;
         var releaseDirectory = Path.GetFullPath(Path.Combine(outputRoot, release.ReleaseId));
@@ -126,6 +129,7 @@ public sealed class ReleasePackageWriter
 
         var attestation = new QualificationAttestation
         {
+            RecoveryCoverage = rehearsal.RecoveryCoverage,
             AttestationId = attestationId,
             ReleaseId = release.ReleaseId,
             Environment = release.Environment.ToUpperInvariant(),
