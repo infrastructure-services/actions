@@ -25,6 +25,16 @@ public sealed class RehearsalEngine
         IDataRollbackValidationContract? dataValidation = null,
         CancellationToken cancellationToken = default)
     {
+        var coverage = new RecoveryCoverageSession(database as IRecoverySecurityEvidenceProvider, dataValidation);
+        var result = await QualifyCoreAsync(release, discovery, forward, rollback, database, dataValidation, coverage, cancellationToken);
+        return coverage.Attach(result);
+    }
+
+    private async Task<RehearsalResult> QualifyCoreAsync(
+        ReleaseDescriptor release, DiscoveryGate discovery, ReleaseScript forward, ReleaseScript rollback,
+        IRehearsalDatabase database, IDataRollbackValidationContract? dataValidation,
+        RecoveryCoverageSession coverage, CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(release);
         ArgumentNullException.ThrowIfNull(discovery);
         ArgumentNullException.ThrowIfNull(forward);
@@ -76,11 +86,14 @@ public sealed class RehearsalEngine
             };
         }
 
+        var coverageBlock = await coverage.BeginAsync(forward, rollback, forwardAnalysis, preliminaryRollbackAnalysis, preSnapshot, cancellationToken);
+        if (coverageBlock is not null) return Blocked(coverageBlock, "RECOVERY_COVERAGE:PRE");
         var preliminaryDataValidationRequired = RequiresDataValidation(forwardAnalysis, preliminaryRollbackAnalysis);
         var dataBaselineCaptured = preliminaryDataValidationRequired && dataValidation is not null;
         if (dataBaselineCaptured)
         {
-            await dataValidation!.CapturePreDataAsync(cancellationToken);
+            try { await dataValidation!.CapturePreDataAsync(cancellationToken); }
+            catch { coverage.DataError(); return Blocked("BLOCKED_DATA_CAPTURE_ERROR", "RECOVERY_COVERAGE:DATA_PRE"); }
             audit.Add("PRE_DATA_VALIDATION:CAPTURED");
         }
 
@@ -127,6 +140,13 @@ public sealed class RehearsalEngine
                 audit, pre, post1, analysisEvidence: qualificationEvidence);
         }
 
+        coverageBlock = await coverage.ObserveAsync(RecoveryPhase.Post1, post1Snapshot, cancellationToken);
+        if (coverageBlock is not null) return Result(coverageBlock, SchemaRollbackValidity.NotTested, DataRollbackValidity.NotTested,
+            RollbackCapability.Unknown, true, false, false, audit, pre, post1, analysisEvidence: qualificationEvidence);
+        coverageBlock = coverage.CheckPostImpact(forwardAnalysis, post1RollbackAnalysis);
+        if (coverageBlock is not null) return Result(coverageBlock, SchemaRollbackValidity.NotTested, DataRollbackValidity.NotTested,
+            RollbackCapability.Unknown, true, false, false, audit, pre, post1, analysisEvidence: qualificationEvidence);
+
         var dataValidationRequired = RequiresDataValidation(forwardAnalysis, post1RollbackAnalysis);
 
         try
@@ -143,9 +163,12 @@ public sealed class RehearsalEngine
         }
         audit.Add($"EXECUTED_ROLLBACK:{rollback.Sha256}");
 
-        var pre2 = SchemaCanonicalizer.Canonicalize(await database.CaptureSchemaAsync(cancellationToken));
+        var pre2Snapshot = await database.CaptureSchemaAsync(cancellationToken);
+        var pre2 = SchemaCanonicalizer.Canonicalize(pre2Snapshot);
         audit.Add($"PRE2_SCHEMA_SHA256:{pre2.Sha256}");
         var rollbackDiff = SchemaComparer.Compare(pre, pre2);
+        coverage.StructureRecovery(rollbackDiff.IsEquivalent);
+        coverageBlock = await coverage.ObserveAsync(RecoveryPhase.Pre2, pre2Snapshot, cancellationToken);
         if (!rollbackDiff.IsEquivalent)
         {
             return Result("BLOCKED_SCHEMA_ROLLBACK_MISMATCH", SchemaRollbackValidity.Invalid,
@@ -153,13 +176,20 @@ public sealed class RehearsalEngine
                 RollbackCapability.Unknown, true, false, false, audit, pre, post1, pre2,
                 rollbackDiff: rollbackDiff, analysisEvidence: qualificationEvidence);
         }
+        if (coverageBlock is not null) return Result(coverageBlock, SchemaRollbackValidity.Valid,
+            dataValidationRequired ? DataRollbackValidity.Unverified : DataRollbackValidity.NotApplicable,
+            RollbackCapability.Unknown, true, false, false, audit, pre, post1, pre2,
+            rollbackDiff: rollbackDiff, analysisEvidence: qualificationEvidence);
 
         var dataValidity = DataRollbackValidity.NotApplicable;
         if (dataValidationRequired)
         {
-            dataValidity = dataValidation is null || !dataBaselineCaptured
-                ? DataRollbackValidity.Unverified
-                : await dataValidation.ValidateRollbackDataAsync(cancellationToken);
+            try { dataValidity = dataValidation is null || !dataBaselineCaptured
+                    ? DataRollbackValidity.Unverified
+                    : await dataValidation.ValidateRollbackDataAsync(cancellationToken); }
+            catch { coverage.DataError(); return Result("BLOCKED_DATA_VALIDATION_ERROR", SchemaRollbackValidity.Valid, DataRollbackValidity.Unverified,
+                RollbackCapability.Unknown, true, false, false, audit, pre, post1, pre2, rollbackDiff: rollbackDiff); }
+            coverage.DataRecovery(dataValidity);
             audit.Add($"DATA_ROLLBACK_VALIDITY:{dataValidity.ToString().ToUpperInvariant()}");
 
             if (dataValidity != DataRollbackValidity.Valid)
@@ -174,6 +204,9 @@ public sealed class RehearsalEngine
             }
         }
 
+        coverageBlock = coverage.DataReapplyPreflight();
+        if (coverageBlock is not null) return Result(coverageBlock, SchemaRollbackValidity.Valid, dataValidity,
+            RollbackCapability.Unknown, true, false, false, audit, pre, post1, pre2, rollbackDiff: rollbackDiff, analysisEvidence: qualificationEvidence);
         try
         {
             await ExecuteExactAsync(database, forward, forward.Sha256, cancellationToken);
@@ -188,15 +221,22 @@ public sealed class RehearsalEngine
         }
         audit.Add($"REEXECUTED_FORWARD:{forward.Sha256}");
 
-        var post2 = SchemaCanonicalizer.Canonicalize(await database.CaptureSchemaAsync(cancellationToken));
+        var post2Snapshot = await database.CaptureSchemaAsync(cancellationToken);
+        var post2 = SchemaCanonicalizer.Canonicalize(post2Snapshot);
         audit.Add($"POST2_SCHEMA_SHA256:{post2.Sha256}");
         var reapplyDiff = SchemaComparer.Compare(post1, post2);
+        coverage.StructureReapply(reapplyDiff.IsEquivalent);
+        coverageBlock = await coverage.ObserveAsync(RecoveryPhase.Post2, post2Snapshot, cancellationToken);
         if (!reapplyDiff.IsEquivalent)
         {
             return Result("BLOCKED_REAPPLY_MISMATCH", SchemaRollbackValidity.Valid,
                 dataValidity, RollbackCapability.FullReversible, true, true, false,
                 audit, pre, post1, pre2, post2, rollbackDiff, reapplyDiff, qualificationEvidence);
         }
+
+        coverageBlock ??= await coverage.DataReapplyAsync(cancellationToken);
+        if (coverageBlock is not null) return Result(coverageBlock, SchemaRollbackValidity.Valid, dataValidity,
+            RollbackCapability.Unknown, true, false, false, audit, pre, post1, pre2, post2, rollbackDiff, reapplyDiff, qualificationEvidence);
 
         return Result("QUALIFIED", SchemaRollbackValidity.Valid, dataValidity,
             RollbackCapability.FullReversible, true, true, true,

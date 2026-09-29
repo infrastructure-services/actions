@@ -87,6 +87,8 @@ public sealed class SchemaDiff
 
 public sealed class ScriptOperation
 {
+    public RecoverySecuritySecurable? SecuritySecurable { get; init; }
+    public IReadOnlyList<string> SecurityPrincipals { get; init; } = [];
     public required string Operation { get; init; }
     public required string AstNodeType { get; init; }
     public string Schema { get; init; } = "dbo";
@@ -240,6 +242,7 @@ public sealed class ReleaseDescriptor
 
 public sealed class RehearsalResult
 {
+    public RecoveryCoverageEvidence? RecoveryCoverage { get; init; }
     public required string QualificationStatus { get; init; }
     public SchemaRollbackValidity SchemaRollbackValidity { get; init; } = SchemaRollbackValidity.NotTested;
     public DataRollbackValidity DataRollbackValidity { get; init; } = DataRollbackValidity.NotTested;
@@ -259,7 +262,8 @@ public sealed class RehearsalResult
         && SchemaRollbackValidity == SchemaRollbackValidity.Valid
         && DataRollbackValidity is DataRollbackValidity.Valid or DataRollbackValidity.NotApplicable
         && RollbackCapability == RollbackCapability.FullReversible
-        && RollbackCertified;
+        && RollbackCertified && ReapplyCertified
+        && RecoveryCoverage?.Complete == true;
 }
 
 public sealed class RehearsalAnalysisEvidence
@@ -310,6 +314,7 @@ public sealed class ReleasePayloadMetadata
 
 public sealed class QualificationAttestation
 {
+    public RecoveryCoverageEvidence? RecoveryCoverage { get; init; }
     public int FormatVersion { get; init; } = 1;
     public required string AttestationId { get; init; }
     public required string ReleaseId { get; init; }

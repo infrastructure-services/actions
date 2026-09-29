@@ -47,6 +47,11 @@ public sealed class SqlScriptAnalyzer
         result.StatementCount++;
         switch (statement)
         {
+            case SecurityStatement security:
+                var securityOperation = RecoverySecurityAnalysis.Analyze(security);
+                if (securityOperation is null) AddUnknown(result, security, "SECURITY_SCOPE_NOT_PROVEN");
+                else result.Operations.Add(securityOperation);
+                return;
             case BeginEndAtomicBlockStatement atomic:
                 ProcessStatements(atomic.StatementList?.Statements, result);
                 return;
