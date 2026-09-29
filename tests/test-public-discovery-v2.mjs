@@ -7,6 +7,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { runPublicSqlDiscovery, validateEnvironment as validateSqlEnvironment } from "../scripts/run-sql-discovery-v2-public.mjs";
 import { buildRequest, runPublicRepositoryDiscovery, validateEnvironment as validateRepositoryEnvironment } from "../scripts/run-repository-discovery-v2-public.mjs";
+import { TECHNICAL_CATEGORIES } from "../scripts/empty-for-new-ef-v1.mjs";
 
 const root = path.resolve(new URL("..", import.meta.url).pathname.replace(/^\/(?:([A-Za-z]:))/, "$1"));
 const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "public-discovery-v2-"));
@@ -34,6 +35,16 @@ const sqlExecutor = (evidence, observe = () => {}) => {
 };
 
 try {
+  test("public SQL preserves V1 coverage through serialized evidence", () => {
+    const env = sqlEnv("sql-taxonomy"); const value = sqlEvidence("SUCCEEDED");
+    value.physicalSource = { status: "OBSERVED", businessObjectCount: 0, technicalObjectCount: 0,
+      taxonomy: { version: 1, coverage: "COMPLETE", counts: Object.fromEntries(TECHNICAL_CATEGORIES.map(key => [key, 0])) } };
+    runPublicSqlDiscovery(env, sqlExecutor(value));
+    const raw = JSON.parse(fs.readFileSync(env.GITHUB_OUTPUT, "utf8").match(/evidence-json<<SQL_DISCOVERY_V2_EOF\n([^\n]+)/u)[1]);
+    assert.deepEqual(raw.physicalSource, value.physicalSource);
+    value.physicalSource.taxonomy.counts.customSchemas = 1;
+    assert.throws(() => runPublicSqlDiscovery(sqlEnv("sql-taxonomy-invalid"), sqlExecutor(value)), /EVIDENCE_INVALID/);
+  });
   test("SQL acepta TEST explícito", () => assert.doesNotThrow(() => validateSqlEnvironment("TEST")));
   for (const value of [undefined, "", "QA", "PROD", "test"]) test(`SQL rechaza ambiente ${String(value)}`, () => assert.throws(() => validateSqlEnvironment(value), /ENVIRONMENT_NOT_ALLOWED/));
   for (const status of ["AUTHENTICATION_FAILED", "TRANSPORT_FAILED", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED", "SUCCEEDED"]) {

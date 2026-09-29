@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { validateTaxonomy } from "./empty-for-new-ef-v1.mjs";
 
 const MAX_COUNT = Number.MAX_SAFE_INTEGER;
 const MIGRATION_ID_PATTERN = /^[0-9]{14}_[A-Za-z0-9_]+$/;
@@ -77,7 +78,7 @@ export function composeEnvelope(envelope) {
   }
 
   const physical = envelope.physicalSource;
-  if (!hasExactKeys(physical, ["status"], ["status", "businessObjectCount", "technicalObjectCount"]) ||
+  if (!hasExactKeys(physical, ["status"], ["status", "businessObjectCount", "technicalObjectCount", "taxonomy"]) ||
       typeof physical.status !== "string" || !ENUMS.physicalSource.includes(physical.status)) {
     return sourceError("PHYSICAL_SOURCE_INVALID");
   }
@@ -85,6 +86,8 @@ export function composeEnvelope(envelope) {
   for (const key of ["businessObjectCount", "technicalObjectCount"]) {
     if (Object.hasOwn(physical, key) && !validCount(physical[key])) return sourceError("COUNT_INVALID");
   }
+  const taxonomyError = validateTaxonomy(physical);
+  if (taxonomyError) return sourceError(taxonomyError);
 
   const history = envelope.historySource;
   if (!hasExactKeys(history, ["status"], ["status", "migrationCount", "migrationIds"]) ||
@@ -145,6 +148,7 @@ export function composeEnvelope(envelope) {
   for (const key of ["businessObjectCount", "technicalObjectCount"]) {
     if (Object.hasOwn(physical, key)) raw.physical[key] = physical[key];
   }
+  if (Object.hasOwn(physical, "taxonomy")) raw.physical.taxonomy = structuredClone(physical.taxonomy);
   for (const key of ["migrationCount", "migrationIds"]) {
     if (Object.hasOwn(history, key)) raw.history[key] = key === "migrationIds" ? [...history[key]] : history[key];
   }

@@ -123,6 +123,21 @@ public sealed class SqlDiscoveryOrchestratorV2(ISqlDiscoveryTransport transport)
             {
                 physical["businessObjectCount"] = result.Physical.BusinessObjectCount.Value;
             }
+            if (result.Physical.Taxonomy is not null)
+            {
+                if (!EmptyForNewEfV1.Valid(result.Physical)) gaps.Add("PHYSICAL_TAXONOMY_INVALID");
+                else
+                {
+                    physical["technicalObjectCount"] = result.Physical.TechnicalObjectCount!.Value;
+                    physical["taxonomy"] = new ReadOnlyDictionary<string, object?>(new Dictionary<string, object?> {
+                        ["version"] = EmptyForNewEfV1.Version,
+                        ["coverage"] = "COMPLETE",
+                        ["counts"] = new ReadOnlyDictionary<string, long>(result.Physical.Taxonomy.Counts!
+                            .ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal))
+                    });
+                }
+            }
+            else if (result.Physical.TechnicalObjectCount is not null) gaps.Add("PHYSICAL_TAXONOMY_REQUIRED");
         }
 
         var history = new Dictionary<string, object?> { ["status"] = result.History.Status switch

@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { validateTaxonomy } from "./empty-for-new-ef-v1.mjs";
 
 const STATUS = {
   connectionSource: new Set(["SUCCEEDED", "FAILED", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED"]),
@@ -30,6 +31,11 @@ export function validateEvidence(value) {
       throw new Error("EVIDENCE_INVALID");
     }
   }
+  const physical = value.physicalSource;
+  if (Object.keys(physical).some(key => !["status", "businessObjectCount", "technicalObjectCount", "taxonomy"].includes(key)) ||
+      (physical.status === "OBSERVED" && !Number.isSafeInteger(physical.businessObjectCount)) ||
+      ["businessObjectCount", "technicalObjectCount"].some(key => Object.hasOwn(physical, key) &&
+        (physical.status !== "OBSERVED" || !Number.isSafeInteger(physical[key]) || physical[key] < 0)) || validateTaxonomy(physical)) throw new Error("EVIDENCE_INVALID");
   const identity = value.observedDatabaseIdentity;
   if (value.targetConnectionSource.status === "SUCCEEDED") {
     if (identity === null || typeof identity !== "object" || Array.isArray(identity)
