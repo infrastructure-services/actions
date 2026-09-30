@@ -1,5 +1,10 @@
 # Legacy rehearsal V1 — engineering contract and TEST runbook
 
+> Runtime orchestration in this document is superseded by
+> [LEGACY_PHASED_REHEARSAL_V1.md](LEGACY_PHASED_REHEARSAL_V1.md).
+> The single-process CLI and Git grant remain for synthetic regression only.
+> Do not invoke `rehearse-legacy-package` for a real TEST mutation.
+
 Date: 2026-09-30. These are instructions for a **future authorized run**.
 No SQL, workflow, Registry/onboarding write or deployment was performed to build this change.
 Synthetic evidence is not real TEST validation. This document creates no approval.

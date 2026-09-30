@@ -137,9 +137,10 @@ public static class LegacyRehearsalCli
         finally { Console.CancelKeyPress -= handler; }
     }
 
-    internal static T Parse<T>(byte[] bytes)
+    internal static T Parse<T>(byte[] bytes, int maximumBytes = 65536)
     {
-        if (bytes.Length is < 1 or > 65536) throw new LegacyContractException("CONTRACT_INVALID");
+        if (bytes.Length < 1 || bytes.Length > maximumBytes)
+            throw new LegacyContractException("CONTRACT_INVALID");
         using var document = JsonDocument.Parse(bytes);
         CheckUnique(document.RootElement);
         return JsonSerializer.Deserialize<T>(bytes, Strict) ?? throw new LegacyContractException("CONTRACT_INVALID");

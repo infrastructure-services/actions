@@ -8,7 +8,8 @@ namespace DatabaseReleaseQualification;
 internal sealed class SqlLegacyRehearsalRuntimeV1(
     LegacyQualificationOutcomeV1 qualification, string inspectionConnection,
     Func<string> mutationConnection, Func<CancellationToken, Task> revalidate,
-    LegacyRuntimeContextV1 context, GovernedLegacyRehearsalAuthorityV1 authority) : ILegacyRehearsalRuntimeV1
+    LegacyRuntimeContextV1 context, ILegacyRehearsalAuthorityV1 authority,
+    string? singlePhase = null) : ILegacyRehearsalRuntimeV1
 {
     private int executions;
     private int activeOrFailed;
@@ -44,6 +45,23 @@ internal sealed class SqlLegacyRehearsalRuntimeV1(
             new SqlClientSecurityCatalogTransport(() => inspectionConnection, Binding), Binding))
             .CaptureSecurityAsync(scope, phase, cancellationToken);
 
+    public async Task VerifyRollbackAgainstPost1Async(ReleaseScript rollback,
+        ObservedCurrentSnapshotV1 post1, CancellationToken token)
+    {
+        if (rollback.Role != "rollback" || rollback.Sha256 != handoff.Artifacts.Rollback.Sha256)
+            throw new LegacyContractException("REQUALIFICATION_REQUIRED");
+        await revalidate(token);
+        await LegacyStaticSafety.VerifyPhaseAsync(rollback, post1.Snapshot,
+            new SqlLegacyScopeSafetySource(
+                new SqlClientSecurityCatalogTransport(() => inspectionConnection, Binding), Binding),
+            handoff.Governance.Binding, token);
+        var analysis = new SqlScriptAnalyzer().Analyze("rollback", rollback.Text, post1.Snapshot);
+        var impact = RecoveryImpact.Derive(qualification.StaticSafety!.ForwardAnalysis, analysis);
+        if (!impact.Complete || impact.DataRequired != qualification.StaticSafety.Impact.DataRequired
+            || impact.SecurityScope.Sha256 != handoff.Recovery.SecurityScopeHash)
+            throw new LegacyContractException("BLOCKED_RECOVERY_IMPACT_CHANGED");
+    }
+
     public async Task ApplyExactAsync(ReleaseScript script, string expectedHash,
         string transactionPolicy, ObservedCurrentSnapshotV1 expectedPre, CancellationToken token)
     {
@@ -59,9 +77,12 @@ internal sealed class SqlLegacyRehearsalRuntimeV1(
     private async Task ApplyCoreAsync(ReleaseScript script, string expectedHash,
         string transactionPolicy, ObservedCurrentSnapshotV1 expectedPre, CancellationToken token)
     {
-        var phase = executions switch { 0 => "FORWARD1", 1 => "ROLLBACK", 2 => "FORWARD2",
-            _ => throw new LegacyContractException("REHEARSAL_PHASE_ORDER_INVALID") };
-        if (script.Role != (executions == 1 ? "rollback" : "forward"))
+        var phase = singlePhase ?? (executions switch { 0 => "FORWARD1", 1 => "ROLLBACK", 2 => "FORWARD2",
+            _ => throw new LegacyContractException("REHEARSAL_PHASE_ORDER_INVALID") });
+        if (singlePhase is not null && (executions != 0
+                || singlePhase is not ("FORWARD1" or "ROLLBACK" or "FORWARD2")))
+            throw new LegacyContractException("REHEARSAL_PHASE_ORDER_INVALID");
+        if (script.Role != (phase == "ROLLBACK" ? "rollback" : "forward"))
             throw new LegacyContractException("REHEARSAL_PHASE_ORDER_INVALID");
         // Consume the attempt before opening the connection: failure cannot be retried.
         executions++;

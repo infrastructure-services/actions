@@ -95,6 +95,17 @@ public sealed class LegacyProductionRuntimeAcquisition : ILegacyRuntimeAcquisiti
 
     public async Task<LegacyAcquiredRuntimeV1> AcquireAsync(
         LegacyResolverRequestV1 request, CancellationToken token)
+        => await AcquireCoreAsync(request, token, phaseContinuation: false);
+
+    // The continuation's current SQL state is expected to differ from the
+    // certified baseline. Reacquire governance, source and SQL identity without
+    // treating that intentional phase state as a new Macro 1 classification.
+    internal async Task<LegacyAcquiredRuntimeV1> AcquireForPhaseAsync(
+        LegacyResolverRequestV1 request, CancellationToken token)
+        => await AcquireCoreAsync(request, token, phaseContinuation: true);
+
+    private async Task<LegacyAcquiredRuntimeV1> AcquireCoreAsync(
+        LegacyResolverRequestV1 request, CancellationToken token, bool phaseContinuation)
     {
         if (request.ContractVersion != 1 || request.ArtifactSelection.ContractVersion != 1)
             throw new LegacyContractException("TECHNICAL_ERROR");
@@ -303,14 +314,20 @@ public sealed class LegacyProductionRuntimeAcquisition : ILegacyRuntimeAcquisiti
                 schema = SourceProvenance(observedProducer.Document)
             }
         };
-        var composed = await RunNode(governanceRoot,
-            Path.Combine(governanceRoot, hg6.Document.Path.Replace('/', Path.DirectorySeparatorChar)),
-            JsonSerializer.Serialize(composedInput), token);
-        if (!composed.GetProperty("invokeClassification").GetBoolean())
-            throw new LegacyContractException("GOVERNANCE_INVALID");
-        var classification = await RunNode(actionsRoot,
-            Path.Combine(actionsRoot, classify.Document.Path.Replace('/', Path.DirectorySeparatorChar)),
-            composed.GetProperty("evidence").GetRawText(), token);
+        JsonElement classification;
+        if (phaseContinuation)
+            classification = JsonDocument.Parse("{}").RootElement.Clone();
+        else
+        {
+            var composed = await RunNode(governanceRoot,
+                Path.Combine(governanceRoot, hg6.Document.Path.Replace('/', Path.DirectorySeparatorChar)),
+                JsonSerializer.Serialize(composedInput), token);
+            if (!composed.GetProperty("invokeClassification").GetBoolean())
+                throw new LegacyContractException("GOVERNANCE_INVALID");
+            classification = await RunNode(actionsRoot,
+                Path.Combine(actionsRoot, classify.Document.Path.Replace('/', Path.DirectorySeparatorChar)),
+                composed.GetProperty("evidence").GetRawText(), token);
+        }
         var runtime = new LegacyRuntimeContextV1(appRepository, workflow.Document.Path,
             governanceRevision, Required("GITHUB_RUN_ID"),
             Required("GITHUB_RUN_ATTEMPT"), Required("LEGACY_JOB_ID"));
@@ -343,8 +360,8 @@ public sealed class LegacyProductionRuntimeAcquisition : ILegacyRuntimeAcquisiti
             throw new LegacyContractException("SOURCE_FRESHNESS_UNVERIFIED");
         var governanceGit = new ProcessLegacyGitTransport(governanceRoot);
         var actionsGit = new ProcessLegacyGitTransport(actionsRoot);
-        if (await RemoteMain(governanceGit, token) != governanceRevision
-            || await RemoteMain(actionsGit, token) != actionsRevision
+        if (await RemoteMain(governanceGit, "infrastructure-services/workflow", token) != governanceRevision
+            || await RemoteMain(actionsGit, "infrastructure-services/actions", token) != actionsRevision
             || await GitText(actionsGit, ["rev-parse", "HEAD"], token) != actionsRevision
             || await GitText(new ProcessLegacyGitTransport(ApplicationRoot),
                 ["rev-parse", "HEAD"], token)
@@ -398,8 +415,29 @@ public sealed class LegacyProductionRuntimeAcquisition : ILegacyRuntimeAcquisiti
     }
 
     private static async Task<string> RemoteMain(ILegacyGitTransport git,
-        CancellationToken token)
+        string repository, CancellationToken token)
     {
+        if (Environment.GetEnvironmentVariable("GOVERNANCE_TOKEN") is { Length: > 0 } secret)
+        {
+            if (Environment.GetEnvironmentVariable("GITHUB_API_URL") != "https://api.github.com")
+                throw new LegacyContractException("SOURCE_FRESHNESS_UNVERIFIED");
+            using var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) {
+                Timeout = TimeSpan.FromSeconds(15)
+            };
+            using var request = new HttpRequestMessage(HttpMethod.Get,
+                "https://api.github.com/repos/" + repository + "/git/ref/heads/main");
+            request.Headers.Authorization = new("Bearer", secret);
+            request.Headers.UserAgent.ParseAdd("legacy-phase-runtime-v1");
+            request.Headers.Accept.ParseAdd("application/vnd.github+json");
+            using var response = await client.SendAsync(request, token);
+            if (!response.IsSuccessStatusCode)
+                throw new LegacyContractException("SOURCE_FRESHNESS_UNVERIFIED");
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(token));
+            var sha = document.RootElement.GetProperty("object").GetProperty("sha").GetString();
+            if (sha is null || !Sha.IsMatch(sha))
+                throw new LegacyContractException("SOURCE_FRESHNESS_UNVERIFIED");
+            return sha;
+        }
         var text = await GitText(git, ["ls-remote", "origin", "refs/heads/main"], token);
         var parts = text.Split('\t');
         if (parts.Length != 2 || parts[1] != "refs/heads/main" || !Sha.IsMatch(parts[0]))

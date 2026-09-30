@@ -56,6 +56,27 @@ public sealed class LegacyDataValidationProviderV1(LegacyDataContractDefinitionV
     public IReadOnlyDictionary<RecoveryPhase, LegacyDataPhaseEvidenceV1> Evidence =>
         new Dictionary<RecoveryPhase, LegacyDataPhaseEvidenceV1>(evidence);
 
+    // Only the verified phase checkpoint path may seed prior read-only evidence.
+    // A fresh capture is still required before the next mutation.
+    internal void RestoreVerifiedEvidence(IReadOnlyDictionary<RecoveryPhase, LegacyDataPhaseEvidenceV1> previous)
+    {
+        VerifyDefinition();
+        if (evidence.Count != 0 || previous.Count > 3)
+            throw new LegacyContractException("DATA_EVIDENCE_INCOMPLETE");
+        for (var i = 0; i < previous.Count; i++)
+        {
+            var phase = Enum.GetValues<RecoveryPhase>()[i];
+            if (!previous.TryGetValue(phase, out var item)
+                || item.ContractVersion != 1 || item.Phase != phase || !item.Complete
+                || item.Selector != definition.Selector || item.Version != definition.Version
+                || item.TargetId != definition.TargetId || item.ScopeHash != definition.ScopeHash
+                || item.CapturedAtUtc > DateTimeOffset.UtcNow
+                || !System.Text.RegularExpressions.Regex.IsMatch(item.ContentHash, @"\A[0-9a-f]{64}\z"))
+                throw new LegacyContractException("DATA_EVIDENCE_INCOMPLETE");
+            evidence.Add(phase, item);
+        }
+    }
+
     public async Task VerifyUnchangedAsync(RecoveryPhase phase, CancellationToken token)
     {
         VerifyDefinition();
