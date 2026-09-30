@@ -48,6 +48,8 @@ internal static class LegacyRehearsalTests
         ("macro2 evidenceSetHash rebinding cannot hide mismatch", () => Negative("evidenceSet",0)),
         ("macro2 request parser rejects truth claims and duplicate properties", RequestParsing),
         ("macro2 public CLI default cannot start execution", DefaultCli)
+        ,("macro2 phased checkpoint exact ordering and final coverage", PhasedComplete)
+        ,("macro2 phased adversarial predecessor and authority reject before write", PhasedAdversarial)
     ];
     private static void Assert(bool condition, string message = "Macro2 assertion failed")
     { if (!condition) throw new Exception(message); }
@@ -274,19 +276,136 @@ internal static class LegacyRehearsalTests
         Assert(lab.Writes == (lost ? 2 : 3),"Unexpected SECURITY writes: " + lab.Writes);
         if (lost) Assert(receipt.RecoveryClass != "FULL_REVERSIBLE" && receipt.RecoveryClass != "SCHEMA_ONLY");
     }
+    private static async Task<(LegacyQualificationOutcomeV1 Q, LegacyRehearsalCheckpointV1 Pre)>
+        PhasedPre()
+    {
+        var q = await LegacyReadinessTests.SyntheticQualification();
+        var pre = await new LegacyPhasedRehearsalV1(new Lab(q, job: "legacy_pre"), new Authority())
+            .CapturePreAsync(q, null, CancellationToken.None);
+        Assert(pre.CompletedPhase == "PRE" && pre.ExpectedNextPhase == "FORWARD1");
+        return (q, pre);
+    }
+
+    private static async Task PhasedComplete()
+    {
+        var (q, pre) = await PhasedPre();
+        pre = LegacyRehearsalCli.Parse<LegacyRehearsalCheckpointV1>(
+            Encoding.UTF8.GetBytes(JsonSerializer.Serialize(pre, LegacyPhasedCli.CheckpointJson)), 8 * 1024 * 1024);
+        var first = await new LegacyPhasedRehearsalV1(
+            new Lab(q, job: "legacy_forward1"), new Authority())
+            .RunNextAsync(pre, pre.CheckpointHash, "FORWARD1", q.Package!, null, CancellationToken.None);
+        var post1 = LegacyRehearsalCli.Parse<LegacyRehearsalCheckpointV1>(
+            Encoding.UTF8.GetBytes(JsonSerializer.Serialize(first.Checkpoint!, LegacyPhasedCli.CheckpointJson)), 8 * 1024 * 1024);
+        Assert(post1.CompletedPhase == "POST1" && first.Receipt is null);
+        var second = await new LegacyPhasedRehearsalV1(
+            new Lab(q, job: "legacy_rollback"), new Authority())
+            .RunNextAsync(post1, post1.CheckpointHash, "ROLLBACK", q.Package!, null, CancellationToken.None);
+        var pre2 = LegacyRehearsalCli.Parse<LegacyRehearsalCheckpointV1>(
+            Encoding.UTF8.GetBytes(JsonSerializer.Serialize(second.Checkpoint!, LegacyPhasedCli.CheckpointJson)), 8 * 1024 * 1024);
+        Assert(pre2.CompletedPhase == "PRE2" && second.Receipt is null);
+        var final = await new LegacyPhasedRehearsalV1(
+            new Lab(q, job: "legacy_forward2"), new Authority())
+            .RunNextAsync(pre2, pre2.CheckpointHash, "FORWARD2", q.Package!, null, CancellationToken.None);
+        Assert(final.Checkpoint is null && final.Receipt?.Evaluation?.RecoveryCoverage?.Complete == true);
+        Assert(final.Receipt!.Phases.Select(x => x.Phase).SequenceEqual(
+            new[] { "PRE", "FORWARD1", "POST1", "ROLLBACK", "PRE2", "FORWARD2", "POST2" }));
+    }
+
+    private static async Task PhasedAdversarial()
+    {
+        var (q, pre) = await PhasedPre();
+        async Task Reject(LegacyRehearsalCheckpointV1 checkpoint, string trustedHash,
+            string phase, string job, LegacyFrozenPackage? package = null, bool deny = false)
+        {
+            var lab = new Lab(q, job: job);
+            await Throws(async () => { await new LegacyPhasedRehearsalV1(
+                lab, new Authority(deny)).RunNextAsync(checkpoint, trustedHash,
+                phase, package ?? q.Package!, null, CancellationToken.None); });
+            Assert(lab.Writes == 0, "phased rejection wrote SQL");
+        }
+        await Reject(pre, pre.CheckpointHash, "ROLLBACK", "legacy_rollback");
+        await Reject(pre, pre.CheckpointHash, "FORWARD1", "legacy_forward1", deny: true);
+        var protectedKeys = new[] { "GITHUB_JOB", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT",
+            "GITHUB_ACTIONS", "LEGACY_PROTECTED_ENVIRONMENT" };
+        var protectedOriginal = protectedKeys.ToDictionary(x => x,
+            x => Environment.GetEnvironmentVariable(x));
+        try
+        {
+            Environment.SetEnvironmentVariable("GITHUB_JOB", "legacy_forward1");
+            Environment.SetEnvironmentVariable("GITHUB_RUN_ID", pre.Runtime.RunId);
+            Environment.SetEnvironmentVariable("GITHUB_RUN_ATTEMPT", "1");
+            Environment.SetEnvironmentVariable("GITHUB_ACTIONS", "true");
+            Environment.SetEnvironmentVariable("LEGACY_PROTECTED_ENVIRONMENT", null);
+            var protectedLab = new Lab(q, job: "legacy_forward1");
+            await Throws(async () => { await new LegacyPhasedRehearsalV1(protectedLab,
+                new ProtectedEnvironmentLegacyAuthorityV1("FORWARD1", protectedLab.Context))
+                .RunNextAsync(pre, pre.CheckpointHash, "FORWARD1", q.Package!, null,
+                    CancellationToken.None); });
+            Assert(protectedLab.Writes == 0, "missing protected environment wrote SQL");
+        }
+        finally
+        {
+            foreach (var (key, value) in protectedOriginal)
+                Environment.SetEnvironmentVariable(key, value);
+        }
+        await Reject(pre, pre.CheckpointHash, "FORWARD1", "legacy_forward1",
+            package: new LegacyFrozenPackage(q.Package!.Evidence with { TargetId = "other" },
+                q.Package.ParsedManifest, q.Package.ManifestBytes, q.Package.ForwardBytes,
+                q.Package.RollbackBytes));
+        await Reject(pre with { TargetId = "other" }, pre.CheckpointHash,
+            "FORWARD1", "legacy_forward1");
+        await Reject(pre with { PackageIdentity = "other" }, pre.CheckpointHash,
+            "FORWARD1", "legacy_forward1");
+        await Reject(pre with { Runtime = pre.Runtime with { RunId = "other" } },
+            pre.CheckpointHash, "FORWARD1", "legacy_forward1");
+        await Reject(pre with { CheckpointHash = LegacyPhaseCheckpoint.Bind(
+            pre with { TargetId = "other", CheckpointHash = "" }).CheckpointHash },
+            pre.CheckpointHash, "FORWARD1", "legacy_forward1");
+        await Reject(pre with { Observations = new Dictionary<RecoveryPhase, ObservedCurrentSnapshotV1> {
+            [RecoveryPhase.Pre] = pre.Observations[RecoveryPhase.Pre] with { TargetId = "other" }
+        } }, pre.CheckpointHash, "FORWARD1", "legacy_forward1");
+        await Reject(pre with { PhaseResult = "FAILED", Terminal = true }, pre.CheckpointHash,
+            "FORWARD1", "legacy_forward1");
+        await Reject(pre with { CompletedAtUtc = DateTimeOffset.UtcNow.AddDays(-2) },
+            pre.CheckpointHash, "FORWARD1", "legacy_forward1");
+        var first = await new LegacyPhasedRehearsalV1(
+            new Lab(q, job: "legacy_forward1"), new Authority())
+            .RunNextAsync(pre, pre.CheckpointHash, "FORWARD1", q.Package!, null, CancellationToken.None);
+        await Reject(first.Checkpoint!, first.Checkpoint!.CheckpointHash,
+            "FORWARD2", "legacy_forward2");
+        var second = await new LegacyPhasedRehearsalV1(
+            new Lab(q, job: "legacy_rollback"), new Authority())
+            .RunNextAsync(first.Checkpoint, first.Checkpoint.CheckpointHash,
+                "ROLLBACK", q.Package!, null, CancellationToken.None);
+        await Reject(second.Checkpoint!, second.Checkpoint!.CheckpointHash,
+            "FORWARD1", "legacy_forward1");
+        var failedForward = new Lab(q, fault: "forwardPhase", job: "legacy_forward1");
+        await Throws(async () => { await new LegacyPhasedRehearsalV1(failedForward, new Authority())
+            .RunNextAsync(pre, pre.CheckpointHash, "FORWARD1", q.Package!, null, CancellationToken.None); });
+        Assert(failedForward.Writes == 1);
+        var failedRollback = new Lab(q, fault: "rollbackPhase", job: "legacy_rollback");
+        await Throws(async () => { await new LegacyPhasedRehearsalV1(failedRollback, new Authority())
+            .RunNextAsync(first.Checkpoint, first.Checkpoint.CheckpointHash,
+                "ROLLBACK", q.Package!, null, CancellationToken.None); });
+        Assert(failedRollback.Writes == 1);
+    }
+
     private sealed class Authority(bool denied = false) : ILegacyRehearsalAuthorityV1
     {
         public Task VerifyAsync(LegacyHandoffV1 handoff,string phase,CancellationToken token) =>
             denied ? throw new LegacyContractException("EXECUTION_AUTHORIZATION_INVALID") : Task.CompletedTask;
     }
-    private sealed class Lab(LegacyQualificationOutcomeV1 q, string fault = "") : ILegacyRehearsalRuntimeV1
+    private sealed class Lab(LegacyQualificationOutcomeV1 q, string fault = "", string? job = null) : ILegacyRehearsalRuntimeV1
     {
         public string EvidenceKind => "SYNTHETIC";
-        public LegacyRuntimeContextV1 Context => q.TrustedRuntime!.Runtime!;
+        public LegacyRuntimeContextV1 Context => job is null ? q.TrustedRuntime!.Runtime!
+            : q.TrustedRuntime!.Runtime! with { JobId = job };
         public int Writes;
         private int captures;
         public CancellationTokenSource? Cancel;
         public Task RevalidateAsync(LegacyHandoffV1 h,CancellationToken token) => Task.CompletedTask;
+        public Task VerifyRollbackAgainstPost1Async(ReleaseScript rollback,
+            ObservedCurrentSnapshotV1 post1, CancellationToken token) => Task.CompletedTask;
         public Task<ObservedCurrentSnapshotV1> CaptureAsync(CancellationToken token)
         {
             captures++;
@@ -310,7 +429,10 @@ internal static class LegacyRehearsalTests
         {
             Assert(script.Sha256 == hash && policy == "HARNESS_OWNS_PHASE_TRANSACTIONS_V1");
             Writes++;
-            if (fault == "forward" || fault == "rollback" && Writes == 2 || fault == "reapply" && Writes == 3)
+            if (fault is "forwardPhase" or "rollbackPhase")
+                throw new LegacyContractException("MUTATION_UNCERTAIN");
+            if (fault == "forward" || fault == "rollback" && Writes == 2
+                || fault == "reapply" && Writes == 3)
                 throw new Exception("sensitive database error MUST NOT BE EXPORTED");
             if (fault == "mutation") q.ObservedSnapshot!.Snapshot.Objects.Add(new() {Kind="table",Schema="dbo",Name="tamper"});
             if (fault == "cancel") { Cancel!.Cancel(); token.ThrowIfCancellationRequested(); }

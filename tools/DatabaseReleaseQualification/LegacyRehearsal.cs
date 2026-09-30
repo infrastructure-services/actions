@@ -28,6 +28,8 @@ public interface ILegacyRehearsalRuntimeV1 : IRecoverySecurityEvidenceProvider
     LegacyRuntimeContextV1 Context { get; }
     Task RevalidateAsync(LegacyHandoffV1 handoff, CancellationToken token);
     Task<ObservedCurrentSnapshotV1> CaptureAsync(CancellationToken token);
+    Task VerifyRollbackAgainstPost1Async(ReleaseScript rollback,
+        ObservedCurrentSnapshotV1 post1, CancellationToken token);
     Task ApplyExactAsync(ReleaseScript script, string expectedHash,
         string transactionPolicy, ObservedCurrentSnapshotV1 expectedPre, CancellationToken token);
 }

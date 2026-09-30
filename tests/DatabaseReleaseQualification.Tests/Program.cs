@@ -205,6 +205,8 @@ var tests = new (string Name, Func<Task> Run)[]
 
 tests = args.Contains("--legacy-rehearsal", StringComparer.Ordinal)
     ? LegacyRehearsalTests.Cases
+    : args.Contains("--ef-test-boundary", StringComparer.Ordinal)
+    ? EfTestMigrationTests.Cases
     : args.Contains("--recovery-coverage", StringComparer.Ordinal)
     ? RecoveryCoverageTests.Cases
     : args.Contains("--legacy-artifact", StringComparer.Ordinal)
@@ -220,7 +222,7 @@ tests = args.Contains("--legacy-rehearsal", StringComparer.Ordinal)
             : tests.Concat(RecoveryCoverageTests.Cases).Concat(LegacyArtifactTests.Cases)
                 .Concat(LegacySecurityReaderTests.Cases).Concat(LegacySafetyTests.Cases)
                 .Concat(LegacyReadinessTests.Cases).Concat(LegacyRuntimeResolverTests.Cases)
-                .Concat(LegacyRehearsalTests.Cases).ToArray();
+                .Concat(LegacyRehearsalTests.Cases).Concat(EfTestMigrationTests.Cases).ToArray();
 var failed = 0;
 foreach (var test in tests)
 {

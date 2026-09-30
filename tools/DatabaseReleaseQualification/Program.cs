@@ -24,6 +24,13 @@ public static class QualificationCli
             "qualify-legacy-package" => LegacyPackageCli.RunAsync(args.Skip(1).ToArray()),
             "rehearse-legacy-package" => LegacyRehearsalCli.RunAsync(args.Skip(1).ToArray()),
             "prepare-legacy-rehearsal" => LegacyRehearsalCli.RunAsync(args.Skip(1).ToArray(), rehearse: false),
+            "legacy-phase-pre" => LegacyPhasedCli.RunAsync(args.Skip(1).ToArray(), "PRE"),
+            "legacy-phase-forward1" => LegacyPhasedCli.RunAsync(args.Skip(1).ToArray(), "FORWARD1"),
+            "legacy-phase-rollback" => LegacyPhasedCli.RunAsync(args.Skip(1).ToArray(), "ROLLBACK"),
+            "legacy-phase-forward2" => LegacyPhasedCli.RunAsync(args.Skip(1).ToArray(), "FORWARD2"),
+            "execute-ef-test-script" => EfTestMigrationCli.RunAsync(args.Skip(1).ToArray()),
+            "validate-ef-test-script" => EfTestMigrationCli.ValidateAsync(args.Skip(1).ToArray()),
+            "bind-ef-test-plan" => EfTestMigrationCli.BindAsync(args.Skip(1).ToArray()),
             _ => InvalidCommand()
         };
     }
