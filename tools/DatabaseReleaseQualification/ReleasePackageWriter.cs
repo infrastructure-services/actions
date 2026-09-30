@@ -61,17 +61,107 @@ public static class ReleasePayloadBuilder
 
 public sealed class ReleasePackageWriter
 {
+    public ReleasePackageResult WriteLegacy(
+        string outputRoot, string attestationId, LegacyQualificationOutcomeV1 outcome)
+    {
+        if (outcome.Readiness is not { Status: "READY_FOR_TEST_REHEARSAL", Handoff: not null }
+            || outcome.Package is null || outcome.StaticSafety is not { State: "PASS" }
+            || outcome.Payload is null || outcome.CertifiedBaseline is null
+            || outcome.ObservedSnapshot is null || outcome.TrustedRuntime is null)
+            throw new InvalidOperationException("LEGACY_READINESS_REQUIRED");
+        var package = outcome.Package;
+        if (outcome.CertifiedBaseline.CertifiedSchemaHash
+                != outcome.Readiness.Handoff.Baseline.CertifiedSchemaHash
+            || outcome.ObservedSnapshot.ObservedSchemaHash
+                != outcome.Readiness.Handoff.ObservedSchemaHash)
+            throw new InvalidOperationException("LEGACY_STRUCTURAL_EVIDENCE_STALE");
+        if (outcome.BaselineEvidenceHash != Hashing.Sha256(
+                LegacyStructuralEvidence.Serialize(outcome.CertifiedBaseline))
+            || outcome.ObservedEvidenceHash != Hashing.Sha256(
+                LegacyStructuralEvidence.Serialize(outcome.ObservedSnapshot)))
+            throw new InvalidOperationException("LEGACY_STRUCTURAL_EVIDENCE_STALE");
+        if (!LegacyRuntimeEvidenceHash.Verify(outcome.TrustedRuntime)
+            || outcome.TrustedRuntime.EvidenceSetHash != outcome.Readiness.Handoff.EvidenceSetHash)
+            throw new InvalidOperationException("LEGACY_RUNTIME_EVIDENCE_STALE");
+        package.Verify();
+        if (LegacyReadinessHash.Bind(outcome.Readiness).EvidenceHash != outcome.Readiness.EvidenceHash)
+            throw new InvalidOperationException("LEGACY_READINESS_EVIDENCE_STALE");
+        if (LegacyStaticSafety.CalculateHash(outcome.StaticSafety) != outcome.StaticSafety.EvidenceHash
+            || outcome.StaticSafety.EvidenceHash != outcome.Readiness.Handoff.StaticSafety.EvidenceHash
+            || outcome.StaticSafety.PackageIdentity != package.Evidence.PackageIdentity)
+            throw new InvalidOperationException("LEGACY_STATIC_SAFETY_EVIDENCE_STALE");
+        if (package.Evidence.PackageIdentity != outcome.Readiness.Handoff.PackageIdentity
+            || package.Evidence.Forward.Sha256 != outcome.Payload.ForwardHash
+            || package.Evidence.Rollback.Sha256 != outcome.Payload.RollbackHash
+            || outcome.Readiness.Handoff.PayloadHash != outcome.Payload.PayloadHash)
+            throw new InvalidOperationException("LEGACY_PACKAGE_IDENTITY_MISMATCH");
+        var manifest = package.ParsedManifest;
+        var release = new ReleaseDescriptor {
+            ReleaseId = manifest.ReleaseId, Environment = "TEST",
+            SourceKind = "SQL", Scenario = "EXISTING_LEGACY",
+            DatabaseLifecycle = "EXISTING", ChangeOrigin = manifest.ChangeOrigin,
+            ChangeReference = manifest.ChangeReference, ChangeReason = manifest.ChangeReason
+        };
+        var forward = new ReleaseScript("forward", package.ForwardBytes);
+        var rollback = new ReleaseScript("rollback", package.RollbackBytes);
+        if (ReleasePayloadBuilder.Build(release, forward, rollback).PayloadHash != outcome.Payload.PayloadHash)
+            throw new InvalidOperationException("LEGACY_PAYLOAD_IDENTITY_STALE");
+        var analysis = new DependencyAnalysisReport {
+            Forward = outcome.StaticSafety.ForwardAnalysis,
+            Rollback = outcome.StaticSafety.RollbackAnalysis
+        };
+        var rehearsal = new RehearsalResult {
+            QualificationStatus = "ANALYZED_NOT_REHEARSED",
+            SchemaRollbackValidity = SchemaRollbackValidity.NotTested,
+            DataRollbackValidity = outcome.StaticSafety.Impact.DataRequired
+                ? DataRollbackValidity.NotTested : DataRollbackValidity.NotApplicable,
+            RollbackCapability = RollbackCapability.Unknown,
+            ForwardCertified = false, RollbackCertified = false, ReapplyCertified = false,
+            ExecutionAudit = ["REHEARSAL:NOT_EXECUTED"]
+        };
+        var result = Write(outputRoot, attestationId, release, forward, rollback,
+            outcome.ObservedSnapshot.Snapshot, analysis, outcome.Readiness.Handoff.Risk, rehearsal,
+            new Dictionary<string, string> { ["engineMode"] = "ANALYZE_ONLY" },
+            package.Evidence.PackageIdentity);
+        var manifestPath = Path.Combine(result.AttestationDirectory, "legacy-manifest.json");
+        WriteExact(manifestPath, package.ManifestBytes);
+        VerifyExact(manifestPath, package.ManifestBytes, "LEGACY_MANIFEST_MUTATED");
+        WriteJson(Path.Combine(result.AttestationDirectory,
+            "certified-structural-baseline.json"), outcome.CertifiedBaseline);
+        WriteJson(Path.Combine(result.AttestationDirectory,
+            "observed-current-snapshot.json"), outcome.ObservedSnapshot);
+        WriteExact(Path.Combine(result.AttestationDirectory,
+            "trusted-runtime-evidence.json"), Encoding.UTF8.GetBytes(
+                LegacyRuntimeEvidenceHash.Serialize(outcome.TrustedRuntime) + "\n"));
+        var sidecar = new {
+            contractVersion = 1,
+            packageIdentity = package.Evidence.PackageIdentity,
+            payloadHash = result.PayloadHash,
+            readinessEvidenceHash = outcome.Readiness.EvidenceHash,
+            artifacts = package.Evidence
+        };
+        var sidecarPath = Path.Combine(result.AttestationDirectory, "legacy-provenance.json");
+        WriteJson(sidecarPath, sidecar);
+        var written = JsonSerializer.Deserialize<JsonElement>(File.ReadAllBytes(sidecarPath));
+        if (written.GetProperty("packageIdentity").GetString() != package.Evidence.PackageIdentity
+            || written.GetProperty("payloadHash").GetString() != result.PayloadHash
+            || written.GetProperty("readinessEvidenceHash").GetString() != outcome.Readiness.EvidenceHash)
+            throw new InvalidOperationException("LEGACY_PROVENANCE_MISMATCH");
+        return result;
+    }
+
     public ReleasePackageResult Write(
         string outputRoot,
         string attestationId,
         ReleaseDescriptor release,
         ReleaseScript forward,
         ReleaseScript rollback,
-        SchemaSnapshot certifiedSnapshot,
+        SchemaSnapshot analysisContext,
         DependencyAnalysisReport dependencyAnalysis,
         RiskAnalysisReport riskAnalysis,
         RehearsalResult rehearsal,
-        IReadOnlyDictionary<string, string>? runMetadata = null)
+        IReadOnlyDictionary<string, string>? runMetadata = null,
+        string? legacyPackageIdentity = null)
     {
         ValidateSegment(release.ReleaseId, "RELEASE_ID");
         ValidateSegment(attestationId, "ATTESTATION_ID");
@@ -129,6 +219,7 @@ public sealed class ReleasePackageWriter
 
         var attestation = new QualificationAttestation
         {
+            LegacyPackageIdentity = legacyPackageIdentity,
             RecoveryCoverage = rehearsal.RecoveryCoverage,
             AttestationId = attestationId,
             ReleaseId = release.ReleaseId,
@@ -157,7 +248,7 @@ public sealed class ReleasePackageWriter
             FinalRisk = effectiveRiskAnalysis.FinalRisk,
             AnalysisConfidence = effectiveRiskAnalysis.AnalysisConfidence,
             SchemaCoverage = effectiveRiskAnalysis.SchemaCoverage,
-            UnsupportedSchemaFeatures = certifiedSnapshot.UnsupportedSchemaFeatures
+            UnsupportedSchemaFeatures = analysisContext.UnsupportedSchemaFeatures
                 .Concat(analysisEvidence?.Post1UnsupportedSchemaFeatures ?? [])
                 .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList(),
             RequiresDbaApproval = rehearsal.SchemaRollbackValidity != SchemaRollbackValidity.Invalid

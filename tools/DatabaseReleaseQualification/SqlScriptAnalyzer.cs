@@ -9,10 +9,22 @@ public sealed class SqlScriptAnalyzer
         ArgumentNullException.ThrowIfNull(sql);
         ArgumentNullException.ThrowIfNull(snapshot);
 
-        var result = new ScriptAnalysis { ScriptRole = scriptRole };
+        var parsed = Parse(sql);
+        return AnalyzeParsed(scriptRole, parsed.Fragment, parsed.Errors, snapshot);
+    }
+
+    internal static (TSqlFragment Fragment, IList<ParseError> Errors) Parse(string sql)
+    {
         var parser = new TSql180Parser(initialQuotedIdentifiers: true, SqlEngineType.Standalone);
         using var reader = new StringReader(sql);
-        var fragment = parser.Parse(reader, out var parseErrors);
+        var fragment = parser.Parse(reader, out var errors);
+        return (fragment, errors);
+    }
+
+    internal ScriptAnalysis AnalyzeParsed(string scriptRole, TSqlFragment fragment,
+        IList<ParseError> parseErrors, SchemaSnapshot snapshot)
+    {
+        var result = new ScriptAnalysis { ScriptRole = scriptRole };
         foreach (var error in parseErrors.OrderBy(error => error.Line).ThenBy(error => error.Column).ThenBy(error => error.Number))
         {
             result.ParseErrors.Add($"SQL_PARSE_ERROR_LINE_{error.Line}_COLUMN_{error.Column}_NUMBER_{error.Number}");
@@ -74,7 +86,8 @@ public sealed class SqlScriptAnalyzer
                 AddTableCreation(createTable, result);
                 return;
             case AlterTableAddTableElementStatement addTableElement:
-                AddTableElements(addTableElement.SchemaObjectName, addTableElement.Definition, result, addTableElement.GetType().Name);
+                AddTableElements(addTableElement.SchemaObjectName, addTableElement.Definition, result,
+                    addTableElement.GetType().Name, existingTable: true);
                 return;
             case AlterTableAlterColumnStatement alterColumn:
                 Add(result, "ALTER_COLUMN", alterColumn.SchemaObjectName, alterColumn.GetType().Name,
@@ -183,6 +196,7 @@ public sealed class SqlScriptAnalyzer
 
             case InsertStatement insert:
                 AddDataOperation(result, "INSERT_DATA", insert.InsertSpecification.Target, null, insert.GetType().Name, false, false);
+                AddOutputInto(insert.InsertSpecification.OutputIntoClause, result);
                 return;
             case InsertBulkStatement bulkInsert:
                 Add(result, "INSERT_DATA", bulkInsert.To, bulkInsert.GetType().Name,
@@ -191,14 +205,17 @@ public sealed class SqlScriptAnalyzer
             case UpdateStatement update:
                 AddDataOperation(result, "UPDATE_DATA", update.UpdateSpecification.Target, update.UpdateSpecification.FromClause,
                     update.GetType().Name, false, true);
+                AddOutputInto(update.UpdateSpecification.OutputIntoClause, result);
                 return;
             case DeleteStatement delete:
                 AddDataOperation(result, "DELETE_DATA", delete.DeleteSpecification.Target, delete.DeleteSpecification.FromClause,
                     delete.GetType().Name, true, true);
+                AddOutputInto(delete.DeleteSpecification.OutputIntoClause, result);
                 return;
             case MergeStatement merge:
                 AddDataOperation(result, "MERGE_DATA", merge.MergeSpecification.Target, null,
                     merge.GetType().Name, true, true);
+                AddOutputInto(merge.MergeSpecification.OutputIntoClause, result);
                 return;
             case TruncateTableStatement truncate:
                 Add(result, "TRUNCATE_TABLE", truncate.TableName, truncate.GetType().Name,
@@ -245,7 +262,8 @@ public sealed class SqlScriptAnalyzer
         SchemaObjectName table,
         TableDefinition? definition,
         ScriptAnalysis result,
-        string astNodeType)
+        string astNodeType,
+        bool existingTable = false)
     {
         if (definition is null)
         {
@@ -255,7 +273,9 @@ public sealed class SqlScriptAnalyzer
 
         foreach (var column in definition.ColumnDefinitions)
         {
-            Add(result, "ADD_COLUMN", table, astNodeType, column: column.ColumnIdentifier?.Value, schemaMutation: true);
+            Add(result, "ADD_COLUMN", table, astNodeType, column: column.ColumnIdentifier?.Value,
+                schemaMutation: true, affectsData: existingTable
+                    && (column.DefaultConstraint is not null || column.ComputedColumnExpression is not null));
             foreach (var constraint in column.Constraints.Where(constraint =>
                          constraint is UniqueConstraintDefinition or ForeignKeyConstraintDefinition or CheckConstraintDefinition))
             {
@@ -363,6 +383,18 @@ public sealed class SqlScriptAnalyzer
         if (!resolved.Resolved) Degrade(result, AnalysisConfidence.Partial, resolved.Reason);
     }
 
+    private static void AddOutputInto(OutputIntoClause? output, ScriptAnalysis result)
+    {
+        if (output is null) return;
+        if (output.IntoTable is NamedTableReference table)
+        {
+            Add(result, "OUTPUT_INTO", table.SchemaObject, output.GetType().Name,
+                sensitive: true, dataMutation: true);
+            return;
+        }
+        AddUnknown(result, output, "OUTPUT_INTO_TARGET_UNSUPPORTED");
+    }
+
     private static void AddExecute(ScriptAnalysis result, ExecuteStatement statement)
     {
         var entity = statement.ExecuteSpecification?.ExecutableEntity;
@@ -397,7 +429,7 @@ public sealed class SqlScriptAnalyzer
         }
     }
 
-    private static void AddUnknown(ScriptAnalysis result, TSqlStatement statement, string reason)
+    private static void AddUnknown(ScriptAnalysis result, TSqlFragment statement, string reason)
     {
         var type = statement.GetType().Name;
         result.UnknownStatementTypes.Add(type);
@@ -458,9 +490,10 @@ public sealed class SqlScriptAnalyzer
                 var alias = named.SchemaObject.BaseIdentifier?.Value;
                 var collector = new NamedTableCollector();
                 fromClause.Accept(collector);
-                var match = collector.Tables.FirstOrDefault(table =>
-                    string.Equals(table.Alias?.Value, alias, StringComparison.OrdinalIgnoreCase));
-                if (match is not null) return Resolve(match.SchemaObject);
+                var matches = collector.Tables.Where(table =>
+                    string.Equals(table.Alias?.Value, alias, StringComparison.OrdinalIgnoreCase)).ToArray();
+                if (matches.Length == 1) return Resolve(matches[0].SchemaObject);
+                if (matches.Length > 1) return new("", "", false, "AMBIGUOUS_DML_ALIAS");
             }
             return Resolve(named.SchemaObject);
         }

@@ -316,7 +316,7 @@ public sealed class DatabaseOnboardingEvaluator
         {
             "NEW_EF" or "EXISTING_EF" when assessment.SourceKind == "EF" =>
                 LineageOnboardingState.ConsistentEf,
-            "EXISTING_SQL" when assessment.SourceKind == "SQL" => LineageOnboardingState.LegacySql,
+            "EXISTING_SQL" or "EXISTING_LEGACY" when assessment.SourceKind == "SQL" => LineageOnboardingState.LegacySql,
             _ => LineageOnboardingState.Unknown
         };
     }

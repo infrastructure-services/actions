@@ -40,7 +40,13 @@ internal static class RecoverySecurityAnalysis
         return new ScriptOperation {
             Operation = "DATABASE_SECURITY", AstNodeType = statement.GetType().Name,
             Schema = scope.Schema, Object = scope.Name, IsSensitive = true, TargetResolved = true,
-            SecuritySecurable = scope, SecurityPrincipals = principals.Select(x => x!).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray()
+            SecuritySecurable = scope,
+            SecurityPermissions = statement.Permissions.Select(x => string.Join(" ",
+                x.Identifiers.Select(identifier => identifier.Value.ToUpperInvariant())))
+                .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
+            SecurityHasColumns = statement.Permissions.Any(x => x.Columns.Count > 0)
+                || target?.Columns.Count > 0,
+            SecurityPrincipals = principals.Select(x => x!).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray()
         };
     }
 }

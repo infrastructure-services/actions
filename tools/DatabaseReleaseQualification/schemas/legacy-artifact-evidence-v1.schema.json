@@ -1,0 +1,294 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://infrastructure-services.local/legacy-artifact-evidence-v1.schema.json",
+  "title": "Legacy Artifact Evidence V1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/valid"
+    },
+    {
+      "$ref": "#/$defs/blocked"
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "not": {
+        "pattern": "[\\u0000-\\u001f\\u007f]"
+      }
+    },
+    "oid": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+      "not": {
+        "pattern": "[\\u0000-\\u001f\\u007f]"
+      }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "repositoryId",
+        "fullName"
+      ],
+      "properties": {
+        "host": {
+          "const": "github.com"
+        },
+        "repositoryId": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,19}$",
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f]"
+          }
+        },
+        "fullName": {
+          "type": "string",
+          "maxLength": 257,
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f]"
+          }
+        }
+      }
+    },
+    "blob": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "gitBlobOid",
+        "byteLength",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$",
+          "description": "Además aplicar reglas semánticas portable-path del contrato: segmentos <=128, sin ./../.git, Windows reserved/trailing dot, exact Git case sin colisiones.",
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f]"
+          }
+        },
+        "gitBlobOid": {
+          "$ref": "#/$defs/oid"
+        },
+        "byteLength": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8388608
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "valid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "status",
+        "repository",
+        "gitObjectFormat",
+        "commit",
+        "targetId",
+        "releaseId",
+        "manifest",
+        "forward",
+        "rollback",
+        "packageIdentity",
+        "reasonCodes"
+      ],
+      "properties": {
+        "contractVersion": {
+          "const": 1
+        },
+        "status": {
+          "const": "VALID"
+        },
+        "repository": {
+          "$ref": "#/$defs/repository"
+        },
+        "gitObjectFormat": {
+          "enum": [
+            "sha1",
+            "sha256"
+          ]
+        },
+        "commit": {
+          "$ref": "#/$defs/oid"
+        },
+        "targetId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f]"
+          }
+        },
+        "releaseId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f]"
+          }
+        },
+        "manifest": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/blob"
+            },
+            {
+              "properties": {
+                "byteLength": {
+                  "maximum": 16384
+                }
+              }
+            }
+          ]
+        },
+        "forward": {
+          "$ref": "#/$defs/blob"
+        },
+        "rollback": {
+          "$ref": "#/$defs/blob"
+        },
+        "packageIdentity": {
+          "type": "string",
+          "pattern": "^lpqv1:[0-9a-f]{64}$",
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f]"
+          }
+        },
+        "reasonCodes": {
+          "type": "array",
+          "maxItems": 0
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "gitObjectFormat": {
+                "const": "sha1"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "commit": {
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "manifest": {
+                "properties": {
+                  "gitBlobOid": {
+                    "pattern": "^[0-9a-f]{40}$"
+                  }
+                }
+              },
+              "forward": {
+                "properties": {
+                  "gitBlobOid": {
+                    "pattern": "^[0-9a-f]{40}$"
+                  }
+                }
+              },
+              "rollback": {
+                "properties": {
+                  "gitBlobOid": {
+                    "pattern": "^[0-9a-f]{40}$"
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "commit": {
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "manifest": {
+                "properties": {
+                  "gitBlobOid": {
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                }
+              },
+              "forward": {
+                "properties": {
+                  "gitBlobOid": {
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                }
+              },
+              "rollback": {
+                "properties": {
+                  "gitBlobOid": {
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "blocked": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "status",
+        "reasonCodes"
+      ],
+      "properties": {
+        "contractVersion": {
+          "const": 1
+        },
+        "status": {
+          "const": "BLOCKED"
+        },
+        "reasonCodes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "MANIFEST_MISSING",
+              "MANIFEST_MALFORMED",
+              "MANIFEST_DUPLICATE_PROPERTY",
+              "MANIFEST_UNKNOWN_PROPERTY",
+              "MANIFEST_VERSION_UNSUPPORTED",
+              "TARGET_ID_MISMATCH",
+              "RELEASE_ID_INVALID",
+              "ARTIFACT_PATH_INVALID",
+              "ARTIFACT_PATH_TRAVERSAL",
+              "ARTIFACT_PATH_ALIAS",
+              "ARTIFACT_NOT_REGULAR_BLOB",
+              "ARTIFACT_SUBMODULE",
+              "ARTIFACT_LFS_POINTER",
+              "ARTIFACT_BLOB_MISSING",
+              "ARTIFACT_IDENTICAL",
+              "SOURCE_REPOSITORY_MISMATCH",
+              "SOURCE_COMMIT_MISMATCH",
+              "SOURCE_REVISION_NOT_IMMUTABLE",
+              "SOURCE_AUTHORITY_UNVERIFIED",
+              "ARTIFACT_ENCODING_INVALID",
+              "ARTIFACT_HASH_MISMATCH",
+              "ARTIFACT_MUTATED",
+              "RESOURCE_LIMIT",
+              "TIMEOUT",
+              "CANCELLED",
+              "TECHNICAL_ERROR"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "$comment": "Orden de reasonCodes ordinal. VERIFICACIONES NO EXPRESABLES EN JSON SCHEMA: autoridad repository/commit, blob regular, paths distintos sin case alias, hash de raw Git bytes, hash/oid/length coherentes, packageIdentity recalculado conforme preimage del diseño. VALID no implica readiness."
+}

@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://infrastructure-services.local/legacy-manifest-v1.schema.json",
+  "title": "Legacy Manifest V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contractVersion",
+    "releaseId",
+    "targetId",
+    "forwardPath",
+    "rollbackPath",
+    "changeOrigin"
+  ],
+  "properties": {
+    "contractVersion": {
+      "const": 1
+    },
+    "releaseId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "not": {
+        "pattern": "[\\u0000-\\u001f\\u007f]"
+      }
+    },
+    "targetId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "not": {
+        "pattern": "[\\u0000-\\u001f\\u007f]"
+      }
+    },
+    "forwardPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$",
+      "description": "Además aplicar reglas semánticas portable-path del contrato: segmentos <=128, sin ./../.git, Windows reserved/trailing dot, exact Git case sin colisiones.",
+      "not": {
+        "pattern": "[\\u0000-\\u001f\\u007f]"
+      }
+    },
+    "rollbackPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$",
+      "description": "Además aplicar reglas semánticas portable-path del contrato: segmentos <=128, sin ./../.git, Windows reserved/trailing dot, exact Git case sin colisiones.",
+      "not": {
+        "pattern": "[\\u0000-\\u001f\\u007f]"
+      }
+    },
+    "changeOrigin": {
+      "enum": [
+        "APPLICATION",
+        "DBA"
+      ]
+    },
+    "changeReference": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+      "not": {
+        "pattern": "[\\u0000-\\u001f\\u007f]"
+      }
+    },
+    "changeReason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+      "not": {
+        "pattern": "[\\u0000-\\u001f\\u007f]"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "changeOrigin": {
+            "const": "DBA"
+          }
+        },
+        "required": [
+          "changeOrigin"
+        ]
+      },
+      "then": {
+        "required": [
+          "changeReference",
+          "changeReason"
+        ]
+      }
+    }
+  ],
+  "$comment": "UTF-8 estricto con BOM opcional; max 16384 bytes; duplicate property names rechazados antes del schema; depth <=8. Paths distintos y bytes forward != rollback se verifican semánticamente. Strings opcionales si presentes no pueden ser whitespace-only."
+}

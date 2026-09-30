@@ -65,6 +65,10 @@ public sealed record RecoveryImpact(bool Complete, bool DataRequired, RecoverySe
 {
     public bool SecurityRequired => SecurityScope.Securables.Count != 0;
 
+    public static bool RequiresData(ScriptAnalysis forward, ScriptAnalysis rollback) =>
+        new[] { forward, rollback }.Any(analysis =>
+            analysis.Operations.Any(operation => operation.IsDataMutation || operation.HasPotentialDataLoss));
+
     public static RecoveryImpact Derive(ScriptAnalysis forward, ScriptAnalysis rollback)
     {
         var analyses = new[] { forward, rollback };
@@ -84,7 +88,7 @@ public sealed record RecoveryImpact(bool Complete, bool DataRequired, RecoverySe
             }
         }
         return new(complete,
-            forward.Operations.Any(x => x.IsDataMutation || x.HasPotentialDataLoss) || rollback.Operations.Any(x => x.IsDataMutation),
+            RequiresData(forward, rollback),
             new(Array.AsReadOnly(scopes.OrderBy(x => x.Kind, StringComparer.Ordinal).ThenBy(x => x.Schema, StringComparer.Ordinal).ThenBy(x => x.Name, StringComparer.Ordinal).ToArray()),
                 Array.AsReadOnly(operations.SelectMany(x => x.SecurityPrincipals).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray())));
     }
