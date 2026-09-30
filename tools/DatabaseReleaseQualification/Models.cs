@@ -89,6 +89,8 @@ public sealed class ScriptOperation
 {
     public RecoverySecuritySecurable? SecuritySecurable { get; init; }
     public IReadOnlyList<string> SecurityPrincipals { get; init; } = [];
+    public IReadOnlyList<string> SecurityPermissions { get; init; } = [];
+    public bool SecurityHasColumns { get; init; }
     public required string Operation { get; init; }
     public required string AstNodeType { get; init; }
     public string Schema { get; init; } = "dbo";
@@ -315,6 +317,7 @@ public sealed class ReleasePayloadMetadata
 public sealed class QualificationAttestation
 {
     public RecoveryCoverageEvidence? RecoveryCoverage { get; init; }
+    public string? LegacyPackageIdentity { get; init; }
     public int FormatVersion { get; init; } = 1;
     public required string AttestationId { get; init; }
     public required string ReleaseId { get; init; }

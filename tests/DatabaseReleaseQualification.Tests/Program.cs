@@ -205,7 +205,19 @@ var tests = new (string Name, Func<Task> Run)[]
 
 tests = args.Contains("--recovery-coverage", StringComparer.Ordinal)
     ? RecoveryCoverageTests.Cases
-    : tests.Concat(RecoveryCoverageTests.Cases).ToArray();
+    : args.Contains("--legacy-artifact", StringComparer.Ordinal)
+        ? LegacyArtifactTests.Cases
+        : args.Contains("--legacy-security", StringComparer.Ordinal)
+            ? LegacySecurityReaderTests.Cases
+            : args.Contains("--legacy-safety", StringComparer.Ordinal)
+                ? LegacySafetyTests.Cases
+                : args.Contains("--legacy-readiness", StringComparer.Ordinal)
+                    ? LegacyReadinessTests.Cases
+                : args.Contains("--legacy-runtime", StringComparer.Ordinal)
+                    ? LegacyRuntimeResolverTests.Cases
+            : tests.Concat(RecoveryCoverageTests.Cases).Concat(LegacyArtifactTests.Cases)
+                .Concat(LegacySecurityReaderTests.Cases).Concat(LegacySafetyTests.Cases)
+                .Concat(LegacyReadinessTests.Cases).Concat(LegacyRuntimeResolverTests.Cases).ToArray();
 var failed = 0;
 foreach (var test in tests)
 {
@@ -1185,11 +1197,14 @@ static Task UnknownStatementNeverLow()
 
 static async Task PureSchemaRollbackIsValid()
 {
-    var pre = BaseSnapshot(includeIndex: true);
-    var post = AddCommentSnapshot(includeIndex: true, "nvarchar(50)");
+    var pre = BaseSnapshot(includeIndex: false);
+    var post = BaseSnapshot(includeIndex: true);
     var database = new FakeRehearsalDatabase(pre, post, pre, post);
     var result = await new RehearsalEngine().QualifyAsync(
-        TestRelease(), ConsistentDiscovery(), Forward(), Rollback(), database);
+        TestRelease(), ConsistentDiscovery(),
+        ReleaseScript.FromText("forward", "CREATE INDEX IX_Orden_Fecha ON dbo.Orden(Fecha);"),
+        ReleaseScript.FromText("rollback", "DROP INDEX IX_Orden_Fecha ON dbo.Orden;"),
+        database);
     Equal("QUALIFIED", result.QualificationStatus);
     Equal(SchemaRollbackValidity.Valid, result.SchemaRollbackValidity);
     Equal(DataRollbackValidity.NotApplicable, result.DataRollbackValidity);
@@ -1469,12 +1484,15 @@ static Task InvalidRollbackCannotProceed()
 
 static async Task ReapplyMismatch()
 {
-    var pre = BaseSnapshot(includeIndex: true);
-    var post1 = AddCommentSnapshot(includeIndex: true, "nvarchar(50)");
-    var post2 = AddCommentSnapshot(includeIndex: true, "nvarchar(60)");
+    var pre = BaseSnapshot(includeIndex: false);
+    var post1 = BaseSnapshot(includeIndex: true);
+    var post2 = BaseSnapshot(includeIndex: false);
     var database = new FakeRehearsalDatabase(pre, post1, pre, post2);
     var result = await new RehearsalEngine().QualifyAsync(
-        TestRelease(), ConsistentDiscovery(), Forward(), Rollback(), database);
+        TestRelease(), ConsistentDiscovery(),
+        ReleaseScript.FromText("forward", "CREATE INDEX IX_Orden_Fecha ON dbo.Orden(Fecha);"),
+        ReleaseScript.FromText("rollback", "DROP INDEX IX_Orden_Fecha ON dbo.Orden;"),
+        database);
     Equal("BLOCKED_REAPPLY_MISMATCH", result.QualificationStatus);
     Equal(SchemaRollbackValidity.Valid, result.SchemaRollbackValidity);
     True(!result.ReapplyCertified);

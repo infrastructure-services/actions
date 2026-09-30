@@ -21,6 +21,7 @@ public static class QualificationCli
             "capture-schema" => CaptureSchemaAsync(args.Skip(1).ToArray()),
             "compare-schema-captures" => CompareSchemaCapturesAsync(args.Skip(1).ToArray()),
             "evaluate-database-state" => EvaluateDatabaseStateAsync(args.Skip(1).ToArray()),
+            "qualify-legacy-package" => LegacyPackageCli.RunAsync(args.Skip(1).ToArray()),
             _ => InvalidCommand()
         };
     }
@@ -76,8 +77,7 @@ public static class QualificationCli
             };
             var riskAnalysis = new RiskEngine().Evaluate(dependencyAnalysis, snapshot);
             var pre = SchemaCanonicalizer.Canonicalize(snapshot);
-            var dataRelevant = dependencyAnalysis.Forward.Operations.Any(operation => operation.IsDataMutation || operation.HasPotentialDataLoss)
-                || dependencyAnalysis.Rollback.Operations.Any(operation => operation.IsDataMutation);
+            var dataRelevant = RecoveryImpact.RequiresData(dependencyAnalysis.Forward, dependencyAnalysis.Rollback);
             var qualificationStatus = !discovery.IsConsistent
                 ? "BLOCKED_DISCOVERY"
                 : riskAnalysis.AutoPromotionBlocked

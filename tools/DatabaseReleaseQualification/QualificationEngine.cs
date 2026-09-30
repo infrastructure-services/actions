@@ -247,8 +247,7 @@ public sealed class RehearsalEngine
         analysis.Confidence == AnalysisConfidence.Insufficient;
 
     private static bool RequiresDataValidation(ScriptAnalysis forward, ScriptAnalysis rollback) =>
-        forward.Operations.Any(operation => operation.IsDataMutation || operation.HasPotentialDataLoss)
-        || rollback.Operations.Any(operation => operation.IsDataMutation);
+        RecoveryImpact.RequiresData(forward, rollback);
 
     private static RollbackCapability CapabilityForUnverifiedData(ScriptAnalysis forward, DataRollbackValidity validity)
     {
