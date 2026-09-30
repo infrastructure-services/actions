@@ -314,18 +314,24 @@ public static class LegacyReadinessTests
         string onboarding = "MANAGED", bool certified = true,
         string scenario = "EXISTING_LEGACY",
         bool governanceMismatch = false, bool registryMismatch = false,
-        string? observedFailure = null, bool stateMismatch = false)
+        string? observedFailure = null, bool stateMismatch = false,
+        byte[]? forwardBytes = null, byte[]? rollbackBytes = null, SchemaSnapshot? snapshot = null)
     {
         return new(new FakeEvidence(onboarding, certified, scenario,
-                governanceMismatch, registryMismatch, observedFailure, stateMismatch),
-            LegacyArtifactTests.Transport(Forward, Rollback),
+                governanceMismatch, registryMismatch, observedFailure, stateMismatch,
+                forwardBytes ?? Forward, rollbackBytes ?? Rollback, snapshot),
+            LegacyArtifactTests.Transport(forwardBytes ?? Forward, rollbackBytes ?? Rollback),
             new FakeSafety(observedFailure == "safetyServer" ? "OTHER" : "SQL1"),
-            new UnusedSecurity());
+            snapshot is null ? new UnusedSecurity() : new SyntheticSecurity(snapshot));
     }
+
+    internal static Task<LegacyQualificationOutcomeV1> SyntheticQualification(byte[]? forward = null,
+        byte[]? rollback = null, SchemaSnapshot? snapshot = null, LegacyDataValidationDescriptorV1? data = null) =>
+        Adapter(forwardBytes: forward, rollbackBytes: rollback, snapshot: snapshot).EvaluateAsync(new(1, Selection, "target1", data));
 
     private sealed class FakeEvidence(string onboardingStatus, bool certified, string scenario,
         bool governanceMismatch, bool registryMismatch, string? observedFailure,
-        bool stateMismatch)
+        bool stateMismatch, byte[] forwardBytes, byte[] rollbackBytes, SchemaSnapshot? suppliedSnapshot)
         : ILegacyVerifiedEvidenceSource
     {
         public Task VerifyFreshnessAsync(LegacyQualificationRequestV1 request,
@@ -337,7 +343,7 @@ public static class LegacyReadinessTests
             var targetId = request.TargetId;
             var governanceBytes = Encoding.UTF8.GetBytes("governance");
             var onboardingBytes = Encoding.UTF8.GetBytes("onboarding");
-            var snapshot = new SchemaSnapshot();
+            var snapshot = suppliedSnapshot ?? new SchemaSnapshot();
             var canonical = SchemaCanonicalizer.Canonicalize(snapshot);
             var registryTarget = new DatabaseTarget {
                 ApplicationId = "app1", Environment = "TEST", DatabaseName = "TestDb",
@@ -400,7 +406,7 @@ public static class LegacyReadinessTests
                 } }
             })).RootElement.Clone();
             var discovered = await new LegacyArtifactDiscovery(
-                LegacyArtifactTests.Transport(Forward, Rollback)).DiscoverAsync(
+                LegacyArtifactTests.Transport(forwardBytes, rollbackBytes)).DiscoverAsync(
                     Selection, targetId, token);
             var sourceDocument = new LegacyGitDocumentV1(Selection.ExpectedRepository,
                 Selection.ExpectedCommit, "scripts/producer.mjs", new string('1', 64));
@@ -435,9 +441,9 @@ public static class LegacyReadinessTests
         public Task<LegacyScopeSafetySnapshotV1> CaptureAsync(
             IReadOnlyList<RecoverySecuritySecurable> scope, CancellationToken token)
         {
-            if (scope.Count != 0) throw new Exception("Unexpected scope");
             var result = new LegacyScopeSafetySnapshotV1(1, true, server, "TestDb",
-                true, true, false, [], "");
+                true, true, false, scope.Select(x => new LegacySafetyObject(x.Schema,x.Name,
+                    x.Name == "V" ? "VIEW" : "TABLE",false,false,false,false,false,false,false,false,false)).ToArray(), "");
             var hash = Hashing.Sha256(JsonSerializer.Serialize(new {
                 result.ContractVersion, result.Complete, result.ServerInstance,
                 result.DatabaseName, result.DatabaseDdlTriggersComplete,
@@ -446,6 +452,13 @@ public static class LegacyReadinessTests
             }, JsonDefaults.Compact));
             return Task.FromResult(result with { Sha256 = hash });
         }
+    }
+
+    private sealed class SyntheticSecurity(SchemaSnapshot snapshot) : IRecoverySecurityCatalogReader
+    {
+        public Task<RecoverySecuritySnapshot> ReadAsync(RecoverySecurityScope scope, RecoveryPhase phase,
+            CancellationToken cancellationToken = default) => Task.FromResult(
+                RecoveryCoverageTests.Security(scope,phase,snapshot) with { ServerInstance="SQL1",DatabaseName="TestDb" });
     }
 
     private sealed class UnusedSecurity : IRecoverySecurityCatalogReader

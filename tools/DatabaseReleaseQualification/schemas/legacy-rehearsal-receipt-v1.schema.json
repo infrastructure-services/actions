@@ -1,0 +1,401 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://infrastructure-services.local/legacy-rehearsal-receipt-v1.schema.json",
+  "title": "legacy-rehearsal-receipt-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contractVersion",
+    "kind",
+    "evidenceKind",
+    "runtime",
+    "targetId",
+    "packageIdentity",
+    "qualificationIdentity",
+    "evidenceSetHash",
+    "artifacts",
+    "recoveryRequirements",
+    "baselineIdentity",
+    "state",
+    "status",
+    "recoveryClass",
+    "canProceedToPromotion",
+    "phases",
+    "observations",
+    "dataEvidence",
+    "reasonCodes",
+    "startedAtUtc",
+    "finishedAtUtc",
+    "receiptHash"
+  ],
+  "properties": {
+    "contractVersion": {
+      "const": 1
+    },
+    "kind": {
+      "const": "LEGACY_REHEARSAL_RECEIPT"
+    },
+    "evidenceKind": {
+      "enum": [
+        "SYNTHETIC",
+        "REAL_TEST"
+      ]
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "workflowPath",
+        "workflowRevision",
+        "runId",
+        "runAttempt",
+        "jobId"
+      ],
+      "properties": {
+        "repository": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "host",
+            "repositoryId",
+            "fullName"
+          ],
+          "properties": {
+            "host": {
+              "const": "github.com"
+            },
+            "repositoryId": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,19}$"
+            },
+            "fullName": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "workflowPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workflowRevision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runAttempt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "jobId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "targetId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "packageIdentity": {
+      "type": "string",
+      "pattern": "^lpqv1:[0-9a-f]{64}$"
+    },
+    "qualificationIdentity": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "evidenceSetHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "artifacts": {
+      "$ref": "legacy-artifact-evidence-v1.schema.json#/$defs/valid"
+    },
+    "recoveryRequirements": {
+      "type": "object"
+    },
+    "baselineIdentity": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "state": {
+      "enum": [
+        "REHEARSAL_EVALUATED",
+        "BLOCKED",
+        "FAILED",
+        "CANCELLED",
+        "TIMED_OUT"
+      ]
+    },
+    "status": {
+      "enum": [
+        "REHEARSAL_COMPLETE",
+        "REHEARSAL_BLOCKED"
+      ]
+    },
+    "recoveryClass": {
+      "enum": [
+        "FULL_REVERSIBLE",
+        "SCHEMA_ONLY",
+        "FORWARD_FIX_ONLY",
+        "RESTORE_REQUIRED",
+        "UNKNOWN"
+      ]
+    },
+    "canProceedToPromotion": {
+      "const": false
+    },
+    "phases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "phase",
+          "status",
+          "startedAtUtc",
+          "finishedAtUtc"
+        ],
+        "properties": {
+          "phase": {
+            "enum": [
+              "PRE",
+              "FORWARD1",
+              "POST1",
+              "ROLLBACK",
+              "PRE2",
+              "FORWARD2",
+              "POST2",
+              "INVALID"
+            ]
+          },
+          "status": {
+            "enum": [
+              "STARTED",
+              "APPLIED",
+              "CAPTURED",
+              "FAILED"
+            ]
+          },
+          "startedAtUtc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finishedAtUtc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "scriptHash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "evidenceHash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "reasonCode": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "observations": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "PRE": {
+          "type": "object"
+        },
+        "POST1": {
+          "type": "object"
+        },
+        "PRE2": {
+          "type": "object"
+        },
+        "POST2": {
+          "type": "object"
+        }
+      }
+    },
+    "dataEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "PRE": {
+          "type": "object"
+        },
+        "POST1": {
+          "type": "object"
+        },
+        "PRE2": {
+          "type": "object"
+        },
+        "POST2": {
+          "type": "object"
+        }
+      }
+    },
+    "evaluation": {
+      "type": "object"
+    },
+    "reasonCodes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "startedAtUtc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "finishedAtUtc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "receiptHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "authorization": {
+      "type": "object"
+    },
+    "dataContract": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "REHEARSAL_COMPLETE"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "evaluation"
+        ],
+        "properties": {
+          "state": {
+            "const": "REHEARSAL_EVALUATED"
+          },
+          "recoveryClass": {
+            "const": "FULL_REVERSIBLE"
+          },
+          "reasonCodes": {
+            "maxItems": 0
+          },
+          "phases": {
+            "minItems": 7,
+            "maxItems": 7,
+            "prefixItems": [
+              {
+                "properties": {
+                  "phase": {
+                    "const": "PRE"
+                  },
+                  "status": {
+                    "const": "CAPTURED"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "phase": {
+                    "const": "FORWARD1"
+                  },
+                  "status": {
+                    "const": "APPLIED"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "phase": {
+                    "const": "POST1"
+                  },
+                  "status": {
+                    "const": "CAPTURED"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "phase": {
+                    "const": "ROLLBACK"
+                  },
+                  "status": {
+                    "const": "APPLIED"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "phase": {
+                    "const": "PRE2"
+                  },
+                  "status": {
+                    "const": "CAPTURED"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "phase": {
+                    "const": "FORWARD2"
+                  },
+                  "status": {
+                    "const": "APPLIED"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "phase": {
+                    "const": "POST2"
+                  },
+                  "status": {
+                    "const": "CAPTURED"
+                  }
+                }
+              }
+            ]
+          },
+          "observations": {
+            "required": [
+              "PRE",
+              "POST1",
+              "PRE2",
+              "POST2"
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "state": {
+            "not": {
+              "const": "REHEARSAL_EVALUATED"
+            }
+          },
+          "recoveryClass": {
+            "not": {
+              "const": "FULL_REVERSIBLE"
+            }
+          },
+          "reasonCodes": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
+}

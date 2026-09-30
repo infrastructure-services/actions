@@ -203,7 +203,9 @@ var tests = new (string Name, Func<Task> Run)[]
     ("Evidence ID conserva semántica case-sensitive", CommitProtocolEvidenceIdIsCaseSensitive)
 };
 
-tests = args.Contains("--recovery-coverage", StringComparer.Ordinal)
+tests = args.Contains("--legacy-rehearsal", StringComparer.Ordinal)
+    ? LegacyRehearsalTests.Cases
+    : args.Contains("--recovery-coverage", StringComparer.Ordinal)
     ? RecoveryCoverageTests.Cases
     : args.Contains("--legacy-artifact", StringComparer.Ordinal)
         ? LegacyArtifactTests.Cases
@@ -217,7 +219,8 @@ tests = args.Contains("--recovery-coverage", StringComparer.Ordinal)
                     ? LegacyRuntimeResolverTests.Cases
             : tests.Concat(RecoveryCoverageTests.Cases).Concat(LegacyArtifactTests.Cases)
                 .Concat(LegacySecurityReaderTests.Cases).Concat(LegacySafetyTests.Cases)
-                .Concat(LegacyReadinessTests.Cases).Concat(LegacyRuntimeResolverTests.Cases).ToArray();
+                .Concat(LegacyReadinessTests.Cases).Concat(LegacyRuntimeResolverTests.Cases)
+                .Concat(LegacyRehearsalTests.Cases).ToArray();
 var failed = 0;
 foreach (var test in tests)
 {

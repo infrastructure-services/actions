@@ -31,7 +31,7 @@ for marker in 'GIT_NO_REPLACE_OBJECTS' 'GIT_NO_LAZY_FETCH' 'UseShellExecute = fa
   fi
 done
 
-if grep -RIl --include='Legacy*.cs' 'ExecuteSqlAsync(' "$ENGINE" | grep -q .; then
+if grep -El 'ExecuteSqlAsync\(|ApplyExactAsync\(|rehearse-legacy-package' "$ENGINE/LegacyPackageQualification.cs" "$ENGINE/LegacyPackageCli.cs" "$RUNTIME" | grep -q .; then
   echo "FAIL: LEGACY qualification calls a SQL executor"
   exit 1
 fi
