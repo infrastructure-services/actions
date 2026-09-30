@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://infrastructure-services.local/legacy-promotion-freeze-v1.schema.json",
+  "title": "legacy-promotion-freeze-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contractVersion",
+    "targetId",
+    "releaseId",
+    "artifacts",
+    "qualificationIdentity",
+    "evidenceSetHash",
+    "rehearsalReceiptHash",
+    "recoveryClass",
+    "coverage",
+    "baselineIdentity",
+    "preEvidenceHash",
+    "freezeHash"
+  ],
+  "properties": {
+    "contractVersion": {
+      "const": 1
+    },
+    "targetId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "releaseId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "artifacts": {
+      "$ref": "legacy-artifact-evidence-v1.schema.json#/$defs/valid"
+    },
+    "qualificationIdentity": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "evidenceSetHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "rehearsalReceiptHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "recoveryClass": {
+      "const": "FULL_REVERSIBLE"
+    },
+    "coverage": {
+      "type": "object"
+    },
+    "baselineIdentity": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "preEvidenceHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "freezeHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

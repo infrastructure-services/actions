@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://infrastructure-services.local/legacy-rehearsal-authorization-v1.schema.json",
+  "title": "legacy-rehearsal-authorization-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contractVersion",
+    "authorizationId",
+    "targetId",
+    "packageIdentity",
+    "preconditionIdentity",
+    "engineCommit",
+    "environment",
+    "actor",
+    "notBeforeUtc",
+    "expiresAtUtc",
+    "approvedPhases",
+    "executionAuthorized",
+    "approvalReference"
+  ],
+  "properties": {
+    "contractVersion": {
+      "const": 1
+    },
+    "authorizationId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+    },
+    "targetId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "packageIdentity": {
+      "type": "string",
+      "pattern": "^lpqv1:[0-9a-f]{64}$"
+    },
+    "preconditionIdentity": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "engineCommit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "environment": {
+      "const": "TEST"
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 1
+    },
+    "notBeforeUtc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expiresAtUtc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "approvedPhases": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "const": "FORWARD1"
+        },
+        {
+          "const": "ROLLBACK"
+        },
+        {
+          "const": "FORWARD2"
+        }
+      ],
+      "items": false,
+      "minItems": 3
+    },
+    "executionAuthorized": {
+      "const": true
+    },
+    "approvalReference": {
+      "type": "string",
+      "minLength": 1
+    },
+    "dataContractIdentity": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      ]
+    }
+  }
+}

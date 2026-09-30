@@ -73,13 +73,13 @@ if grep -Eiq 'apply-db-migrations|dotnet[[:space:]]+ef[[:space:]]+database[[:spa
 fi
 
 if grep -RIl --include='*.cs' 'IRehearsalDatabase' "$ENGINE" \
-  | grep -vF 'QualificationEngine.cs' >/dev/null; then
+  | grep -vF 'QualificationEngine.cs' | grep -vF 'LegacyRehearsal.cs' >/dev/null; then
   echo "FAIL: existe un adaptador de rehearsal real fuera del contrato explícito."
   exit 1
 fi
 
 if grep -RIl --include='*.cs' 'ExecuteSqlAsync(' "$ENGINE" \
-  | grep -vF 'QualificationEngine.cs' >/dev/null; then
+  | grep -vF 'QualificationEngine.cs' | grep -vF 'LegacyRehearsal.cs' >/dev/null; then
   echo "FAIL: SQL mutante aparece fuera del módulo explícito de rehearsal."
   exit 1
 fi
@@ -135,4 +135,4 @@ if grep -RiqE 'generate.*rollback|rollback.*generate|auto.*rollback|DROP INDEX.*
   exit 1
 fi
 
-echo "OK: qualification V1 mantiene captura SELECT-only y rehearsal aislado sin adaptador SQL real"
+echo "OK: qualification V1 mantiene captura SELECT-only y rehearsal aislado en el harness explícito"

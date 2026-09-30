@@ -82,6 +82,17 @@ public sealed class LegacyProductionRuntimeAcquisition : ILegacyRuntimeAcquisiti
     public ISecurityCatalogTransport SecurityTransport() =>
         new SqlClientSecurityCatalogTransport(() => connection, Binding());
 
+    internal string InspectionConnection => connection;
+
+    internal async Task<(LegacyGitDocumentV1 Document, byte[] Bytes)> ReadGovernedDocumentAsync(
+        string path, CancellationToken token)
+    {
+        if (governanceRevision is null) throw new LegacyContractException("SOURCE_AUTHORITY_UNVERIFIED");
+        return await Document(new ProcessLegacyGitTransport(governanceRoot), governanceRoot,
+            new LegacyRepositoryV1("github.com", governanceRepositoryId, "infrastructure-services/workflow"),
+            governanceRevision, path, true, token);
+    }
+
     public async Task<LegacyAcquiredRuntimeV1> AcquireAsync(
         LegacyResolverRequestV1 request, CancellationToken token)
     {

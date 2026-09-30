@@ -136,6 +136,22 @@ public sealed class LegacyStaticSafety
         return result with { EvidenceHash = hash };
     }
 
+    internal static async Task VerifyPhaseAsync(ReleaseScript script, SchemaSnapshot snapshot,
+        ILegacyScopeSafetySource source, LegacyBindingV1 binding, CancellationToken token)
+    {
+        var reasons = new SortedSet<string>(StringComparer.Ordinal);
+        var current = Analyze(script.Role, script.Bytes, snapshot, reasons);
+        if (reasons.Count != 0) throw new LegacyContractException("UNSUPPORTED_OPERATION_BEFORE_MUTATION");
+        var scope = current.Analysis.Operations.Where(x => x.TargetResolved && x.Object.Length > 0)
+            .Select(x => new RecoverySecuritySecurable("OBJECT", x.Schema, x.Object))
+            .Concat(current.References).Distinct().ToArray();
+        var metadata = await source.CaptureAsync(scope, token);
+        if (metadata.DatabaseName != binding.DatabaseName || binding.ServerMatchPolicy == "ALLOW_LIST"
+            && !binding.AllowedServerInstances.Contains(metadata.ServerInstance, StringComparer.OrdinalIgnoreCase))
+            throw new LegacyContractException("TARGET_IDENTITY_MISMATCH");
+        VerifyMetadata(metadata, scope, current.References, current.Analysis, current.Analysis, phaseOnly: true);
+    }
+
     private static (ScriptAnalysis Analysis, IReadOnlyList<RecoverySecuritySecurable> References) Analyze(string role, byte[] bytes,
         SchemaSnapshot snapshot, ISet<string> reasons)
     {
@@ -372,7 +388,7 @@ public sealed class LegacyStaticSafety
     private static void VerifyMetadata(LegacyScopeSafetySnapshotV1 metadata,
         IReadOnlyList<RecoverySecuritySecurable> scope,
         IEnumerable<RecoverySecuritySecurable> references,
-        ScriptAnalysis forward, ScriptAnalysis rollback)
+        ScriptAnalysis forward, ScriptAnalysis rollback, bool phaseOnly = false)
     {
         var expectedHash = Hashing.Sha256(JsonSerializer.Serialize(new {
             metadata.ContractVersion, metadata.Complete, metadata.ServerInstance,
@@ -397,7 +413,9 @@ public sealed class LegacyStaticSafety
             if (item.Kind == "ABSENT")
             {
                 if (readReferences.Contains(objectScope)
-                    || !CompatibleNewObject(objectScope, forward, rollback)
+                    || !(phaseOnly ? forward.Operations.Any(x => x.Schema == objectScope.Schema
+                        && x.Object == objectScope.Name && x.Operation is "CREATE_TABLE" or "CREATE_VIEW" or "SELECT_INTO")
+                        : CompatibleNewObject(objectScope, forward, rollback))
                     || item.Schema is "sys" or "INFORMATION_SCHEMA")
                     throw new LegacyContractException("SECURABLE_ABSENCE_UNPROVEN");
                 continue;
