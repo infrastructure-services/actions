@@ -123,34 +123,39 @@ export function validateFailureEnvelope(value, exitCode) {
 }
 
 function appendOutput(file, name, value) {
-  fs.appendFileSync(file, `${name}<<SQL_DISCOVERY_V2_EOF\n${value}\nSQL_DISCOVERY_V2_EOF\n`, { encoding: "utf8" });
+  try { fs.appendFileSync(file, `${name}<<SQL_DISCOVERY_V2_EOF\n${value}\nSQL_DISCOVERY_V2_EOF\n`, { encoding: "utf8" }); }
+  catch { throw terminalFailure(null, "WRAPPER", "OUTPUT_PERSISTENCE_FAILED"); }
 }
 
 function terminalFailure(env, terminalPhase, terminalReasonCode, childExitCode) {
-  const terminal = { terminalPhase, terminalReasonCode, ...(Number.isInteger(childExitCode) ? { childExitCode } : {}) };
-  if (env?.GITHUB_OUTPUT) {
-    appendOutput(env.GITHUB_OUTPUT, "terminal-phase", terminalPhase);
-    appendOutput(env.GITHUB_OUTPUT, "terminal-reason-code", terminalReasonCode);
-    appendOutput(env.GITHUB_OUTPUT, "terminal-child-exit-code", terminal.childExitCode === undefined ? "" : String(terminal.childExitCode));
-  }
+  const terminal = { terminalPhase, terminalReasonCode, ...(Number.isSafeInteger(childExitCode) ? { childExitCode } : {}) };
   const error = new Error("SQL_DISCOVERY_TERMINAL_FAILURE");
   error.terminal = terminal;
   return error;
 }
 
+const TERMINAL_REASONS = {
+  RESTORE: ["RESTORE_FAILED"], BUILD: ["BUILD_FAILED"], CHILD_START: ["CHILD_START_FAILED"],
+  CLI_EXIT: ["CLI_EXIT_UNRECOGNIZED", "CLI_FAILURE_ENVELOPE_ACCEPTED"],
+  ENVELOPE_VALIDATION: ["ENVELOPE_VALIDATION_FAILED"],
+  WRAPPER: ["PRECONDITION_FAILED", "OUTPUT_PERSISTENCE_FAILED", "UNEXPECTED_WRAPPER_FAILURE"]
+};
+const validTerminal = terminal => terminal !== null && typeof terminal === "object"
+  && Object.hasOwn(TERMINAL_REASONS, terminal.terminalPhase)
+  && TERMINAL_REASONS[terminal.terminalPhase].includes(terminal.terminalReasonCode)
+  && (terminal.childExitCode === undefined || Number.isSafeInteger(terminal.childExitCode));
+
 export function formatTerminalDiagnostic(error) {
-  const terminal = error?.terminal;
-  if (terminal === null || typeof terminal !== "object"
-      || !["RESTORE", "BUILD", "CHILD_START", "CLI_EXIT", "ENVELOPE_VALIDATION"].includes(terminal.terminalPhase)
-      || !["RESTORE_FAILED", "BUILD_FAILED", "CHILD_START_FAILED", "CLI_EXIT_UNRECOGNIZED", "ENVELOPE_VALIDATION_FAILED", "CLI_FAILURE_ENVELOPE_ACCEPTED"].includes(terminal.terminalReasonCode)
-      || !(terminal.childExitCode === undefined || Number.isInteger(terminal.childExitCode)))
-    return "sql-discovery-v2: EXECUTION_FAILED";
+  const terminal = validTerminal(error?.terminal) ? error.terminal
+    : { terminalPhase: "WRAPPER", terminalReasonCode: "UNEXPECTED_WRAPPER_FAILURE" };
   const child = terminal.childExitCode === undefined ? "" : ` childExitCode=${terminal.childExitCode}`;
   return `sql-discovery-v2: terminalPhase=${terminal.terminalPhase} terminalReasonCode=${terminal.terminalReasonCode}${child}`;
 }
 
 function runDotnet(env, execute, args, options, terminalPhase, terminalReasonCode) {
-  const child = execute("dotnet", args, options);
+  let child;
+  try { child = execute("dotnet", args, options); }
+  catch { throw terminalFailure(env, terminalPhase, terminalReasonCode); }
   if (child.error || child.status !== 0) throw terminalFailure(env, terminalPhase, terminalReasonCode, child.status);
   return child;
 }
@@ -172,25 +177,61 @@ export function prepareSqlDiscovery(env = process.env, execute = spawnSync) {
 }
 
 export function runPublicSqlDiscovery(env = process.env, execute = spawnSync) {
-  validateEnvironment(env.ENVIRONMENT_NAME);
-  validateTlsMode(env.SQL_TLS_MODE);
-  if (!env.SQL_SERVER_CONNECTION || !env.SQL_DATABASE_NAME || !env.GITHUB_OUTPUT || !env.GITHUB_ACTION_PATH || !env.RUNNER_TEMP) throw new Error("INPUT_REQUIRED");
+  const context = {};
+  try { return discover(env, execute, context); }
+  catch (error) {
+    let failure = validTerminal(error?.terminal) ? error
+      : terminalFailure(null, "WRAPPER", "UNEXPECTED_WRAPPER_FAILURE", context.childExitCode);
+    if (failure.terminal.childExitCode === undefined && Number.isSafeInteger(context.childExitCode))
+      failure.terminal.childExitCode = context.childExitCode;
+    // The error is classified before any file I/O. A broken output channel is
+    // reported via the independent, allowlisted stderr diagnostic in the CLI.
+    if (failure.terminal.terminalReasonCode !== "OUTPUT_PERSISTENCE_FAILED") {
+      try {
+        const t = failure.terminal;
+        const values = [["terminal-phase", t.terminalPhase], ["terminal-reason-code", t.terminalReasonCode],
+          ["terminal-child-exit-code", t.childExitCode === undefined ? "" : String(t.childExitCode)]];
+        if (failure.failureEnvelope) {
+          values.push(["failure-evidence-json", JSON.stringify(failure.failureEnvelope)],
+            ["execution-exit-code", String(failure.failureEnvelope.executionExitCode)],
+            ["execution-reason-code", failure.failureEnvelope.executionReasonCode]);
+        }
+        fs.appendFileSync(env.GITHUB_OUTPUT, values.map(([name, value]) => `${name}<<SQL_DISCOVERY_V2_EOF\n${value}\nSQL_DISCOVERY_V2_EOF\n`).join(""), "utf8");
+      } catch {
+        failure = terminalFailure(null, "WRAPPER", "OUTPUT_PERSISTENCE_FAILED", failure.terminal.childExitCode);
+      }
+    }
+    throw failure;
+  }
+}
+
+function discover(env, execute, context) {
+  try {
+    validateEnvironment(env.ENVIRONMENT_NAME);
+    validateTlsMode(env.SQL_TLS_MODE);
+    if (!env.SQL_SERVER_CONNECTION || !env.SQL_DATABASE_NAME || !env.GITHUB_OUTPUT || !env.GITHUB_ACTION_PATH || !env.RUNNER_TEMP) throw new Error("INPUT_REQUIRED");
+  } catch { throw terminalFailure(null, "WRAPPER", "PRECONDITION_FAILED"); }
   const executable = prepareSqlDiscovery(env, execute);
-  const child = execute("dotnet", [executable, "--v2"], {
-    encoding: "utf8", env, timeout: 180_000, maxBuffer: 1024 * 1024
-  });
+  let child;
+  try {
+    child = execute("dotnet", [executable, "--v2"], {
+      encoding: "utf8", env, timeout: 180_000, maxBuffer: 1024 * 1024
+    });
+  } catch { throw terminalFailure(env, "CHILD_START", "CHILD_START_FAILED"); }
+  if (Number.isSafeInteger(child.status)) context.childExitCode = child.status;
   if (child.error) throw terminalFailure(env, "CHILD_START", "CHILD_START_FAILED");
   if (child.status !== 0) {
     if (!FAILURE_REASONS.has(child.status)) throw terminalFailure(env, "CLI_EXIT", "CLI_EXIT_UNRECOGNIZED", child.status);
     let failure;
     try { failure = validateFailureEnvelope(JSON.parse(child.stdout), child.status); }
     catch { throw terminalFailure(env, "ENVELOPE_VALIDATION", "ENVELOPE_VALIDATION_FAILED", child.status); }
-    appendOutput(env.GITHUB_OUTPUT, "failure-evidence-json", JSON.stringify(failure));
-    appendOutput(env.GITHUB_OUTPUT, "execution-exit-code", String(failure.executionExitCode));
-    appendOutput(env.GITHUB_OUTPUT, "execution-reason-code", failure.executionReasonCode);
-    throw terminalFailure(env, "CLI_EXIT", "CLI_FAILURE_ENVELOPE_ACCEPTED", child.status);
+    const terminal = terminalFailure(env, "CLI_EXIT", "CLI_FAILURE_ENVELOPE_ACCEPTED", child.status);
+    terminal.failureEnvelope = failure;
+    throw terminal;
   }
-  const evidence = validateEvidence(JSON.parse(child.stdout));
+  let evidence;
+  try { evidence = validateEvidence(JSON.parse(child.stdout)); }
+  catch { throw terminalFailure(null, "ENVELOPE_VALIDATION", "ENVELOPE_VALIDATION_FAILED", child.status); }
   const { observedDatabaseIdentity, ...classificationEvidence } = evidence;
   const serialized = JSON.stringify(classificationEvidence);
   appendOutput(env.GITHUB_OUTPUT, "evidence-json", serialized);
@@ -202,9 +243,9 @@ export function runPublicSqlDiscovery(env = process.env, execute = spawnSync) {
   return evidence;
 }
 
-function main() {
-  try { runPublicSqlDiscovery(); }
-  catch (error) { console.error(formatTerminalDiagnostic(error)); process.exitCode = 1; }
+export function runSqlDiscoveryCli(env = process.env, execute = spawnSync, diagnostic = line => console.error(line)) {
+  try { runPublicSqlDiscovery(env, execute); return 0; }
+  catch (error) { diagnostic(formatTerminalDiagnostic(error)); return 1; }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) process.exitCode = runSqlDiscoveryCli();
