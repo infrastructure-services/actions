@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { runPublicSqlDiscovery, validateEnvironment as validateSqlEnvironment, validateTlsMode } from "../scripts/run-sql-discovery-v2-public.mjs";
+import { formatTerminalDiagnostic, runPublicSqlDiscovery, validateEnvironment as validateSqlEnvironment, validateTlsMode } from "../scripts/run-sql-discovery-v2-public.mjs";
 import { buildRequest, runPublicRepositoryDiscovery, validateEnvironment as validateRepositoryEnvironment } from "../scripts/run-repository-discovery-v2-public.mjs";
 import { TECHNICAL_CATEGORIES } from "../scripts/empty-for-new-ef-v1.mjs";
 
@@ -48,6 +48,11 @@ const sqlExecutor = (evidence, observe = () => {}) => {
     call += 1;
     return call < 3 ? { status: 0, stdout: "restore/build log\n", stderr: "" } : { status: 0, stdout: JSON.stringify(evidence), stderr: "" };
   };
+};
+const captureTerminal = (env, execute) => {
+  try { runPublicSqlDiscovery(env, execute); }
+  catch (error) { return { error, line: formatTerminalDiagnostic(error) }; }
+  assert.fail("expected terminal failure");
 };
 
 try {
@@ -102,10 +107,32 @@ try {
       assert.equal(persisted.includes(env.SQL_SERVER_CONNECTION), false);
     });
   }
-  test("SQL no filtra secreto ante error", () => {
-    const env = sqlEnv("sql-error");
-    assert.throws(() => runPublicSqlDiscovery(env, () => ({ status: 1, stdout: "", stderr: env.SQL_SERVER_CONNECTION })), /SQL_DISCOVERY_RESTORE_FAILED/);
-    assert.equal(fs.existsSync(env.GITHUB_OUTPUT), false);
+  test("SQL restore failure publica sólo terminal sanitizado", () => {
+    const env = sqlEnv("sql-restore-error");
+    const terminal = captureTerminal(env, () => ({ status: 1, stdout: env.SQL_SERVER_CONNECTION, stderr: "raw restore secret" }));
+    assert.equal(terminal.line, "sql-discovery-v2: terminalPhase=RESTORE terminalReasonCode=RESTORE_FAILED childExitCode=1");
+    const persisted = fs.readFileSync(env.GITHUB_OUTPUT, "utf8");
+    assert.match(persisted, /terminal-phase[\s\S]*RESTORE/u);
+    assert.doesNotMatch(terminal.line + persisted, /raw restore secret|Password=|secret\.example/iu);
+  });
+  test("SQL build failure se distingue de restore", () => {
+    const env = sqlEnv("sql-build-error"); let call = 0;
+    const terminal = captureTerminal(env, () => (++call === 1 ? { status: 0, stdout: "ok", stderr: "" }
+      : { status: 2, stdout: "raw build stdout", stderr: "raw build stderr" }));
+    assert.equal(terminal.line, "sql-discovery-v2: terminalPhase=BUILD terminalReasonCode=BUILD_FAILED childExitCode=2");
+    assert.doesNotMatch(terminal.line + fs.readFileSync(env.GITHUB_OUTPUT, "utf8"), /raw build/iu);
+  });
+  test("SQL child start failure no publica excepción", () => {
+    const env = sqlEnv("sql-child-start"); let call = 0;
+    const terminal = captureTerminal(env, () => (++call < 3 ? { status: 0, stdout: "ok", stderr: "" }
+      : { status: null, stdout: "raw stdout", stderr: "raw stderr", error: new Error(env.SQL_SERVER_CONNECTION) }));
+    assert.equal(terminal.line, "sql-discovery-v2: terminalPhase=CHILD_START terminalReasonCode=CHILD_START_FAILED");
+    assert.doesNotMatch(terminal.line + fs.readFileSync(env.GITHUB_OUTPUT, "utf8"), /raw stdout|raw stderr|Password=|secret\.example/iu);
+  });
+  test("SQL success normal no publica terminal failure", () => {
+    const env = sqlEnv("sql-success-terminal");
+    assert.equal(runPublicSqlDiscovery(env, sqlExecutor(sqlEvidence("SUCCEEDED"))).serverConnectionStatus, "SUCCEEDED");
+    assert.doesNotMatch(fs.readFileSync(env.GITHUB_OUTPUT, "utf8"), /terminal-(?:phase|reason-code|child-exit-code)/u);
   });
   test("SQL falla cerrado sin identidad target", () => {
     const env = sqlEnv("sql-missing-identity");
@@ -120,7 +147,8 @@ try {
     const execute = () => (++call < 3
       ? { status: 0, stdout: "restore/build log\n", stderr: "" }
       : { status: 75, stdout: JSON.stringify(envelope), stderr: "SQL_DISCOVERY_PROJECTION_BLOCKED" });
-    assert.throws(() => runPublicSqlDiscovery(env, execute), /SQL_DISCOVERY_PROJECTION_BLOCKED/);
+    const terminal = captureTerminal(env, execute);
+    assert.equal(terminal.line, "sql-discovery-v2: terminalPhase=CLI_EXIT terminalReasonCode=CLI_FAILURE_ENVELOPE_ACCEPTED childExitCode=75");
     const persisted = fs.readFileSync(env.GITHUB_OUTPUT, "utf8");
     assert.match(persisted, /execution-exit-code[\s\S]*75/u);
     assert.match(persisted, /OBSERVED_DATABASE_IDENTITY_UNAVAILABLE/u);
@@ -132,7 +160,8 @@ try {
     let call = 0;
     const execute = () => (++call < 3 ? { status: 0, stdout: "ok", stderr: "" }
       : { status: 70, stdout: JSON.stringify(envelope), stderr: "private" });
-    assert.throws(() => runPublicSqlDiscovery(env, execute), /SQL_DISCOVERY_INTERNAL_ERROR/);
+    const terminal = captureTerminal(env, execute);
+    assert.equal(terminal.line, "sql-discovery-v2: terminalPhase=CLI_EXIT terminalReasonCode=CLI_FAILURE_ENVELOPE_ACCEPTED childExitCode=70");
     const persisted = fs.readFileSync(env.GITHUB_OUTPUT, "utf8");
     assert.match(persisted, /TEST_UNTRUSTED_CERTIFICATE/u);
     assert.doesNotMatch(persisted, /private|Password=|Server=|stackTrace|message/iu);
@@ -141,8 +170,18 @@ try {
     const env = sqlEnv("sql-malformed-failure"); let call = 0;
     const execute = () => (++call < 3 ? { status: 0, stdout: "ok", stderr: "" }
       : { status: 75, stdout: '{"executionExitCode":75,"secret":"Password=do-not-expose"}', stderr: env.SQL_SERVER_CONNECTION });
-    assert.throws(() => runPublicSqlDiscovery(env, execute), /SQL_DISCOVERY_EXECUTION_FAILED/);
-    assert.equal(fs.existsSync(env.GITHUB_OUTPUT), false);
+    const terminal = captureTerminal(env, execute);
+    assert.equal(terminal.line, "sql-discovery-v2: terminalPhase=ENVELOPE_VALIDATION terminalReasonCode=ENVELOPE_VALIDATION_FAILED childExitCode=75");
+    const persisted = fs.readFileSync(env.GITHUB_OUTPUT, "utf8");
+    assert.doesNotMatch(terminal.line + persisted, /do-not-expose|Password=|secret/u);
+  });
+  test("SQL exit desconocido publica sólo el número", () => {
+    const env = sqlEnv("sql-unknown-exit"); let call = 0;
+    const execute = () => (++call < 3 ? { status: 0, stdout: "ok", stderr: "" }
+      : { status: 9, stdout: env.SQL_SERVER_CONNECTION, stderr: "raw unknown stderr" });
+    const terminal = captureTerminal(env, execute);
+    assert.equal(terminal.line, "sql-discovery-v2: terminalPhase=CLI_EXIT terminalReasonCode=CLI_EXIT_UNRECOGNIZED childExitCode=9");
+    assert.doesNotMatch(terminal.line + fs.readFileSync(env.GITHUB_OUTPUT, "utf8"), /raw unknown|Password=|secret\.example/iu);
   });
   test("SQL publica outputs de identidad observada", () => {
     const env = sqlEnv("sql-identity");
@@ -212,6 +251,10 @@ try {
       assert.match(text, /environment-name:\n\s+description:[^\n]+\n\s+required: true/);
       assert.doesNotMatch(text, /environment-name:[\s\S]{0,160}default:\s*TEST/);
       assert.match(text, /shell: bash/);
+      if (action === "sql-discovery-v2") {
+        for (const name of ["terminal-phase", "terminal-reason-code", "terminal-child-exit-code"])
+          assert.match(text, new RegExp(`^  ${name}:`, "mu"));
+      }
     }
   });
   test("runners no contienen mutaciones SQL ni eval", () => {

@@ -126,9 +126,32 @@ function appendOutput(file, name, value) {
   fs.appendFileSync(file, `${name}<<SQL_DISCOVERY_V2_EOF\n${value}\nSQL_DISCOVERY_V2_EOF\n`, { encoding: "utf8" });
 }
 
-function runDotnet(execute, args, options, failureCode) {
+function terminalFailure(env, terminalPhase, terminalReasonCode, childExitCode) {
+  const terminal = { terminalPhase, terminalReasonCode, ...(Number.isInteger(childExitCode) ? { childExitCode } : {}) };
+  if (env?.GITHUB_OUTPUT) {
+    appendOutput(env.GITHUB_OUTPUT, "terminal-phase", terminalPhase);
+    appendOutput(env.GITHUB_OUTPUT, "terminal-reason-code", terminalReasonCode);
+    appendOutput(env.GITHUB_OUTPUT, "terminal-child-exit-code", terminal.childExitCode === undefined ? "" : String(terminal.childExitCode));
+  }
+  const error = new Error("SQL_DISCOVERY_TERMINAL_FAILURE");
+  error.terminal = terminal;
+  return error;
+}
+
+export function formatTerminalDiagnostic(error) {
+  const terminal = error?.terminal;
+  if (terminal === null || typeof terminal !== "object"
+      || !["RESTORE", "BUILD", "CHILD_START", "CLI_EXIT", "ENVELOPE_VALIDATION"].includes(terminal.terminalPhase)
+      || !["RESTORE_FAILED", "BUILD_FAILED", "CHILD_START_FAILED", "CLI_EXIT_UNRECOGNIZED", "ENVELOPE_VALIDATION_FAILED", "CLI_FAILURE_ENVELOPE_ACCEPTED"].includes(terminal.terminalReasonCode)
+      || !(terminal.childExitCode === undefined || Number.isInteger(terminal.childExitCode)))
+    return "sql-discovery-v2: EXECUTION_FAILED";
+  const child = terminal.childExitCode === undefined ? "" : ` childExitCode=${terminal.childExitCode}`;
+  return `sql-discovery-v2: terminalPhase=${terminal.terminalPhase} terminalReasonCode=${terminal.terminalReasonCode}${child}`;
+}
+
+function runDotnet(env, execute, args, options, terminalPhase, terminalReasonCode) {
   const child = execute("dotnet", args, options);
-  if (child.error || child.status !== 0) throw new Error(failureCode);
+  if (child.error || child.status !== 0) throw terminalFailure(env, terminalPhase, terminalReasonCode, child.status);
   return child;
 }
 
@@ -143,8 +166,8 @@ export function prepareSqlDiscovery(env = process.env, execute = spawnSync) {
   delete buildEnv.SQL_SERVER_CONNECTION;
 
   const common = { encoding: "utf8", env: buildEnv, timeout: 180_000, maxBuffer: 1024 * 1024 };
-  runDotnet(execute, ["restore", project, "--configfile", config, `--property:BaseIntermediateOutputPath=${baseIntermediate}`, "--verbosity", "minimal"], common, "SQL_DISCOVERY_RESTORE_FAILED");
-  runDotnet(execute, ["build", project, "--no-restore", "--configuration", "Release", `--property:BaseOutputPath=${baseOutput}`, `--property:BaseIntermediateOutputPath=${baseIntermediate}`, "--verbosity", "minimal"], common, "SQL_DISCOVERY_BUILD_FAILED");
+  runDotnet(env, execute, ["restore", project, "--configfile", config, `--property:BaseIntermediateOutputPath=${baseIntermediate}`, "--verbosity", "minimal"], common, "RESTORE", "RESTORE_FAILED");
+  runDotnet(env, execute, ["build", project, "--no-restore", "--configuration", "Release", `--property:BaseOutputPath=${baseOutput}`, `--property:BaseIntermediateOutputPath=${baseIntermediate}`, "--verbosity", "minimal"], common, "BUILD", "BUILD_FAILED");
   return path.join(baseOutput, "Release", "net10.0", "SqlDiscovery.dll");
 }
 
@@ -156,17 +179,16 @@ export function runPublicSqlDiscovery(env = process.env, execute = spawnSync) {
   const child = execute("dotnet", [executable, "--v2"], {
     encoding: "utf8", env, timeout: 180_000, maxBuffer: 1024 * 1024
   });
-  if (child.error) throw new Error("SQL_DISCOVERY_EXECUTION_FAILED");
+  if (child.error) throw terminalFailure(env, "CHILD_START", "CHILD_START_FAILED");
   if (child.status !== 0) {
-    if (!FAILURE_REASONS.has(child.status)) throw new Error("SQL_DISCOVERY_EXECUTION_FAILED");
+    if (!FAILURE_REASONS.has(child.status)) throw terminalFailure(env, "CLI_EXIT", "CLI_EXIT_UNRECOGNIZED", child.status);
     let failure;
     try { failure = validateFailureEnvelope(JSON.parse(child.stdout), child.status); }
-    catch { throw new Error("SQL_DISCOVERY_EXECUTION_FAILED"); }
+    catch { throw terminalFailure(env, "ENVELOPE_VALIDATION", "ENVELOPE_VALIDATION_FAILED", child.status); }
     appendOutput(env.GITHUB_OUTPUT, "failure-evidence-json", JSON.stringify(failure));
     appendOutput(env.GITHUB_OUTPUT, "execution-exit-code", String(failure.executionExitCode));
     appendOutput(env.GITHUB_OUTPUT, "execution-reason-code", failure.executionReasonCode);
-    console.error(`sql-discovery-v2: ${failure.executionReasonCode} (exit ${failure.executionExitCode}); sanitized failure evidence published`);
-    throw new Error(failure.executionReasonCode);
+    throw terminalFailure(env, "CLI_EXIT", "CLI_FAILURE_ENVELOPE_ACCEPTED", child.status);
   }
   const evidence = validateEvidence(JSON.parse(child.stdout));
   const { observedDatabaseIdentity, ...classificationEvidence } = evidence;
@@ -182,7 +204,7 @@ export function runPublicSqlDiscovery(env = process.env, execute = spawnSync) {
 
 function main() {
   try { runPublicSqlDiscovery(); }
-  catch { console.error("sql-discovery-v2: EXECUTION_FAILED"); process.exitCode = 1; }
+  catch (error) { console.error(formatTerminalDiagnostic(error)); process.exitCode = 1; }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
