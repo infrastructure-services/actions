@@ -28,6 +28,19 @@ const sqlEvidence = targetStatus => ({
   historySource: { status: targetStatus === "SUCCEEDED" ? "PRESENT" : "NOT_ATTEMPTED", ...(targetStatus === "SUCCEEDED" ? { migrationCount: 1, migrationIds: ["20260101000000_A"] } : {}) },
   ...(targetStatus === "SUCCEEDED" ? { observedDatabaseIdentity: { serverInstance: "SQLNODE01\\INSTANCE", databaseName: "ObservedDb" } } : {})
 });
+const failureEvidence = (exitCode, reason, withStages = true) => ({
+  failureContractVersion: 1, executionExitCode: exitCode, executionReasonCode: reason,
+  tls: { tlsRequestedMode: "TEST_UNTRUSTED_CERTIFICATE", tlsInitialMode: "TEST_UNTRUSTED_CERTIFICATE", tlsInitialResult: "OTHER_FAILURE",
+    tlsFallbackAllowed: false, tlsFallbackAttempted: false, tlsEffectiveMode: "TEST_UNTRUSTED_CERTIFICATE",
+    tlsCertificateValidated: false, transportEncrypted: true, tlsPolicySource: "EXPLICIT_TEST_CONFIGURATION",
+    diagnosticFingerprint: { exceptionType: "System.InvalidOperationException", hResult: "0x80131509", sqlExceptionNumber: null,
+      sqlErrorNumbers: [], sqlErrorStates: [], sqlErrorClasses: [], innerExceptionType: null, innerHResult: null,
+      nativeErrorCode: null, tlsFailureCategory: "UNKNOWN" } },
+  projectionRepresentable: exitCode === 75 ? false : null,
+  projectionGaps: exitCode === 75 ? ["OBSERVED_DATABASE_IDENTITY_UNAVAILABLE"] : [],
+  ...(withStages ? { serverConnectionStatus: "SUCCEEDED", databaseLookupStatus: "FOUND", targetConnectionStatus: "SUCCEEDED",
+    metadataStatus: "SUFFICIENT", physicalStatus: "OBSERVED", historyStatus: "PRESENT" } : {})
+});
 const sqlExecutor = (evidence, observe = () => {}) => {
   let call = 0;
   return (command, args, options) => {
@@ -100,12 +113,34 @@ try {
     assert.throws(() => runPublicSqlDiscovery(env, sqlExecutor(evidence)), /EVIDENCE_INVALID/);
     assert.equal(fs.existsSync(env.GITHUB_OUTPUT), false);
   });
-  test("SQL no publica outputs parciales si la identidad bloquea el CLI", () => {
+  test("SQL projection blocked preserva envelope y mantiene failure", () => {
     const env = sqlEnv("sql-identity-cli-blocked");
+    const envelope = failureEvidence(75, "SQL_DISCOVERY_PROJECTION_BLOCKED");
     let call = 0;
     const execute = () => (++call < 3
       ? { status: 0, stdout: "restore/build log\n", stderr: "" }
-      : { status: 75, stdout: "", stderr: "SQL_DISCOVERY_PROJECTION_BLOCKED" });
+      : { status: 75, stdout: JSON.stringify(envelope), stderr: "SQL_DISCOVERY_PROJECTION_BLOCKED" });
+    assert.throws(() => runPublicSqlDiscovery(env, execute), /SQL_DISCOVERY_PROJECTION_BLOCKED/);
+    const persisted = fs.readFileSync(env.GITHUB_OUTPUT, "utf8");
+    assert.match(persisted, /execution-exit-code[\s\S]*75/u);
+    assert.match(persisted, /OBSERVED_DATABASE_IDENTITY_UNAVAILABLE/u);
+    assert.equal(persisted.includes(env.SQL_SERVER_CONNECTION), false);
+  });
+  test("SQL internal error con transport preserva TLS y mantiene failure", () => {
+    const env = sqlEnv("sql-internal-error");
+    const envelope = failureEvidence(70, "SQL_DISCOVERY_INTERNAL_ERROR", false);
+    let call = 0;
+    const execute = () => (++call < 3 ? { status: 0, stdout: "ok", stderr: "" }
+      : { status: 70, stdout: JSON.stringify(envelope), stderr: "private" });
+    assert.throws(() => runPublicSqlDiscovery(env, execute), /SQL_DISCOVERY_INTERNAL_ERROR/);
+    const persisted = fs.readFileSync(env.GITHUB_OUTPUT, "utf8");
+    assert.match(persisted, /TEST_UNTRUSTED_CERTIFICATE/u);
+    assert.doesNotMatch(persisted, /private|Password=|Server=|stackTrace|message/iu);
+  });
+  test("SQL malformed child output falla cerrado sin evidencia falsa", () => {
+    const env = sqlEnv("sql-malformed-failure"); let call = 0;
+    const execute = () => (++call < 3 ? { status: 0, stdout: "ok", stderr: "" }
+      : { status: 75, stdout: '{"executionExitCode":75,"secret":"Password=do-not-expose"}', stderr: env.SQL_SERVER_CONNECTION });
     assert.throws(() => runPublicSqlDiscovery(env, execute), /SQL_DISCOVERY_EXECUTION_FAILED/);
     assert.equal(fs.existsSync(env.GITHUB_OUTPUT), false);
   });

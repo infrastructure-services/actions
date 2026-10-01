@@ -82,6 +82,46 @@ export function validateEvidence(value) {
   return value;
 }
 
+const FAILURE_REASONS = new Map([[70, "SQL_DISCOVERY_INTERNAL_ERROR"], [75, "SQL_DISCOVERY_PROJECTION_BLOCKED"]]);
+const PROJECTION_GAPS = new Set([
+  "OBSERVED_DATABASE_IDENTITY_UNAVAILABLE", "CONNECTION_STATE_UNREPRESENTABLE", "TARGET_CONNECTION_STATE_UNREPRESENTABLE",
+  "DATABASE_LOOKUP_STATE_UNREPRESENTABLE", "METADATA_STATE_UNREPRESENTABLE", "PHYSICAL_PARTIAL_UNREPRESENTABLE",
+  "PHYSICAL_STATE_UNREPRESENTABLE", "PHYSICAL_COMPLETE_COUNT_REQUIRED", "PHYSICAL_TAXONOMY_INVALID",
+  "PHYSICAL_TAXONOMY_REQUIRED", "HISTORY_STATE_UNREPRESENTABLE"
+]);
+const STAGE_FAILURE_STATUS = {
+  serverConnectionStatus: CONNECTION_STATUSES,
+  databaseLookupStatus: STATUS.databaseLookupSource,
+  targetConnectionStatus: CONNECTION_STATUSES,
+  metadataStatus: STATUS.metadataSource,
+  physicalStatus: new Set([...STATUS.physicalSource, "PARTIAL"]),
+  historyStatus: STATUS.historySource
+};
+
+export function validateFailureEnvelope(value, exitCode) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)
+      || Object.keys(value).some(key => !["failureContractVersion", "executionExitCode", "executionReasonCode", "tls", "projectionRepresentable", "projectionGaps", ...Object.keys(STAGE_FAILURE_STATUS)].includes(key))
+      || value.failureContractVersion !== 1 || value.executionExitCode !== exitCode
+      || value.executionReasonCode !== FAILURE_REASONS.get(exitCode)
+      || value.projectionRepresentable !== (exitCode === 75 ? false : null)
+      || !Array.isArray(value.projectionGaps)
+      || value.projectionGaps.some(code => !PROJECTION_GAPS.has(code))
+      || new Set(value.projectionGaps).size !== value.projectionGaps.length)
+    throw new Error("FAILURE_EVIDENCE_INVALID");
+  validateEvidence({
+    tls: value.tls,
+    serverConnectionStatus: "NOT_ATTEMPTED",
+    connectionSource: { status: "NOT_ATTEMPTED" }, databaseLookupSource: { status: "NOT_ATTEMPTED" },
+    targetConnectionSource: { status: "NOT_ATTEMPTED" }, metadataSource: { status: "NOT_ATTEMPTED" },
+    physicalSource: { status: "NOT_ATTEMPTED" }, historySource: { status: "NOT_ATTEMPTED" }
+  });
+  const present = Object.keys(STAGE_FAILURE_STATUS).filter(key => Object.hasOwn(value, key));
+  if (present.length !== 0 && present.length !== Object.keys(STAGE_FAILURE_STATUS).length) throw new Error("FAILURE_EVIDENCE_INVALID");
+  for (const key of present) if (!STAGE_FAILURE_STATUS[key].has(value[key])) throw new Error("FAILURE_EVIDENCE_INVALID");
+  if (exitCode === 75 && (value.projectionGaps.length === 0 || present.length === 0)) throw new Error("FAILURE_EVIDENCE_INVALID");
+  return value;
+}
+
 function appendOutput(file, name, value) {
   fs.appendFileSync(file, `${name}<<SQL_DISCOVERY_V2_EOF\n${value}\nSQL_DISCOVERY_V2_EOF\n`, { encoding: "utf8" });
 }
@@ -116,7 +156,18 @@ export function runPublicSqlDiscovery(env = process.env, execute = spawnSync) {
   const child = execute("dotnet", [executable, "--v2"], {
     encoding: "utf8", env, timeout: 180_000, maxBuffer: 1024 * 1024
   });
-  if (child.error || child.status !== 0) throw new Error("SQL_DISCOVERY_EXECUTION_FAILED");
+  if (child.error) throw new Error("SQL_DISCOVERY_EXECUTION_FAILED");
+  if (child.status !== 0) {
+    if (!FAILURE_REASONS.has(child.status)) throw new Error("SQL_DISCOVERY_EXECUTION_FAILED");
+    let failure;
+    try { failure = validateFailureEnvelope(JSON.parse(child.stdout), child.status); }
+    catch { throw new Error("SQL_DISCOVERY_EXECUTION_FAILED"); }
+    appendOutput(env.GITHUB_OUTPUT, "failure-evidence-json", JSON.stringify(failure));
+    appendOutput(env.GITHUB_OUTPUT, "execution-exit-code", String(failure.executionExitCode));
+    appendOutput(env.GITHUB_OUTPUT, "execution-reason-code", failure.executionReasonCode);
+    console.error(`sql-discovery-v2: ${failure.executionReasonCode} (exit ${failure.executionExitCode}); sanitized failure evidence published`);
+    throw new Error(failure.executionReasonCode);
+  }
   const evidence = validateEvidence(JSON.parse(child.stdout));
   const { observedDatabaseIdentity, ...classificationEvidence } = evidence;
   const serialized = JSON.stringify(classificationEvidence);

@@ -21,6 +21,15 @@ inputs:
     default: 10.0.x
 
 outputs:
+  failure-evidence-json:
+    description: Envelope terminal sanitizado; sólo se publica para fallos CLI reconocidos y validados.
+    value: ${{ steps.discover.outputs.failure-evidence-json }}
+  execution-exit-code:
+    description: Exit code preservado del CLI para un fallo reconocido.
+    value: ${{ steps.discover.outputs.execution-exit-code }}
+  execution-reason-code:
+    description: Reason code terminal sanitizado del CLI para un fallo reconocido.
+    value: ${{ steps.discover.outputs.execution-reason-code }}
   evidence-json:
     description: Fuentes SQL V2 estructuradas y sanitizadas.
     value: ${{ steps.discover.outputs.evidence-json }}
