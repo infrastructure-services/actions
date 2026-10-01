@@ -5,7 +5,11 @@ using Microsoft.Data.SqlClient;
 
 namespace SqlDiscovery.V2;
 
-public sealed class SqlClientDiscoveryTransportV2(int connectionTimeoutSeconds = 15, int commandTimeoutSeconds = 30) : ISqlDiscoveryTransport
+public sealed class SqlClientDiscoveryTransportV2(
+    int connectionTimeoutSeconds = 15,
+    int commandTimeoutSeconds = 30,
+    string environmentName = "TEST",
+    bool allowTestUntrustedCertificateFallback = false) : ISqlDiscoveryTransport
 {
     private const string ServerCatalog = "master";
     private const string HistorySchema = "dbo";
@@ -14,17 +18,17 @@ public sealed class SqlClientDiscoveryTransportV2(int connectionTimeoutSeconds =
     public int ConnectionTimeoutSeconds { get; } = RequirePositive(connectionTimeoutSeconds, nameof(connectionTimeoutSeconds));
     public int CommandTimeoutSeconds { get; } = RequirePositive(commandTimeoutSeconds, nameof(commandTimeoutSeconds));
     public int RetryCount => 0;
+    private readonly TestTlsFallbackPolicy tlsPolicy = new(environmentName, allowTestUntrustedCertificateFallback);
+    public TlsDiscoveryEvidence TlsEvidence => tlsPolicy.Evidence;
 
     public async Task ConnectServerAsync(SqlDiscoveryTarget target, CancellationToken cancellationToken)
     {
-        await using var connection = CreateConnection(target, ServerCatalog);
-        await OpenAsync(connection, cancellationToken);
+        await using var connection = await OpenConnectionAsync(target, ServerCatalog, cancellationToken);
     }
 
     public async Task<DatabaseLookupResult> LookupDatabaseAsync(SqlDiscoveryTarget target, CancellationToken cancellationToken)
     {
-        await using var connection = CreateConnection(target, ServerCatalog);
-        await OpenAsync(connection, cancellationToken);
+        await using var connection = await OpenConnectionAsync(target, ServerCatalog, cancellationToken);
         await using var command = CreateCommand(connection, """
             SELECT
                 CASE WHEN EXISTS (SELECT 1 FROM sys.databases WHERE name = @databaseName) THEN 1 ELSE 0 END,
@@ -44,8 +48,7 @@ public sealed class SqlClientDiscoveryTransportV2(int connectionTimeoutSeconds =
 
     public async Task<ObservedIdentityResult> ConnectTargetAsync(SqlDiscoveryTarget target, CancellationToken cancellationToken)
     {
-        await using var connection = CreateConnection(target, target.DatabaseName);
-        await OpenAsync(connection, cancellationToken);
+        await using var connection = await OpenConnectionAsync(target, target.DatabaseName, cancellationToken);
         try
         {
             await using var command = CreateCommand(connection, """
@@ -69,8 +72,7 @@ public sealed class SqlClientDiscoveryTransportV2(int connectionTimeoutSeconds =
 
     public async Task<MetadataResult> InspectMetadataAsync(SqlDiscoveryTarget target, CancellationToken cancellationToken)
     {
-        await using var connection = CreateConnection(target, target.DatabaseName);
-        await OpenAsync(connection, cancellationToken);
+        await using var connection = await OpenConnectionAsync(target, target.DatabaseName, cancellationToken);
         await using var command = CreateCommand(connection, "SELECT CASE WHEN HAS_PERMS_BY_NAME(DB_NAME(), N'DATABASE', N'VIEW DEFINITION') = 1 THEN 1 ELSE 0 END;");
         var value = await command.ExecuteScalarAsync(cancellationToken);
         return Convert.ToInt32(value) == 1 ? new(MetadataStatus.Sufficient) : new(MetadataStatus.Insufficient, new("METADATA", "VISIBILITY_INSUFFICIENT"));
@@ -78,8 +80,7 @@ public sealed class SqlClientDiscoveryTransportV2(int connectionTimeoutSeconds =
 
     public async Task<PhysicalResult> ObservePhysicalAsync(SqlDiscoveryTarget target, CancellationToken cancellationToken)
     {
-        await using var connection = CreateConnection(target, target.DatabaseName);
-        await OpenAsync(connection, cancellationToken);
+        await using var connection = await OpenConnectionAsync(target, target.DatabaseName, cancellationToken);
         await using var command = CreateCommand(connection, EmptyForNewEfV1.Sql);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         return await EmptyForNewEfV1.ReadAsync(reader, cancellationToken);
@@ -87,8 +88,7 @@ public sealed class SqlClientDiscoveryTransportV2(int connectionTimeoutSeconds =
 
     public async Task<HistoryResult> ObserveHistoryAsync(SqlDiscoveryTarget target, CancellationToken cancellationToken)
     {
-        await using var connection = CreateConnection(target, target.DatabaseName);
-        await OpenAsync(connection, cancellationToken);
+        await using var connection = await OpenConnectionAsync(target, target.DatabaseName, cancellationToken);
         await using var structure = CreateCommand(connection, """
             SELECT
                 CASE WHEN OBJECT_ID(N'dbo.__EFMigrationsHistory') IS NULL THEN 0 ELSE 1 END,
@@ -146,7 +146,7 @@ public sealed class SqlClientDiscoveryTransportV2(int connectionTimeoutSeconds =
         return null;
     }
 
-    private SqlConnection CreateConnection(SqlDiscoveryTarget target, string catalog)
+    private SqlConnection CreateConnection(SqlDiscoveryTarget target, string catalog, SqlTlsMode tlsMode)
     {
         var builder = new SqlConnectionStringBuilder(target.ServerConnectionString)
         {
@@ -155,13 +155,29 @@ public sealed class SqlClientDiscoveryTransportV2(int connectionTimeoutSeconds =
             ApplicationName = "cicd-sql-discovery-v2",
             ConnectTimeout = ConnectionTimeoutSeconds,
             ConnectRetryCount = 0,
-            Encrypt = SqlConnectionEncryptOption.Strict,
-            TrustServerCertificate = false
+            Encrypt = tlsMode == SqlTlsMode.Strict ? SqlConnectionEncryptOption.Strict : SqlConnectionEncryptOption.Mandatory,
+            TrustServerCertificate = tlsMode == SqlTlsMode.TestUntrustedCertificate
         };
         return new SqlConnection(builder.ConnectionString);
     }
 
-    private async Task OpenAsync(SqlConnection connection, CancellationToken cancellationToken)
+    private Task<SqlConnection> OpenConnectionAsync(SqlDiscoveryTarget target, string catalog, CancellationToken cancellationToken) =>
+        tlsPolicy.ExecuteAsync(async (mode, token) =>
+        {
+            var connection = CreateConnection(target, catalog, mode);
+            try
+            {
+                await OpenAsync(connection, token);
+                return connection;
+            }
+            catch
+            {
+                await connection.DisposeAsync();
+                throw;
+            }
+        }, cancellationToken);
+
+    private static async Task OpenAsync(SqlConnection connection, CancellationToken cancellationToken)
     {
         try { await connection.OpenAsync(cancellationToken); }
         catch (SqlException exception) when (exception.Number == 18456) { throw new SqlDiscoveryAuthenticationException(); }

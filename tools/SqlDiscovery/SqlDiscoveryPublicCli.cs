@@ -8,7 +8,11 @@ public static class SqlDiscoveryPublicCli
     {
         var connection = Environment.GetEnvironmentVariable("SQL_SERVER_CONNECTION");
         var database = Environment.GetEnvironmentVariable("SQL_DATABASE_NAME");
-        if (string.IsNullOrWhiteSpace(connection) || string.IsNullOrWhiteSpace(database))
+        var environment = Environment.GetEnvironmentVariable("ENVIRONMENT_NAME");
+        var fallbackInput = Environment.GetEnvironmentVariable("ALLOW_TEST_UNTRUSTED_CERTIFICATE_FALLBACK") ?? "false";
+        var allowFallback = fallbackInput == "true";
+        if (string.IsNullOrWhiteSpace(connection) || string.IsNullOrWhiteSpace(database) || string.IsNullOrWhiteSpace(environment)
+            || fallbackInput is not ("true" or "false"))
         {
             Console.Error.WriteLine("SQL_DISCOVERY_INPUT_REQUIRED");
             return 64;
@@ -17,7 +21,10 @@ public static class SqlDiscoveryPublicCli
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(120));
-            var orchestrator = new SqlDiscoveryOrchestratorV2(new SqlClientDiscoveryTransportV2());
+            var transport = new SqlClientDiscoveryTransportV2(
+                environmentName: environment,
+                allowTestUntrustedCertificateFallback: allowFallback);
+            var orchestrator = new SqlDiscoveryOrchestratorV2(transport);
             var result = await orchestrator.DiscoverAsync(new SqlDiscoveryTarget(connection, database), timeout.Token);
             var projection = orchestrator.ProjectSources(result);
             if (!projection.IsRepresentable || projection.Sources is null)
@@ -28,6 +35,16 @@ public static class SqlDiscoveryPublicCli
 
             var publicEvidence = new Dictionary<string, object?>(projection.Sources)
             {
+                ["tls"] = new Dictionary<string, object?>
+                {
+                    ["tlsInitialMode"] = transport.TlsEvidence.TlsInitialMode,
+                    ["tlsInitialResult"] = transport.TlsEvidence.TlsInitialResult,
+                    ["tlsFallbackAllowed"] = transport.TlsEvidence.TlsFallbackAllowed,
+                    ["tlsFallbackAttempted"] = transport.TlsEvidence.TlsFallbackAttempted,
+                    ["tlsEffectiveMode"] = transport.TlsEvidence.TlsEffectiveMode,
+                    ["tlsCertificateValidated"] = transport.TlsEvidence.TlsCertificateValidated,
+                    ["transportEncrypted"] = transport.TlsEvidence.TransportEncrypted
+                },
                 ["serverConnectionStatus"] = result.ServerConnection.Status switch
                 {
                     ConnectionStatus.Succeeded => "SUCCEEDED",
