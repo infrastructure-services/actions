@@ -53,6 +53,7 @@ var tests = new List<(string Name, Func<Task> Run)>
     ("QA y PROD bloquean modo TLS TEST", TlsNonTestBlocked),
     ("clasificación TLS excluye identidad y no filtra secretos", TlsClassifierAndSanitization),
     ("fingerprint TLS sanitiza categorías y excepción interna", TlsDiagnosticFingerprint),
+    ("failure envelope preserva TLS etapas gaps y terminal sin secretos", FailureEnvelope),
     ("input conservado y resultados independientes", InputAndResultIsolation),
     ("integración real clasifica EXISTING_EF", IntegrationExistingEf),
     ("integración bloquea target fallido antes del productor", IntegrationTargetGap),
@@ -678,6 +679,35 @@ static Task TlsDiagnosticFingerprint()
     Equal("TRANSPORT_OTHER", nested.TlsFailureCategory);
     Equal(typeof(AuthenticationException).FullName, nested.InnerExceptionType);
     True(nested.InnerHResult?.StartsWith("0x", StringComparison.Ordinal) == true);
+    return Task.CompletedTask;
+}
+
+static Task FailureEnvelope()
+{
+    var fingerprint = SanitizedExceptionFingerprint.Capture(
+        new InvalidOperationException("Server=secret;Password=do-not-expose;token=hidden"));
+    var tls = new TlsDiscoveryEvidence(
+        "TEST_UNTRUSTED_CERTIFICATE", "TEST_UNTRUSTED_CERTIFICATE", "OTHER_FAILURE", false, false,
+        "TEST_UNTRUSTED_CERTIFICATE", false, true, "EXPLICIT_TEST_CONFIGURATION", fingerprint);
+    var result = new SqlDiscoveryResult(
+        new(ConnectionStatus.Succeeded), new(DatabaseLookupStatus.Found), new(ConnectionStatus.Succeeded),
+        AvailableIdentity(), new(MetadataStatus.Sufficient), new(PhysicalStatus.Partial),
+        new(HistoryStatus.NotAttempted));
+    var projection = SqlDiscoveryPublicCli.BuildFailureEnvelope(
+        75, "SQL_DISCOVERY_PROJECTION_BLOCKED", tls, result, ["PHYSICAL_PARTIAL_UNREPRESENTABLE"]);
+    var serialized = JsonSerializer.Serialize(projection);
+    Equal(75, (int)projection["executionExitCode"]!);
+    Equal(false, (bool)projection["projectionRepresentable"]!);
+    Equal("SUCCEEDED", (string)projection["serverConnectionStatus"]!);
+    Equal("PARTIAL", (string)projection["physicalStatus"]!);
+    foreach (var forbidden in new[] { "do-not-expose", "Server=", "Password=", "token=", "StackTrace", "Message" })
+        False(serialized.Contains(forbidden, StringComparison.OrdinalIgnoreCase));
+
+    var internalFailure = SqlDiscoveryPublicCli.BuildFailureEnvelope(
+        70, "SQL_DISCOVERY_INTERNAL_ERROR", tls);
+    True(internalFailure["projectionRepresentable"] is null);
+    False(internalFailure.ContainsKey("serverConnectionStatus"));
+    Throws<ArgumentException>(() => SqlDiscoveryPublicCli.BuildFailureEnvelope(1, "UNKNOWN", tls));
     return Task.CompletedTask;
 }
 
