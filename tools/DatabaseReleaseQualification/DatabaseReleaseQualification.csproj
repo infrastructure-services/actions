@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../SqlDiscovery/TestTlsFallbackPolicy.cs" Link="Shared/TestTlsFallbackPolicy.cs" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.2" />
     <PackageReference Include="Microsoft.SqlServer.TransactSql.ScriptDom" Version="180.102.0" />
   </ItemGroup>

@@ -189,7 +189,7 @@ public static class QualificationCli
         }
         catch (SchemaCaptureException exception)
         {
-            WriteFailureResult(resultPath, exception.Failure.Status, exception.Failure.DiagnosticCode);
+            WriteFailureResult(resultPath, exception.Failure.Status, exception.Failure.DiagnosticCode, exception.DiagnosticFingerprint);
             Console.Error.WriteLine($"SCHEMA_CAPTURE_FAILED:{exception.Failure.Status}:{exception.Failure.DiagnosticCode}");
             return exception.Failure.ExitCode;
         }
@@ -338,12 +338,12 @@ public static class QualificationCli
         }
     }
 
-    private static void WriteFailureResult(string? path, string status, string diagnosticCode)
+    private static void WriteFailureResult(string? path, string status, string diagnosticCode, object? diagnosticFingerprint = null)
     {
         if (string.IsNullOrWhiteSpace(path)) return;
         try
         {
-            WriteJsonResult(path, new { status, diagnosticCode });
+            WriteJsonResult(path, new { status, diagnosticCode, diagnosticFingerprint });
         }
         catch
         {

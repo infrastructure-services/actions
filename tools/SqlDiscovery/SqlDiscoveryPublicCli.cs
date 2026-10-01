@@ -33,18 +33,22 @@ public static class SqlDiscoveryPublicCli
                 return 75;
             }
 
+            var tlsEvidence = new Dictionary<string, object?>
+            {
+                ["tlsInitialMode"] = transport.TlsEvidence.TlsInitialMode,
+                ["tlsInitialResult"] = transport.TlsEvidence.TlsInitialResult,
+                ["tlsFallbackAllowed"] = transport.TlsEvidence.TlsFallbackAllowed,
+                ["tlsFallbackAttempted"] = transport.TlsEvidence.TlsFallbackAttempted,
+                ["tlsEffectiveMode"] = transport.TlsEvidence.TlsEffectiveMode,
+                ["tlsCertificateValidated"] = transport.TlsEvidence.TlsCertificateValidated,
+                ["transportEncrypted"] = transport.TlsEvidence.TransportEncrypted
+            };
+            if (transport.TlsEvidence.DiagnosticFingerprint is not null)
+                tlsEvidence["diagnosticFingerprint"] = transport.TlsEvidence.DiagnosticFingerprint;
+
             var publicEvidence = new Dictionary<string, object?>(projection.Sources)
             {
-                ["tls"] = new Dictionary<string, object?>
-                {
-                    ["tlsInitialMode"] = transport.TlsEvidence.TlsInitialMode,
-                    ["tlsInitialResult"] = transport.TlsEvidence.TlsInitialResult,
-                    ["tlsFallbackAllowed"] = transport.TlsEvidence.TlsFallbackAllowed,
-                    ["tlsFallbackAttempted"] = transport.TlsEvidence.TlsFallbackAttempted,
-                    ["tlsEffectiveMode"] = transport.TlsEvidence.TlsEffectiveMode,
-                    ["tlsCertificateValidated"] = transport.TlsEvidence.TlsCertificateValidated,
-                    ["transportEncrypted"] = transport.TlsEvidence.TransportEncrypted
-                },
+                ["tls"] = tlsEvidence,
                 ["serverConnectionStatus"] = result.ServerConnection.Status switch
                 {
                     ConnectionStatus.Succeeded => "SUCCEEDED",

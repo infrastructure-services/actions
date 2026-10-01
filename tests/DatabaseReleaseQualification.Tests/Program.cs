@@ -1,5 +1,7 @@
 using System.Text.Json;
 using DatabaseReleaseQualification;
+using Microsoft.Data.SqlClient;
+using SqlDiscovery.V2;
 
 var tests = new (string Name, Func<Task> Run)[]
 {
@@ -15,6 +17,8 @@ var tests = new (string Name, Func<Task> Run)[]
     ("discovery bloqueado permite capture pero no rehearsal", BlockedDiscoveryAllowsCaptureOnly),
     ("falta de metadata se clasifica de forma estable", MetadataVisibilityFailureIsClassified),
     ("fallo de conexión se clasifica de forma estable", ConnectionFailureIsClassified),
+    ("fingerprint SQL/TLS conserva sólo metadata sanitizada", SharedTlsFingerprintIsSanitized),
+    ("schema capture conserva contrato al adjuntar fingerprint", SchemaCaptureFailureCarriesFingerprint),
     ("guard de schema capture admite solo SELECT", SchemaCaptureSqlGuard),
     ("queries degradan por versión SQL Server", SqlServerVersionQueriesDegradeSafely),
     ("metadata SQL observa servidor y base con SELECT", ServerMetadataObservesIdentity),
@@ -421,6 +425,36 @@ static Task ConnectionFailureIsClassified()
     Equal(SchemaCaptureStatuses.DatabaseUnreachable, failure.Status);
     Equal("InvalidOperationException", failure.DiagnosticCode);
     Equal(4, failure.ExitCode);
+    return Task.CompletedTask;
+}
+
+static Task SharedTlsFingerprintIsSanitized()
+{
+    var sqlFingerprint = new SanitizedExceptionFingerprint(
+        typeof(SqlException).FullName!, "0x80131904", 0,
+        Array.AsReadOnly(new[] { 0, 17821 }), Array.AsReadOnly(new byte[] { 0, 1 }),
+        Array.AsReadOnly(new byte[] { 20, 20 }), typeof(System.Security.Authentication.AuthenticationException).FullName,
+        "0x80131501", null, "TRANSPORT_OTHER");
+    Equal(0, sqlFingerprint.SqlExceptionNumber);
+    True(sqlFingerprint.SqlErrorNumbers.SequenceEqual(new[] { 0, 17821 }));
+
+    var generic = SanitizedExceptionFingerprint.Capture(
+        new InvalidOperationException("Server=private;Password=secret;token=secret", new TimeoutException("private")));
+    var json = JsonSerializer.Serialize(generic);
+    foreach (var forbidden in new[] { "Server=", "Password=", "token=", "private", "StackTrace", "Message" })
+        True(!json.Contains(forbidden, StringComparison.OrdinalIgnoreCase));
+    Equal(typeof(TimeoutException).FullName, generic.InnerExceptionType);
+    return Task.CompletedTask;
+}
+
+static Task SchemaCaptureFailureCarriesFingerprint()
+{
+    var fingerprint = SanitizedExceptionFingerprint.Capture(new TimeoutException("private"));
+    var failure = SchemaCaptureErrorClassifier.Classify(SchemaCapturePhase.OpenConnection, new InvalidOperationException("private"));
+    var exception = new SchemaCaptureException(failure, new InvalidOperationException("private"), fingerprint);
+    Equal(SchemaCaptureStatuses.DatabaseUnreachable, exception.Failure.Status);
+    Equal(4, exception.Failure.ExitCode);
+    Equal("TIMEOUT", exception.DiagnosticFingerprint?.TlsFailureCategory);
     return Task.CompletedTask;
 }
 

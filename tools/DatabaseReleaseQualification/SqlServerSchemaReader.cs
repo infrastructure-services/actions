@@ -1,5 +1,6 @@
 using System.Globalization;
 using Microsoft.Data.SqlClient;
+using SqlDiscovery.V2;
 
 namespace DatabaseReleaseQualification;
 
@@ -42,7 +43,8 @@ public sealed class SqlServerSchemaReader
         catch (Exception exception)
         {
             throw new SchemaCaptureException(
-                SchemaCaptureErrorClassifier.Classify(SchemaCapturePhase.OpenConnection, exception), exception);
+                SchemaCaptureErrorClassifier.Classify(SchemaCapturePhase.OpenConnection, exception), exception,
+                SanitizedExceptionFingerprint.Capture(exception));
         }
 
         try

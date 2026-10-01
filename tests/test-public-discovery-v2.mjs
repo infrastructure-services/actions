@@ -60,6 +60,22 @@ try {
     assert.deepEqual(evidence.tls, value.tls);
     assert.equal(fs.readFileSync(env.GITHUB_OUTPUT, "utf8").includes(env.SQL_SERVER_CONNECTION), false);
   });
+  test("SQL publica fingerprint TLS cerrado y sanitizado para OTHER_FAILURE", () => {
+    const env = sqlEnv("sql-tls-diagnostic");
+    const value = sqlEvidence("TRANSPORT_FAILED");
+    value.tls.tlsInitialResult = "OTHER_FAILURE";
+    value.tls.tlsCertificateValidated = false;
+    value.tls.diagnosticFingerprint = {
+      exceptionType: "Microsoft.Data.SqlClient.SqlException", hResult: "0x80131904", sqlExceptionNumber: 0,
+      sqlErrorNumbers: [0, 10054], sqlErrorStates: [0, 0], sqlErrorClasses: [20, 20],
+      innerExceptionType: "System.Security.Authentication.AuthenticationException", innerHResult: "0x80131501",
+      nativeErrorCode: null, tlsFailureCategory: "TRANSPORT_OTHER"
+    };
+    const evidence = runPublicSqlDiscovery(env, sqlExecutor(value));
+    const persisted = fs.readFileSync(env.GITHUB_OUTPUT, "utf8");
+    assert.deepEqual(evidence.tls.diagnosticFingerprint.sqlErrorNumbers, [0, 10054]);
+    for (const forbidden of [env.SQL_SERVER_CONNECTION, "Password=", "token=", "stackTrace", "message"]) assert.equal(persisted.toLowerCase().includes(forbidden.toLowerCase()), false);
+  });
   for (const status of ["AUTHENTICATION_FAILED", "TRANSPORT_FAILED", "TIMEOUT", "CANCELLED", "NOT_ATTEMPTED", "SUCCEEDED"]) {
     test(`SQL preserva ${status}`, () => {
       const env = sqlEnv(`sql-${status}`);

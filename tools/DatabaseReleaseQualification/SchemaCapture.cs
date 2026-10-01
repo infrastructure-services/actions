@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Data.SqlClient;
+using SqlDiscovery.V2;
 
 namespace DatabaseReleaseQualification;
 
@@ -21,10 +22,16 @@ public sealed record SchemaCaptureFailure(string Status, string DiagnosticCode, 
 
 public sealed class SchemaCaptureException : Exception
 {
-    public SchemaCaptureException(SchemaCaptureFailure failure, Exception? innerException = null)
-        : base(failure.Status, innerException) => Failure = failure;
+    public SchemaCaptureException(SchemaCaptureFailure failure, Exception? innerException = null,
+        SanitizedExceptionFingerprint? diagnosticFingerprint = null)
+        : base(failure.Status, innerException)
+    {
+        Failure = failure;
+        DiagnosticFingerprint = diagnosticFingerprint;
+    }
 
     public SchemaCaptureFailure Failure { get; }
+    public SanitizedExceptionFingerprint? DiagnosticFingerprint { get; }
 }
 
 public static class SchemaCaptureErrorClassifier
