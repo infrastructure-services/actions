@@ -21,6 +21,15 @@ inputs:
     default: 10.0.x
 
 outputs:
+  terminal-phase:
+    description: Fase terminal cerrada y sanitizada del wrapper cuando la ejecución falla.
+    value: ${{ steps.discover.outputs.terminal-phase }}
+  terminal-reason-code:
+    description: Reason code terminal cerrado y sanitizado del wrapper.
+    value: ${{ steps.discover.outputs.terminal-reason-code }}
+  terminal-child-exit-code:
+    description: Exit code numérico del child cuando existe; nunca incluye stdout o stderr.
+    value: ${{ steps.discover.outputs.terminal-child-exit-code }}
   failure-evidence-json:
     description: Envelope terminal sanitizado; sólo se publica para fallos CLI reconocidos y validados.
     value: ${{ steps.discover.outputs.failure-evidence-json }}
