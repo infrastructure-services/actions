@@ -22,9 +22,23 @@ export function validateEnvironment(value) {
   if (value !== "TEST") throw new Error("ENVIRONMENT_NOT_ALLOWED");
 }
 
+export function validateTlsFallback(value) {
+  if (value !== undefined && value !== "true" && value !== "false") throw new Error("TLS_FALLBACK_INPUT_INVALID");
+}
+
 export function validateEvidence(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("EVIDENCE_INVALID");
   if (!CONNECTION_STATUSES.has(value.serverConnectionStatus)) throw new Error("EVIDENCE_INVALID");
+  const tls = value.tls;
+  if (tls === null || typeof tls !== "object" || Array.isArray(tls)
+      || Object.keys(tls).sort().join(",") !== "tlsCertificateValidated,tlsEffectiveMode,tlsFallbackAllowed,tlsFallbackAttempted,tlsInitialMode,tlsInitialResult,transportEncrypted"
+      || tls.tlsInitialMode !== "STRICT"
+      || !["NOT_ATTEMPTED", "SUCCEEDED", "CERTIFICATE_VALIDATION_FAILED", "OTHER_FAILURE"].includes(tls.tlsInitialResult)
+      || typeof tls.tlsFallbackAllowed !== "boolean" || typeof tls.tlsFallbackAttempted !== "boolean"
+      || !["STRICT", "TEST_UNTRUSTED_CERTIFICATE"].includes(tls.tlsEffectiveMode)
+      || typeof tls.tlsCertificateValidated !== "boolean" || tls.transportEncrypted !== true
+      || (tls.tlsFallbackAttempted && (!tls.tlsFallbackAllowed || tls.tlsEffectiveMode !== "TEST_UNTRUSTED_CERTIFICATE" || tls.tlsCertificateValidated)))
+    throw new Error("EVIDENCE_INVALID");
   for (const [section, allowed] of Object.entries(STATUS)) {
     const candidate = value[section];
     if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate) || !allowed.has(candidate.status)) {
@@ -74,6 +88,7 @@ export function prepareSqlDiscovery(env = process.env, execute = spawnSync) {
 
 export function runPublicSqlDiscovery(env = process.env, execute = spawnSync) {
   validateEnvironment(env.ENVIRONMENT_NAME);
+  validateTlsFallback(env.ALLOW_TEST_UNTRUSTED_CERTIFICATE_FALLBACK);
   if (!env.SQL_SERVER_CONNECTION || !env.SQL_DATABASE_NAME || !env.GITHUB_OUTPUT || !env.GITHUB_ACTION_PATH || !env.RUNNER_TEMP) throw new Error("INPUT_REQUIRED");
   const executable = prepareSqlDiscovery(env, execute);
   const child = execute("dotnet", [executable, "--v2"], {

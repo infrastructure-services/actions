@@ -46,6 +46,12 @@ var tests = new List<(string Name, Func<Task> Run)>
     ("prerrequisitos dejan etapas no intentadas", Prerequisites),
     ("excepción sensible no se expone", SensitiveException),
     ("transporte declara cero retries, TLS estricto y sólo lectura", StaticTransportGuards),
+    ("fallback TLS permanece deshabilitado por defecto", TlsFallbackDisabled),
+    ("opt-in TEST no degrada STRICT exitoso", TlsStrictSuccess),
+    ("opt-in TEST reintenta una vez sólo por certificado", TlsCertificateFallback),
+    ("autenticación timeout y transporte no disparan fallback", TlsUnrelatedFailures),
+    ("QA y PROD bloquean opt-in TLS", TlsNonTestBlocked),
+    ("clasificación TLS excluye identidad y no filtra secretos", TlsClassifierAndSanitization),
     ("input conservado y resultados independientes", InputAndResultIsolation),
     ("integración real clasifica EXISTING_EF", IntegrationExistingEf),
     ("integración bloquea target fallido antes del productor", IntegrationTargetGap),
@@ -554,17 +560,104 @@ static Task StaticTransportGuards()
     True(source.Contains("commandTimeoutSeconds = 30", StringComparison.Ordinal));
     True(source.Contains("ConnectRetryCount = 0", StringComparison.Ordinal));
     True(source.Contains("SqlConnectionEncryptOption.Strict", StringComparison.Ordinal));
-    True(source.Contains("TrustServerCertificate = false", StringComparison.Ordinal));
+    True(source.Contains("SqlConnectionEncryptOption.Mandatory", StringComparison.Ordinal));
+    True(source.Contains("TrustServerCertificate = tlsMode == SqlTlsMode.TestUntrustedCertificate", StringComparison.Ordinal));
+    False(source.Contains("Encrypt = false", StringComparison.OrdinalIgnoreCase));
     True(source.Contains("ORDER BY MigrationId ASC", StringComparison.Ordinal));
     // The physical predicate excludes this name for compatibility. History must
     // also reject a view/synonym/procedure impersonating the excluded table.
     True(source.Contains("CASE WHEN OBJECT_ID(N'dbo.__EFMigrationsHistory') IS NULL THEN 0 ELSE 1 END"));
     var targetMethod = source[(source.IndexOf("ConnectTargetAsync", StringComparison.Ordinal))..source.IndexOf("InspectMetadataAsync", StringComparison.Ordinal)];
-    Equal(1, targetMethod.Split("CreateConnection(", StringSplitOptions.None).Length - 1);
-    True(targetMethod.Contains("OpenAsync(connection", StringComparison.Ordinal));
+    Equal(1, targetMethod.Split("OpenConnectionAsync(", StringSplitOptions.None).Length - 1);
     True(targetMethod.Contains("CreateCommand(connection", StringComparison.Ordinal));
     True(targetMethod.Contains("SERVERPROPERTY(N'ServerName')", StringComparison.Ordinal));
     True(targetMethod.Contains("DB_NAME()", StringComparison.Ordinal));
+    return Task.CompletedTask;
+}
+
+static async Task TlsFallbackDisabled()
+{
+    var policy = new TestTlsFallbackPolicy("TEST", false);
+    var attempts = new List<SqlTlsMode>();
+    await ThrowsAsync<InvalidOperationException>(() => policy.ExecuteAsync<int>((mode, _) =>
+    {
+        attempts.Add(mode);
+        throw new InvalidOperationException("certificate chain was issued by an authority that is not trusted");
+    }, default, _ => true));
+    EqualSequence(new[] { SqlTlsMode.Strict }, attempts);
+    False(policy.Evidence.TlsFallbackAttempted);
+    Equal("STRICT", policy.Evidence.TlsEffectiveMode);
+    Equal("OTHER_FAILURE", policy.Evidence.TlsInitialResult);
+    False(policy.Evidence.TlsCertificateValidated);
+}
+
+static async Task TlsStrictSuccess()
+{
+    var policy = new TestTlsFallbackPolicy("TEST", true);
+    var attempts = new List<SqlTlsMode>();
+    var result = await policy.ExecuteAsync((mode, _) => { attempts.Add(mode); return Task.FromResult(7); }, default);
+    Equal(7, result);
+    EqualSequence(new[] { SqlTlsMode.Strict }, attempts);
+    False(policy.Evidence.TlsFallbackAttempted);
+    True(policy.Evidence.TlsCertificateValidated);
+    Equal("SUCCEEDED", policy.Evidence.TlsInitialResult);
+}
+
+static async Task TlsCertificateFallback()
+{
+    var policy = new TestTlsFallbackPolicy("TEST", true);
+    var attempts = new List<SqlTlsMode>();
+    var result = await policy.ExecuteAsync((mode, _) =>
+    {
+        attempts.Add(mode);
+        if (mode == SqlTlsMode.Strict) throw new InvalidOperationException("synthetic certificate failure");
+        return Task.FromResult("connected");
+    }, default, _ => true);
+    Equal("connected", result);
+    EqualSequence(new[] { SqlTlsMode.Strict, SqlTlsMode.TestUntrustedCertificate }, attempts);
+    Equal(2, attempts.Count);
+    True(policy.Evidence.TlsFallbackAttempted);
+    True(policy.Evidence.TransportEncrypted);
+    False(policy.Evidence.TlsCertificateValidated);
+    Equal("TEST_UNTRUSTED_CERTIFICATE", policy.Evidence.TlsEffectiveMode);
+    Equal("CERTIFICATE_VALIDATION_FAILED", policy.Evidence.TlsInitialResult);
+    var continued = await policy.ExecuteAsync((mode, _) => { attempts.Add(mode); return Task.FromResult("continued"); }, default, _ => false);
+    Equal("continued", continued);
+    EqualSequence(new[] { SqlTlsMode.Strict, SqlTlsMode.TestUntrustedCertificate, SqlTlsMode.TestUntrustedCertificate }, attempts);
+}
+
+static async Task TlsUnrelatedFailures()
+{
+    foreach (var exception in new Exception[]
+    {
+        new SqlDiscoveryAuthenticationException(), new TimeoutException(),
+        new InvalidOperationException("DNS failure"), new OperationCanceledException()
+    })
+    {
+        var policy = new TestTlsFallbackPolicy("TEST", true);
+        var attempts = 0;
+        await ThrowsAsync<Exception>(() => policy.ExecuteAsync<int>((_, _) => { attempts++; throw exception; }, default));
+        Equal(1, attempts);
+        False(policy.Evidence.TlsFallbackAttempted);
+    }
+}
+
+static Task TlsNonTestBlocked()
+{
+    foreach (var environment in new[] { "QA", "PROD" })
+        Throws<InvalidOperationException>(() => new TestTlsFallbackPolicy(environment, true));
+    return Task.CompletedTask;
+}
+
+static Task TlsClassifierAndSanitization()
+{
+    True(TestTlsFallbackPolicy.HasCertificateTrustMessage("A valid TLS certificate is not configured to accept strict connections."));
+    True(TestTlsFallbackPolicy.HasCertificateTrustMessage("certificate chain was issued by an authority that is not trusted"));
+    False(TestTlsFallbackPolicy.HasCertificateTrustMessage("certificate hostname mismatch"));
+    False(TestTlsFallbackPolicy.HasCertificateTrustMessage("target principal name is incorrect"));
+    False(TestTlsFallbackPolicy.HasCertificateTrustMessage("login failed for Password=do-not-expose"));
+    var serialized = JsonSerializer.Serialize(new TestTlsFallbackPolicy("TEST", true).Evidence);
+    False(serialized.Contains("Password=", StringComparison.OrdinalIgnoreCase));
     return Task.CompletedTask;
 }
 
@@ -719,6 +812,20 @@ static void True(bool condition, string? message = null)
 }
 
 static void False(bool condition, string? message = null) => True(!condition, message ?? "expected false");
+
+static void Throws<T>(Action action) where T : Exception
+{
+    try { action(); }
+    catch (T) { return; }
+    throw new InvalidOperationException($"expected {typeof(T).Name}");
+}
+
+static async Task ThrowsAsync<T>(Func<Task> action) where T : Exception
+{
+    try { await action(); }
+    catch (T) { return; }
+    throw new InvalidOperationException($"expected {typeof(T).Name}");
+}
 
 static void Contains<T>(T expected, IEnumerable<T> actual)
 {
