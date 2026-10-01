@@ -16,6 +16,7 @@ NUGET_CONFIG="$GITHUB_ACTION_PATH/../tools/DatabaseReleaseQualification/NuGet.Co
 BUILD_DIRECTORY="$RUNNER_TEMP/database-schema-capture-engine-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}"
 RESULT_DIRECTORY="$RUNNER_TEMP/database-schema-capture-results-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}"
 DB_CONNECTION_VALUE="${DB_CONNECTION-}"
+TLS_MODE_VALUE="${TLS_MODE:-STRICT}"
 APPLICATION_ID_VALUE="${APPLICATION_ID-}"
 REGISTRY_FILE_VALUE="${REGISTRY_FILE-}"
 REGISTRY_REPOSITORY_VALUE="${REGISTRY_REPOSITORY-}"
@@ -24,6 +25,11 @@ REGISTRY_COMMIT_SHA_VALUE="${REGISTRY_COMMIT_SHA-}"
 REGISTRY_LOGICAL_FILE_PATH_VALUE="${REGISTRY_LOGICAL_FILE_PATH-}"
 REGISTRY_FILE_SHA256_VALUE="${REGISTRY_FILE_SHA256-}"
 unset DB_CONNECTION
+
+if [[ "$TLS_MODE_VALUE" != 'STRICT' && "$TLS_MODE_VALUE" != 'TEST_UNTRUSTED_CERTIFICATE' ]]; then
+  echo 'Schema capture rechazado: modo TLS inválido.' >&2
+  exit 3
+fi
 
 file_sha256() {
   sha256sum "$1" | grep -Eo '[0-9a-fA-F]{64}' | head -n 1 | tr 'A-F' 'a-f'
@@ -215,10 +221,19 @@ write_tls_diagnostic() {
   fi
 }
 
+write_tls_evidence() {
+  local result_file="$1" capture_id="$2"
+  if [[ -s "$result_file" ]] && jq -e '.tls | type == "object"' "$result_file" >/dev/null 2>&1; then
+    jq -c --arg captureId "$capture_id" '{contractVersion:1,captureId:$captureId,tls:.tls}' \
+      "$result_file" > "$ARTIFACT_DIRECTORY/tls-evidence.json"
+  fi
+}
+
 run_capture() {
   local capture_id="$1" output_directory="$2" result_file="$3" execution_log="$4"
   DB_CONNECTION="$DB_CONNECTION_VALUE" dotnet "$BUILD_DIRECTORY/DatabaseReleaseQualification.dll" capture-schema \
     --environment TEST \
+    --tls-mode "$TLS_MODE_VALUE" \
     --capture-id "$capture_id" \
     --output "$output_directory" \
     --result "$result_file" >"$execution_log" 2>&1
@@ -258,6 +273,7 @@ set +e
 run_capture capture-1 "$CAPTURE_1_DIRECTORY" "$CAPTURE_1_RESULT" "$CAPTURE_1_LOG"
 CAPTURE_1_EXIT=$?
 set -e
+write_tls_evidence "$CAPTURE_1_RESULT" capture-1
 if [[ $CAPTURE_1_EXIT -ne 0 ]]; then
   read_failure "$CAPTURE_1_RESULT" FAIL_SCHEMA_CAPTURE CAPTURE_1_FAILED "$CAPTURE_1_LOG"
   write_tls_diagnostic "$CAPTURE_1_RESULT" capture-1
@@ -270,6 +286,7 @@ set +e
 run_capture capture-2 "$CAPTURE_2_DIRECTORY" "$CAPTURE_2_RESULT" "$CAPTURE_2_LOG"
 CAPTURE_2_EXIT=$?
 set -e
+write_tls_evidence "$CAPTURE_2_RESULT" capture-2
 if [[ $CAPTURE_2_EXIT -ne 0 ]]; then
   read_failure "$CAPTURE_2_RESULT" FAIL_SCHEMA_CAPTURE CAPTURE_2_FAILED "$CAPTURE_2_LOG"
   write_tls_diagnostic "$CAPTURE_2_RESULT" capture-2

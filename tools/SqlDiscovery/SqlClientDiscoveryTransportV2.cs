@@ -9,7 +9,7 @@ public sealed class SqlClientDiscoveryTransportV2(
     int connectionTimeoutSeconds = 15,
     int commandTimeoutSeconds = 30,
     string environmentName = "TEST",
-    bool allowTestUntrustedCertificateFallback = false) : ISqlDiscoveryTransport
+    SqlTlsMode tlsMode = SqlTlsMode.Strict) : ISqlDiscoveryTransport
 {
     private const string ServerCatalog = "master";
     private const string HistorySchema = "dbo";
@@ -18,7 +18,7 @@ public sealed class SqlClientDiscoveryTransportV2(
     public int ConnectionTimeoutSeconds { get; } = RequirePositive(connectionTimeoutSeconds, nameof(connectionTimeoutSeconds));
     public int CommandTimeoutSeconds { get; } = RequirePositive(commandTimeoutSeconds, nameof(commandTimeoutSeconds));
     public int RetryCount => 0;
-    private readonly TestTlsFallbackPolicy tlsPolicy = new(environmentName, allowTestUntrustedCertificateFallback);
+    private readonly SqlTlsPolicy tlsPolicy = new(environmentName, tlsMode);
     public TlsDiscoveryEvidence TlsEvidence => tlsPolicy.Evidence;
 
     public async Task ConnectServerAsync(SqlDiscoveryTarget target, CancellationToken cancellationToken)
@@ -154,10 +154,9 @@ public sealed class SqlClientDiscoveryTransportV2(
             ApplicationIntent = ApplicationIntent.ReadOnly,
             ApplicationName = "cicd-sql-discovery-v2",
             ConnectTimeout = ConnectionTimeoutSeconds,
-            ConnectRetryCount = 0,
-            Encrypt = tlsMode == SqlTlsMode.Strict ? SqlConnectionEncryptOption.Strict : SqlConnectionEncryptOption.Mandatory,
-            TrustServerCertificate = tlsMode == SqlTlsMode.TestUntrustedCertificate
+            ConnectRetryCount = 0
         };
+        tlsPolicy.Apply(builder);
         return new SqlConnection(builder.ConnectionString);
     }
 

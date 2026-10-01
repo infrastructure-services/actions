@@ -22,8 +22,8 @@ export function validateEnvironment(value) {
   if (value !== "TEST") throw new Error("ENVIRONMENT_NOT_ALLOWED");
 }
 
-export function validateTlsFallback(value) {
-  if (value !== undefined && value !== "true" && value !== "false") throw new Error("TLS_FALLBACK_INPUT_INVALID");
+export function validateTlsMode(value) {
+  if (value !== undefined && value !== "STRICT" && value !== "TEST_UNTRUSTED_CERTIFICATE") throw new Error("TLS_MODE_INVALID");
 }
 
 export function validateEvidence(value) {
@@ -31,13 +31,17 @@ export function validateEvidence(value) {
   if (!CONNECTION_STATUSES.has(value.serverConnectionStatus)) throw new Error("EVIDENCE_INVALID");
   const tls = value.tls;
   if (tls === null || typeof tls !== "object" || Array.isArray(tls)
-      || Object.keys(tls).some(key => !["diagnosticFingerprint", "tlsCertificateValidated", "tlsEffectiveMode", "tlsFallbackAllowed", "tlsFallbackAttempted", "tlsInitialMode", "tlsInitialResult", "transportEncrypted"].includes(key))
-      || tls.tlsInitialMode !== "STRICT"
-      || !["NOT_ATTEMPTED", "SUCCEEDED", "CERTIFICATE_VALIDATION_FAILED", "OTHER_FAILURE"].includes(tls.tlsInitialResult)
-      || typeof tls.tlsFallbackAllowed !== "boolean" || typeof tls.tlsFallbackAttempted !== "boolean"
+      || Object.keys(tls).some(key => !["diagnosticFingerprint", "tlsCertificateValidated", "tlsEffectiveMode", "tlsFallbackAllowed", "tlsFallbackAttempted", "tlsInitialMode", "tlsInitialResult", "tlsPolicySource", "tlsRequestedMode", "transportEncrypted"].includes(key))
+      || !["STRICT", "TEST_UNTRUSTED_CERTIFICATE"].includes(tls.tlsRequestedMode)
+      || tls.tlsInitialMode !== tls.tlsRequestedMode
+      || !["NOT_ATTEMPTED", "SUCCEEDED", "OTHER_FAILURE"].includes(tls.tlsInitialResult)
+      || tls.tlsFallbackAllowed !== false || tls.tlsFallbackAttempted !== false
       || !["STRICT", "TEST_UNTRUSTED_CERTIFICATE"].includes(tls.tlsEffectiveMode)
+      || tls.tlsEffectiveMode !== tls.tlsRequestedMode
+      || tls.tlsPolicySource !== (tls.tlsRequestedMode === "STRICT" ? "DEFAULT_STRICT" : "EXPLICIT_TEST_CONFIGURATION")
       || typeof tls.tlsCertificateValidated !== "boolean" || tls.transportEncrypted !== true
-      || (tls.tlsFallbackAttempted && (!tls.tlsFallbackAllowed || tls.tlsEffectiveMode !== "TEST_UNTRUSTED_CERTIFICATE" || tls.tlsCertificateValidated)))
+      || (tls.tlsRequestedMode === "TEST_UNTRUSTED_CERTIFICATE" && tls.tlsCertificateValidated)
+      || (tls.tlsCertificateValidated && (tls.tlsRequestedMode !== "STRICT" || tls.tlsInitialResult !== "SUCCEEDED")))
     throw new Error("EVIDENCE_INVALID");
   if (tls.diagnosticFingerprint !== undefined) {
     const fingerprint = tls.diagnosticFingerprint;
@@ -106,7 +110,7 @@ export function prepareSqlDiscovery(env = process.env, execute = spawnSync) {
 
 export function runPublicSqlDiscovery(env = process.env, execute = spawnSync) {
   validateEnvironment(env.ENVIRONMENT_NAME);
-  validateTlsFallback(env.ALLOW_TEST_UNTRUSTED_CERTIFICATE_FALLBACK);
+  validateTlsMode(env.SQL_TLS_MODE);
   if (!env.SQL_SERVER_CONNECTION || !env.SQL_DATABASE_NAME || !env.GITHUB_OUTPUT || !env.GITHUB_ACTION_PATH || !env.RUNNER_TEMP) throw new Error("INPUT_REQUIRED");
   const executable = prepareSqlDiscovery(env, execute);
   const child = execute("dotnet", [executable, "--v2"], {

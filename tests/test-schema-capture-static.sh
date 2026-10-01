@@ -12,6 +12,7 @@ ENGINE_PROJECT="$ENGINE/DatabaseReleaseQualification.csproj"
 READER="$ENGINE/SqlServerSchemaReader.cs"
 PROGRAM="$ENGINE/Program.cs"
 CAPTURE_MODEL="$ENGINE/SchemaCapture.cs"
+TLS_POLICY="$ACTION_ROOT/tools/SqlDiscovery/TestTlsFallbackPolicy.cs"
 STATE_EVALUATOR="$ENGINE/DatabaseStateEvaluator.cs"
 MUTATING_PATTERN='(^|[^[:alnum:]_])(INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP|TRUNCATE|EXEC|EXECUTE)([^[:alnum:]_]|$)'
 
@@ -23,6 +24,8 @@ fi
 for required in \
   'connection-string:' \
   'DB_CONNECTION: ${{ inputs.connection-string }}' \
+  'tls-mode:' \
+  'TLS_MODE: ${{ inputs.tls-mode }}' \
   'run-schema-capture.sh' \
   'capture-1-hash:' \
   'capture-2-hash:' \
@@ -92,20 +95,35 @@ fi
 
 for diagnostic_contract in \
   '../SqlDiscovery/TestTlsFallbackPolicy.cs' \
-  'SanitizedExceptionFingerprint.Capture(exception)' \
+  'SqlTlsPolicy' \
   'diagnosticFingerprint' \
   'tls-diagnostic.json' \
+  'tls-evidence.json' \
   'write_tls_diagnostic "$CAPTURE_1_RESULT" capture-1' \
   'write_tls_diagnostic "$CAPTURE_2_RESULT" capture-2'
 do
-  if ! grep -R -Fq "$diagnostic_contract" "$ENGINE_PROJECT" "$READER" "$PROGRAM" "$CAPTURE_MODEL" "$CAPTURE_RUNNER"; then
+  if ! grep -R -Fq "$diagnostic_contract" "$ENGINE_PROJECT" "$READER" "$PROGRAM" "$CAPTURE_MODEL" "$CAPTURE_RUNNER" "$TLS_POLICY"; then
     echo "FAIL: falta instrumentación TLS sanitizada: $diagnostic_contract"
     exit 1
   fi
 done
 
-if grep -Eiq 'TestTlsFallbackPolicy|TEST_UNTRUSTED_CERTIFICATE|TrustServerCertificate[[:space:]]*=[[:space:]]*true' "$READER" "$CAPTURE_RUNNER" "$CAPTURE_ACTION"; then
-  echo 'FAIL: schema capture no debe habilitar fallback TLS en este incremento.'
+for tls_contract in \
+  'ApplicationIntent = ApplicationIntent.ReadWrite' \
+  'ConnectRetryCount = 0' \
+  'tlsPolicy.Apply(builder)' \
+  'TEST_UNTRUSTED_CERTIFICATE' \
+  'EXPLICIT_TEST_CONFIGURATION' \
+  'SqlConnectionEncryptOption.Mandatory'
+do
+  if ! grep -R -Fq "$tls_contract" "$READER" "$CAPTURE_RUNNER" "$CAPTURE_ACTION" "$TLS_POLICY"; then
+    echo "FAIL: falta política TLS explícita y cifrada: $tls_contract"
+    exit 1
+  fi
+done
+
+if grep -Eiq 'TLS_FALLBACK|allow[-_a-z]*fallback|TestTlsFallbackPolicy|Encrypt[[:space:]]*=[[:space:]]*false' "$READER" "$CAPTURE_RUNNER" "$CAPTURE_ACTION"; then
+  echo 'FAIL: schema capture no debe implementar fallback ni cifrado deshabilitado.'
   exit 1
 fi
 

@@ -9,6 +9,10 @@ inputs:
     description: Ambiente permitido para este primer piloto.
     required: false
     default: TEST
+  tls-mode:
+    description: Política TLS explícita. STRICT por defecto; TEST_UNTRUSTED_CERTIFICATE sólo se permite en TEST.
+    required: false
+    default: STRICT
   output-directory:
     description: Directorio raíz del artifact de schema capture.
     required: false
@@ -106,6 +110,7 @@ runs:
       env:
         DB_CONNECTION: ${{ inputs.connection-string }}
         ENVIRONMENT_NAME: ${{ inputs.environment-name }}
+        TLS_MODE: ${{ inputs.tls-mode }}
         OUTPUT_DIRECTORY: ${{ inputs.output-directory }}
         APPLICATION_ID: ${{ inputs.application-id }}
         REGISTRY_FILE: ${{ inputs.registry-file }}

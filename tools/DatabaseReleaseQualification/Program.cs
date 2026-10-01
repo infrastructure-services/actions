@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using DatabaseReleaseQualification;
+using SqlDiscovery.V2;
 
 return await QualificationCli.RunAsync(args);
 
@@ -156,6 +157,8 @@ public static class QualificationCli
         {
             var options = Parse(args);
             RequireTestEnvironment(options);
+            var environment = Required(options, "environment").ToUpperInvariant();
+            var tlsMode = SqlTlsPolicy.Parse(options.GetValueOrDefault("tls-mode", "STRICT"));
             resultPath = Path.GetFullPath(Required(options, "result"));
             var connectionString = Environment.GetEnvironmentVariable("DB_CONNECTION");
             if (string.IsNullOrWhiteSpace(connectionString))
@@ -163,7 +166,7 @@ public static class QualificationCli
                 throw new SchemaCaptureException(SchemaCaptureErrorClassifier.MissingConnection());
             }
 
-            var source = await new SqlServerSchemaReader().CaptureWithMetadataAsync(connectionString);
+            var source = await new SqlServerSchemaReader().CaptureWithMetadataAsync(connectionString, environment, tlsMode);
             var artifact = new SchemaCaptureArtifactWriter().WriteCapture(
                 Path.GetFullPath(Required(options, "output")),
                 SafeSegment(options, "capture-id"),
@@ -182,14 +185,16 @@ public static class QualificationCli
                 artifact.Metadata.MetricsAvailability,
                 artifact.Metadata.MetricsDiagnosticCode,
                 artifact.Metadata.ObjectCounts,
-                artifact.Metadata.UnsupportedSchemaFeatures
+                artifact.Metadata.UnsupportedSchemaFeatures,
+                tls = source.TlsEvidence
             });
             Console.WriteLine("Schema capture read-only completado.");
             return 0;
         }
         catch (SchemaCaptureException exception)
         {
-            WriteFailureResult(resultPath, exception.Failure.Status, exception.Failure.DiagnosticCode, exception.DiagnosticFingerprint);
+            WriteFailureResult(resultPath, exception.Failure.Status, exception.Failure.DiagnosticCode,
+                exception.DiagnosticFingerprint, exception.TlsEvidence);
             Console.Error.WriteLine($"SCHEMA_CAPTURE_FAILED:{exception.Failure.Status}:{exception.Failure.DiagnosticCode}");
             return exception.Failure.ExitCode;
         }
@@ -338,12 +343,13 @@ public static class QualificationCli
         }
     }
 
-    private static void WriteFailureResult(string? path, string status, string diagnosticCode, object? diagnosticFingerprint = null)
+    private static void WriteFailureResult(string? path, string status, string diagnosticCode,
+        object? diagnosticFingerprint = null, object? tls = null)
     {
         if (string.IsNullOrWhiteSpace(path)) return;
         try
         {
-            WriteJsonResult(path, new { status, diagnosticCode, diagnosticFingerprint });
+            WriteJsonResult(path, new { status, diagnosticCode, diagnosticFingerprint, tls });
         }
         catch
         {

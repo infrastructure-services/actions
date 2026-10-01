@@ -11,8 +11,15 @@ public sealed class SqlServerSchemaReader
     public async Task<SchemaSnapshot> CaptureAsync(string connectionString, CancellationToken cancellationToken = default) =>
         (await CaptureWithMetadataAsync(connectionString, cancellationToken)).Snapshot;
 
+    public Task<SchemaCaptureSourceResult> CaptureWithMetadataAsync(
+        string connectionString,
+        CancellationToken cancellationToken = default) =>
+        CaptureWithMetadataAsync(connectionString, "TEST", SqlTlsMode.Strict, cancellationToken);
+
     public async Task<SchemaCaptureSourceResult> CaptureWithMetadataAsync(
         string connectionString,
+        string environmentName,
+        SqlTlsMode tlsMode,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(connectionString))
@@ -20,14 +27,17 @@ public sealed class SqlServerSchemaReader
             throw new SchemaCaptureException(SchemaCaptureErrorClassifier.MissingConnection());
         }
 
+        var tlsPolicy = new SqlTlsPolicy(environmentName, tlsMode);
         SqlConnectionStringBuilder builder;
         try
         {
             builder = new SqlConnectionStringBuilder(connectionString)
             {
                 ApplicationName = "cicd-database-schema-capture-v1",
-                ApplicationIntent = ApplicationIntent.ReadWrite
+                ApplicationIntent = ApplicationIntent.ReadWrite,
+                ConnectRetryCount = 0
             };
+            tlsPolicy.Apply(builder);
         }
         catch (Exception exception)
         {
@@ -38,13 +48,18 @@ public sealed class SqlServerSchemaReader
         await using var connection = new SqlConnection(builder.ConnectionString);
         try
         {
-            await connection.OpenAsync(cancellationToken);
+            await tlsPolicy.ExecuteAsync(async (_, token) =>
+            {
+                await connection.OpenAsync(token);
+                return true;
+            }, cancellationToken);
         }
         catch (Exception exception)
         {
             throw new SchemaCaptureException(
                 SchemaCaptureErrorClassifier.Classify(SchemaCapturePhase.OpenConnection, exception), exception,
-                SanitizedExceptionFingerprint.Capture(exception));
+                tlsPolicy.Evidence.DiagnosticFingerprint,
+                tlsPolicy.Evidence);
         }
 
         try
@@ -316,7 +331,8 @@ public sealed class SqlServerSchemaReader
             ServerVersion = server.ServerVersion,
             ServerMajorVersion = server.MajorVersion,
             MetricsAvailability = metricsAvailability,
-            MetricsDiagnosticCode = metricsDiagnosticCode
+            MetricsDiagnosticCode = metricsDiagnosticCode,
+            TlsEvidence = tlsPolicy.Evidence
         };
     }
 
