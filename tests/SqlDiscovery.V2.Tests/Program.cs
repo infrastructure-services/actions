@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Data;
+using System.Security.Authentication;
 using System.Text.Json;
 using SqlDiscovery.V2;
 
@@ -52,6 +53,7 @@ var tests = new List<(string Name, Func<Task> Run)>
     ("autenticación timeout y transporte no disparan fallback", TlsUnrelatedFailures),
     ("QA y PROD bloquean opt-in TLS", TlsNonTestBlocked),
     ("clasificación TLS excluye identidad y no filtra secretos", TlsClassifierAndSanitization),
+    ("fingerprint TLS sanitiza categorías y excepción interna", TlsDiagnosticFingerprint),
     ("input conservado y resultados independientes", InputAndResultIsolation),
     ("integración real clasifica EXISTING_EF", IntegrationExistingEf),
     ("integración bloquea target fallido antes del productor", IntegrationTargetGap),
@@ -589,6 +591,7 @@ static async Task TlsFallbackDisabled()
     Equal("STRICT", policy.Evidence.TlsEffectiveMode);
     Equal("OTHER_FAILURE", policy.Evidence.TlsInitialResult);
     False(policy.Evidence.TlsCertificateValidated);
+    True(policy.Evidence.DiagnosticFingerprint is not null);
 }
 
 static async Task TlsStrictSuccess()
@@ -658,6 +661,30 @@ static Task TlsClassifierAndSanitization()
     False(TestTlsFallbackPolicy.HasCertificateTrustMessage("login failed for Password=do-not-expose"));
     var serialized = JsonSerializer.Serialize(new TestTlsFallbackPolicy("TEST", true).Evidence);
     False(serialized.Contains("Password=", StringComparison.OrdinalIgnoreCase));
+    return Task.CompletedTask;
+}
+
+static Task TlsDiagnosticFingerprint()
+{
+    var generic = SanitizedExceptionFingerprint.Capture(new InvalidOperationException("Server=secret;Password=do-not-expose;token=hidden"));
+    Equal("UNKNOWN", generic.TlsFailureCategory);
+    var serialized = JsonSerializer.Serialize(generic);
+    foreach (var forbidden in new[] { "do-not-expose", "Server=", "Password=", "token=", "StackTrace", "Message" })
+        False(serialized.Contains(forbidden, StringComparison.OrdinalIgnoreCase));
+
+    Equal("TIMEOUT", SanitizedExceptionFingerprint.Capture(new TimeoutException("private")).TlsFailureCategory);
+    Equal("CANCELLED", SanitizedExceptionFingerprint.Capture(new OperationCanceledException("private")).TlsFailureCategory);
+    Equal("AUTHENTICATION", SanitizedExceptionFingerprint.Capture(new SqlDiscoveryAuthenticationException()).TlsFailureCategory);
+    Equal("HOSTNAME_OR_IDENTITY_MISMATCH", SanitizedExceptionFingerprint.Capture(
+        new AuthenticationException("target principal name is incorrect")).TlsFailureCategory);
+    Equal("KNOWN_CERTIFICATE_TRUST", SanitizedExceptionFingerprint.Capture(
+        new AuthenticationException("certificate chain was issued by an authority that is not trusted")).TlsFailureCategory);
+
+    var outer = new IOException("opaque", new AuthenticationException("opaque inner"));
+    var nested = SanitizedExceptionFingerprint.Capture(outer);
+    Equal("TRANSPORT_OTHER", nested.TlsFailureCategory);
+    Equal(typeof(AuthenticationException).FullName, nested.InnerExceptionType);
+    True(nested.InnerHResult?.StartsWith("0x", StringComparison.Ordinal) == true);
     return Task.CompletedTask;
 }
 

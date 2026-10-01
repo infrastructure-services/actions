@@ -207,6 +207,14 @@ read_failure() {
   fi
 }
 
+write_tls_diagnostic() {
+  local result_file="$1" capture_id="$2"
+  if [[ -s "$result_file" ]] && jq -e '.diagnosticFingerprint | type == "object"' "$result_file" >/dev/null 2>&1; then
+    jq -c --arg captureId "$capture_id" '{contractVersion:1,captureId:$captureId,diagnosticFingerprint:.diagnosticFingerprint}' \
+      "$result_file" > "$ARTIFACT_DIRECTORY/tls-diagnostic.json"
+  fi
+}
+
 run_capture() {
   local capture_id="$1" output_directory="$2" result_file="$3" execution_log="$4"
   DB_CONNECTION="$DB_CONNECTION_VALUE" dotnet "$BUILD_DIRECTORY/DatabaseReleaseQualification.dll" capture-schema \
@@ -252,6 +260,7 @@ CAPTURE_1_EXIT=$?
 set -e
 if [[ $CAPTURE_1_EXIT -ne 0 ]]; then
   read_failure "$CAPTURE_1_RESULT" FAIL_SCHEMA_CAPTURE CAPTURE_1_FAILED "$CAPTURE_1_LOG"
+  write_tls_diagnostic "$CAPTURE_1_RESULT" capture-1
   echo "Schema capture #1 failed: $FAILURE_STATUS / $FAILURE_DIAGNOSTIC" >&2
   write_failure_summary "$FAILURE_STATUS" "$FAILURE_DIAGNOSTIC" "$CAPTURE_1_EXIT"
   exit "$CAPTURE_1_EXIT"
@@ -263,6 +272,7 @@ CAPTURE_2_EXIT=$?
 set -e
 if [[ $CAPTURE_2_EXIT -ne 0 ]]; then
   read_failure "$CAPTURE_2_RESULT" FAIL_SCHEMA_CAPTURE CAPTURE_2_FAILED "$CAPTURE_2_LOG"
+  write_tls_diagnostic "$CAPTURE_2_RESULT" capture-2
   echo "Schema capture #2 failed: $FAILURE_STATUS / $FAILURE_DIAGNOSTIC" >&2
   write_failure_summary "$FAILURE_STATUS" "$FAILURE_DIAGNOSTIC" "$CAPTURE_2_EXIT"
   exit "$CAPTURE_2_EXIT"

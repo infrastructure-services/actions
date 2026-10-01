@@ -10,15 +10,6 @@ public enum HistoryStatus { Absent, Empty, Present, Unreadable, InvalidStructure
 
 public sealed record SqlDiscoveryTarget(string ServerConnectionString, string DatabaseName);
 
-public sealed record TlsDiscoveryEvidence(
-    string TlsInitialMode,
-    string TlsInitialResult,
-    bool TlsFallbackAllowed,
-    bool TlsFallbackAttempted,
-    string TlsEffectiveMode,
-    bool TlsCertificateValidated,
-    bool TransportEncrypted);
-
 public sealed record ObservedDatabaseIdentity(string ServerInstance, string DatabaseName);
 public enum ObservedIdentityStatus { Available, Unavailable, NotAttempted }
 public sealed record ObservedIdentityResult(

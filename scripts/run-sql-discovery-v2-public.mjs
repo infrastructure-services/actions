@@ -31,7 +31,7 @@ export function validateEvidence(value) {
   if (!CONNECTION_STATUSES.has(value.serverConnectionStatus)) throw new Error("EVIDENCE_INVALID");
   const tls = value.tls;
   if (tls === null || typeof tls !== "object" || Array.isArray(tls)
-      || Object.keys(tls).sort().join(",") !== "tlsCertificateValidated,tlsEffectiveMode,tlsFallbackAllowed,tlsFallbackAttempted,tlsInitialMode,tlsInitialResult,transportEncrypted"
+      || Object.keys(tls).some(key => !["diagnosticFingerprint", "tlsCertificateValidated", "tlsEffectiveMode", "tlsFallbackAllowed", "tlsFallbackAttempted", "tlsInitialMode", "tlsInitialResult", "transportEncrypted"].includes(key))
       || tls.tlsInitialMode !== "STRICT"
       || !["NOT_ATTEMPTED", "SUCCEEDED", "CERTIFICATE_VALIDATION_FAILED", "OTHER_FAILURE"].includes(tls.tlsInitialResult)
       || typeof tls.tlsFallbackAllowed !== "boolean" || typeof tls.tlsFallbackAttempted !== "boolean"
@@ -39,6 +39,24 @@ export function validateEvidence(value) {
       || typeof tls.tlsCertificateValidated !== "boolean" || tls.transportEncrypted !== true
       || (tls.tlsFallbackAttempted && (!tls.tlsFallbackAllowed || tls.tlsEffectiveMode !== "TEST_UNTRUSTED_CERTIFICATE" || tls.tlsCertificateValidated)))
     throw new Error("EVIDENCE_INVALID");
+  if (tls.diagnosticFingerprint !== undefined) {
+    const fingerprint = tls.diagnosticFingerprint;
+    const keys = ["exceptionType", "hResult", "innerExceptionType", "innerHResult", "nativeErrorCode", "sqlErrorClasses", "sqlErrorNumbers", "sqlErrorStates", "sqlExceptionNumber", "tlsFailureCategory"];
+    const categories = ["KNOWN_CERTIFICATE_TRUST", "HOSTNAME_OR_IDENTITY_MISMATCH", "AUTHENTICATION", "TIMEOUT", "CANCELLED", "TRANSPORT_OTHER", "UNKNOWN"];
+    if (fingerprint === null || typeof fingerprint !== "object" || Array.isArray(fingerprint)
+        || Object.keys(fingerprint).sort().join(",") !== keys.sort().join(",")
+        || typeof fingerprint.exceptionType !== "string" || !/^([A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*$/u.test(fingerprint.exceptionType)
+        || typeof fingerprint.hResult !== "string" || !/^0x[0-9A-F]{8}$/u.test(fingerprint.hResult)
+        || !(fingerprint.innerExceptionType === null || typeof fingerprint.innerExceptionType === "string")
+        || !(fingerprint.innerHResult === null || (typeof fingerprint.innerHResult === "string" && /^0x[0-9A-F]{8}$/u.test(fingerprint.innerHResult)))
+        || !(fingerprint.nativeErrorCode === null || Number.isInteger(fingerprint.nativeErrorCode))
+        || !(fingerprint.sqlExceptionNumber === null || Number.isInteger(fingerprint.sqlExceptionNumber))
+        || ![fingerprint.sqlErrorNumbers, fingerprint.sqlErrorStates, fingerprint.sqlErrorClasses].every(item => Array.isArray(item) && item.every(Number.isInteger))
+        || fingerprint.sqlErrorNumbers.length !== fingerprint.sqlErrorStates.length || fingerprint.sqlErrorNumbers.length !== fingerprint.sqlErrorClasses.length
+        || fingerprint.sqlErrorStates.some(item => item < 0 || item > 255) || fingerprint.sqlErrorClasses.some(item => item < 0 || item > 255)
+        || !categories.includes(fingerprint.tlsFailureCategory)) throw new Error("EVIDENCE_INVALID");
+  }
+  if ((tls.tlsInitialResult === "OTHER_FAILURE") !== (tls.diagnosticFingerprint !== undefined)) throw new Error("EVIDENCE_INVALID");
   for (const [section, allowed] of Object.entries(STATUS)) {
     const candidate = value[section];
     if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate) || !allowed.has(candidate.status)) {

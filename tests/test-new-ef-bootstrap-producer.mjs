@@ -21,7 +21,7 @@ if(command==='restore'||command==='build') process.exit(0);
 const result=args[args.indexOf('--result')+1], hash='a'.repeat(64);
 const failed=process.env.MOCK_FAILURE==='capture'&&command==='capture-schema';
 const nondeterministic=process.env.MOCK_FAILURE==='determinism'&&command==='compare-schema-captures';
-const value=command==='capture-schema'?{status:failed?'FAIL_SCHEMA_CAPTURE':'SUCCESS',diagnosticCode:'MOCK_CAPTURE',databaseName:'Orders',serverVersion:'16',schemaCoverage:'COMPLETE',metricsAvailability:'COMPLETE',objectCounts:{},unsupportedSchemaFeatures:[]}:command==='compare-schema-captures'?{status:'SUCCESS',diagnosticCode:'MOCK_COMPARE',identityConsistent:true,observedServerInstance:'SQL01',observedDatabaseName:'Orders',capture1SchemaHash:hash,capture2SchemaHash:hash,deterministic:process.env.MOCK_FAILURE!=='determinism'}:{status:'SUCCESS',registryStatus:'BASELINE_REQUIRED',driftStatus:'BASELINE_REQUIRED',gateStatus:'BLOCKED',reason:'ONBOARDING_BASELINE_REQUIRED',baselineCandidate:true,observedSchemaHash:hash,certifiedSchemaHash:null,registryFormatVersion:1,registryProvenance:{registryCommitSha:'b'.repeat(40)}};
+const value=command==='capture-schema'?{status:failed?'FAIL_DATABASE_UNREACHABLE':'SUCCESS',diagnosticCode:failed?'SQL_0':'MOCK_CAPTURE',...(failed?{diagnosticFingerprint:{exceptionType:'Microsoft.Data.SqlClient.SqlException',hResult:'0x80131904',sqlExceptionNumber:0,sqlErrorNumbers:[0],sqlErrorStates:[0],sqlErrorClasses:[20],innerExceptionType:'System.Security.Authentication.AuthenticationException',innerHResult:'0x80131501',nativeErrorCode:null,tlsFailureCategory:'TRANSPORT_OTHER'}}:{}),databaseName:'Orders',serverVersion:'16',schemaCoverage:'COMPLETE',metricsAvailability:'COMPLETE',objectCounts:{},unsupportedSchemaFeatures:[]}:command==='compare-schema-captures'?{status:'SUCCESS',diagnosticCode:'MOCK_COMPARE',identityConsistent:true,observedServerInstance:'SQL01',observedDatabaseName:'Orders',capture1SchemaHash:hash,capture2SchemaHash:hash,deterministic:process.env.MOCK_FAILURE!=='determinism'}:{status:'SUCCESS',registryStatus:'BASELINE_REQUIRED',driftStatus:'BASELINE_REQUIRED',gateStatus:'BLOCKED',reason:'ONBOARDING_BASELINE_REQUIRED',baselineCandidate:true,observedSchemaHash:hash,certifiedSchemaHash:null,registryFormatVersion:1,registryProvenance:{registryCommitSha:'b'.repeat(40)}};
 if(nondeterministic)value.status='FAIL_SCHEMA_CAPTURE_NONDETERMINISTIC';
 fs.writeFileSync(result,JSON.stringify(value));process.exit(failed||nondeterministic?6:0);
 `);
@@ -29,6 +29,7 @@ fs.writeFileSync(jq, `import fs from 'node:fs';
 const args=process.argv.slice(2), query=args.find(a=>!a.startsWith('-')), file=args.at(-1)!==query?args.at(-1):null;
 if(args.includes('-cn')) { console.log(JSON.stringify({serverInstance:'SQL01',databaseName:'Orders'})); process.exit(0); }
 const value=JSON.parse(fs.readFileSync(file||0,'utf8'));
+if(args.includes('--arg')&&args.some(a=>a.includes('contractVersion:1'))) { const captureId=args[args.indexOf('--arg')+2]; console.log(JSON.stringify({contractVersion:1,captureId,diagnosticFingerprint:value.diagnosticFingerprint})); process.exit(0); }
 if(query==='.')process.exit(0);
 if(query.includes('to_entries')||query.includes('[]'))process.exit(0);
 const key=/^\\.([A-Za-z0-9_.]+)/.exec(query)?.[1]; let result=key?.split('.').reduce((v,k)=>v?.[k],value);
@@ -51,7 +52,8 @@ function run({ ordinary = false, failure = "", registryContext = false } = {}) {
   const script = posix(path.join(repo, "schema-capture", "run-schema-capture.sh"));
   const nodeDir = posix(path.dirname(process.execPath));
   const result = spawnSync(bash, ["-c", `export PATH="${posix(bin)}:${nodeDir}:/c/Program Files/Git/usr/bin:/usr/bin:/bin"; bash -o igncr "${script}"${ordinary ? "" : " --new-ef-bootstrap-readonly"}`], { env, encoding: "utf8", windowsHide: true });
-  return { ...result, outputs: fs.readFileSync(output, "utf8"), calls: fs.readFileSync(calls, "utf8") };
+  const diagnostic = path.join(root, "artifacts", "tls-diagnostic.json");
+  return { ...result, outputs: fs.readFileSync(output, "utf8"), calls: fs.readFileSync(calls, "utf8"), tlsDiagnostic: fs.existsSync(diagnostic) ? fs.readFileSync(diagnostic, "utf8") : "" };
 }
 function test(name, fn) { fn(); passed++; console.log(`PASS ${name}`); }
 try {
@@ -65,6 +67,7 @@ try {
   test("bootstrap captures twice, never evaluates Registry", () => { const r = run(); assert.equal(r.status, 0, r.stderr); assert.equal(r.calls.split("capture-schema").length - 1, 2); assert.ok(!r.calls.includes("evaluate-database-state")); assert.match(r.outputs, /registry_status=NOT_EVALUATED/); assert.match(r.outputs, /gate_status=BLOCKED/); assert.match(r.outputs, /gate_reason=NEW_EF_CERTIFICATION_NOT_EVALUATED/); });
   test("supplied Registry context rejected before capture/evaluation", () => { const r = run({ registryContext: true }); assert.equal(r.status, 2, r.stderr); assert.equal(r.calls, ""); assert.ok(!r.outputs.includes("NOT_EVALUATED")); });
   for (const failure of ["capture", "determinism"]) test(`${failure} failure never becomes intentional NOT_EVALUATED`, () => { const r = run({ failure }); assert.notEqual(r.status, 0); assert.ok(!r.outputs.includes("NOT_EVALUATED")); assert.ok(!r.calls.includes("evaluate-database-state")); });
+  test("capture failure publishes only sanitized TLS fingerprint", () => { const r = run({ failure: "capture" }); const value = JSON.parse(r.tlsDiagnostic); assert.equal(value.captureId, "capture-1"); assert.equal(value.diagnosticFingerprint.sqlExceptionNumber, 0); assert.equal(value.diagnosticFingerprint.tlsFailureCategory, "TRANSPORT_OTHER"); for (const forbidden of ["password", "token", "connectionString", "message", "stackTrace"]) assert.equal(r.tlsDiagnostic.toLowerCase().includes(forbidden.toLowerCase()), false); });
   test("ordinary producer still evaluates and preserves BASELINE_REQUIRED", () => { const r = run({ ordinary: true }); assert.equal(r.status, 0, r.stderr); assert.match(r.calls, /evaluate-database-state/); assert.match(r.outputs, /registry_status=BASELINE_REQUIRED/); assert.ok(!r.outputs.includes("registry_status=NOT_EVALUATED")); });
   console.log(`OK ${passed} isolated producer cases`);
 } finally {
