@@ -9,10 +9,9 @@ public static class SqlDiscoveryPublicCli
         var connection = Environment.GetEnvironmentVariable("SQL_SERVER_CONNECTION");
         var database = Environment.GetEnvironmentVariable("SQL_DATABASE_NAME");
         var environment = Environment.GetEnvironmentVariable("ENVIRONMENT_NAME");
-        var fallbackInput = Environment.GetEnvironmentVariable("ALLOW_TEST_UNTRUSTED_CERTIFICATE_FALLBACK") ?? "false";
-        var allowFallback = fallbackInput == "true";
+        var tlsModeInput = Environment.GetEnvironmentVariable("SQL_TLS_MODE") ?? "STRICT";
         if (string.IsNullOrWhiteSpace(connection) || string.IsNullOrWhiteSpace(database) || string.IsNullOrWhiteSpace(environment)
-            || fallbackInput is not ("true" or "false"))
+            || tlsModeInput is not ("STRICT" or "TEST_UNTRUSTED_CERTIFICATE"))
         {
             Console.Error.WriteLine("SQL_DISCOVERY_INPUT_REQUIRED");
             return 64;
@@ -23,7 +22,7 @@ public static class SqlDiscoveryPublicCli
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(120));
             var transport = new SqlClientDiscoveryTransportV2(
                 environmentName: environment,
-                allowTestUntrustedCertificateFallback: allowFallback);
+                tlsMode: SqlTlsPolicy.Parse(tlsModeInput));
             var orchestrator = new SqlDiscoveryOrchestratorV2(transport);
             var result = await orchestrator.DiscoverAsync(new SqlDiscoveryTarget(connection, database), timeout.Token);
             var projection = orchestrator.ProjectSources(result);
@@ -35,13 +34,15 @@ public static class SqlDiscoveryPublicCli
 
             var tlsEvidence = new Dictionary<string, object?>
             {
+                ["tlsRequestedMode"] = transport.TlsEvidence.TlsRequestedMode,
                 ["tlsInitialMode"] = transport.TlsEvidence.TlsInitialMode,
                 ["tlsInitialResult"] = transport.TlsEvidence.TlsInitialResult,
                 ["tlsFallbackAllowed"] = transport.TlsEvidence.TlsFallbackAllowed,
                 ["tlsFallbackAttempted"] = transport.TlsEvidence.TlsFallbackAttempted,
                 ["tlsEffectiveMode"] = transport.TlsEvidence.TlsEffectiveMode,
                 ["tlsCertificateValidated"] = transport.TlsEvidence.TlsCertificateValidated,
-                ["transportEncrypted"] = transport.TlsEvidence.TransportEncrypted
+                ["transportEncrypted"] = transport.TlsEvidence.TransportEncrypted,
+                ["tlsPolicySource"] = transport.TlsEvidence.TlsPolicySource
             };
             if (transport.TlsEvidence.DiagnosticFingerprint is not null)
                 tlsEvidence["diagnosticFingerprint"] = transport.TlsEvidence.DiagnosticFingerprint;

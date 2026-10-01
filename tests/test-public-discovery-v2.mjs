@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { runPublicSqlDiscovery, validateEnvironment as validateSqlEnvironment, validateTlsFallback } from "../scripts/run-sql-discovery-v2-public.mjs";
+import { runPublicSqlDiscovery, validateEnvironment as validateSqlEnvironment, validateTlsMode } from "../scripts/run-sql-discovery-v2-public.mjs";
 import { buildRequest, runPublicRepositoryDiscovery, validateEnvironment as validateRepositoryEnvironment } from "../scripts/run-repository-discovery-v2-public.mjs";
 import { TECHNICAL_CATEGORIES } from "../scripts/empty-for-new-ef-v1.mjs";
 
@@ -16,8 +16,9 @@ const test = (name, fn) => { try { fn(); passed += 1; console.log(`PASS: ${name}
 const output = name => path.join(temporaryRoot, `${name}.txt`);
 const sqlEnv = name => ({ ENVIRONMENT_NAME: "TEST", SQL_SERVER_CONNECTION: "Server=secret.example;Password=do-not-log", SQL_DATABASE_NAME: "Db", GITHUB_OUTPUT: output(name), GITHUB_ACTION_PATH: path.join(root, "sql-discovery-v2"), RUNNER_TEMP: temporaryRoot });
 const sqlEvidence = targetStatus => ({
-  tls: { tlsInitialMode: "STRICT", tlsInitialResult: "SUCCEEDED", tlsFallbackAllowed: false,
-    tlsFallbackAttempted: false, tlsEffectiveMode: "STRICT", tlsCertificateValidated: true, transportEncrypted: true },
+  tls: { tlsRequestedMode: "STRICT", tlsInitialMode: "STRICT", tlsInitialResult: "SUCCEEDED", tlsFallbackAllowed: false,
+    tlsFallbackAttempted: false, tlsEffectiveMode: "STRICT", tlsCertificateValidated: true, transportEncrypted: true,
+    tlsPolicySource: "DEFAULT_STRICT" },
   serverConnectionStatus: targetStatus,
   connectionSource: { status: targetStatus === "NOT_ATTEMPTED" ? "NOT_ATTEMPTED" : targetStatus === "CANCELLED" ? "CANCELLED" : targetStatus === "TIMEOUT" ? "TIMEOUT" : "SUCCEEDED" },
   databaseLookupSource: { status: targetStatus === "NOT_ATTEMPTED" ? "NOT_ATTEMPTED" : "FOUND" },
@@ -49,13 +50,14 @@ try {
   });
   test("SQL acepta TEST explícito", () => assert.doesNotThrow(() => validateSqlEnvironment("TEST")));
   for (const value of [undefined, "", "QA", "PROD", "test"]) test(`SQL rechaza ambiente ${String(value)}`, () => assert.throws(() => validateSqlEnvironment(value), /ENVIRONMENT_NOT_ALLOWED/));
-  for (const value of [undefined, "true", "false"]) test(`SQL acepta opt-in TLS ${String(value)}`, () => assert.doesNotThrow(() => validateTlsFallback(value)));
-  for (const value of ["TRUE", "1", "yes", ""]) test(`SQL rechaza opt-in TLS ${String(value)}`, () => assert.throws(() => validateTlsFallback(value), /TLS_FALLBACK_INPUT_INVALID/));
-  test("SQL preserva evidencia TLS fallback sin secretos", () => {
-    const env = { ...sqlEnv("sql-tls-fallback"), ALLOW_TEST_UNTRUSTED_CERTIFICATE_FALLBACK: "true" };
+  for (const value of [undefined, "STRICT", "TEST_UNTRUSTED_CERTIFICATE"]) test(`SQL acepta modo TLS ${String(value)}`, () => assert.doesNotThrow(() => validateTlsMode(value)));
+  for (const value of ["strict", "true", "1", "yes", ""]) test(`SQL rechaza modo TLS ${String(value)}`, () => assert.throws(() => validateTlsMode(value), /TLS_MODE_INVALID/));
+  test("SQL preserva modo TEST explícito sin secretos ni fallback", () => {
+    const env = { ...sqlEnv("sql-tls-explicit"), SQL_TLS_MODE: "TEST_UNTRUSTED_CERTIFICATE" };
     const value = sqlEvidence("SUCCEEDED");
-    value.tls = { tlsInitialMode: "STRICT", tlsInitialResult: "CERTIFICATE_VALIDATION_FAILED", tlsFallbackAllowed: true,
-      tlsFallbackAttempted: true, tlsEffectiveMode: "TEST_UNTRUSTED_CERTIFICATE", tlsCertificateValidated: false, transportEncrypted: true };
+    value.tls = { tlsRequestedMode: "TEST_UNTRUSTED_CERTIFICATE", tlsInitialMode: "TEST_UNTRUSTED_CERTIFICATE", tlsInitialResult: "SUCCEEDED", tlsFallbackAllowed: false,
+      tlsFallbackAttempted: false, tlsEffectiveMode: "TEST_UNTRUSTED_CERTIFICATE", tlsCertificateValidated: false, transportEncrypted: true,
+      tlsPolicySource: "EXPLICIT_TEST_CONFIGURATION" };
     const evidence = runPublicSqlDiscovery(env, sqlExecutor(value));
     assert.deepEqual(evidence.tls, value.tls);
     assert.equal(fs.readFileSync(env.GITHUB_OUTPUT, "utf8").includes(env.SQL_SERVER_CONNECTION), false);

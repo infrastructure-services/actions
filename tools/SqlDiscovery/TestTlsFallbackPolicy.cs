@@ -67,6 +67,7 @@ public sealed record SanitizedExceptionFingerprint(
 }
 
 public sealed record TlsDiscoveryEvidence(
+    string TlsRequestedMode,
     string TlsInitialMode,
     string TlsInitialResult,
     bool TlsFallbackAllowed,
@@ -74,9 +75,82 @@ public sealed record TlsDiscoveryEvidence(
     string TlsEffectiveMode,
     bool TlsCertificateValidated,
     bool TransportEncrypted,
+    string TlsPolicySource,
     SanitizedExceptionFingerprint? DiagnosticFingerprint = null);
 
-public sealed class TestTlsFallbackPolicy
+public sealed class SqlTlsPolicy
+{
+    private string result = "NOT_ATTEMPTED";
+    private SanitizedExceptionFingerprint? diagnosticFingerprint;
+
+    public SqlTlsPolicy(string environmentName, SqlTlsMode requestedMode = SqlTlsMode.Strict)
+    {
+        if (string.IsNullOrWhiteSpace(environmentName))
+            throw new ArgumentException("Environment is required.", nameof(environmentName));
+        if (requestedMode == SqlTlsMode.TestUntrustedCertificate
+            && !string.Equals(environmentName, "TEST", StringComparison.Ordinal))
+            throw new InvalidOperationException("TEST_UNTRUSTED_CERTIFICATE_FORBIDDEN_OUTSIDE_TEST");
+        RequestedMode = requestedMode;
+    }
+
+    public SqlTlsMode RequestedMode { get; }
+    public string RequestedModeName => Name(RequestedMode);
+    public string PolicySource => RequestedMode == SqlTlsMode.Strict ? "DEFAULT_STRICT" : "EXPLICIT_TEST_CONFIGURATION";
+    public TlsDiscoveryEvidence Evidence => new(
+        RequestedModeName,
+        RequestedModeName,
+        result,
+        false,
+        false,
+        RequestedModeName,
+        RequestedMode == SqlTlsMode.Strict && result == "SUCCEEDED",
+        true,
+        PolicySource,
+        diagnosticFingerprint);
+
+    public static SqlTlsMode Parse(string? value)
+        => (value ?? "STRICT").Trim().ToUpperInvariant() switch
+        {
+            "STRICT" => SqlTlsMode.Strict,
+            "TEST_UNTRUSTED_CERTIFICATE" => SqlTlsMode.TestUntrustedCertificate,
+            _ => throw new InvalidOperationException("TLS_MODE_INVALID")
+        };
+
+    public void Apply(SqlConnectionStringBuilder builder)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        builder.Encrypt = RequestedMode == SqlTlsMode.Strict
+            ? SqlConnectionEncryptOption.Strict
+            : SqlConnectionEncryptOption.Mandatory;
+        builder.TrustServerCertificate = RequestedMode == SqlTlsMode.TestUntrustedCertificate;
+    }
+
+    public async Task<T> ExecuteAsync<T>(Func<SqlTlsMode, CancellationToken, Task<T>> open, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(open);
+        try
+        {
+            var value = await open(RequestedMode, cancellationToken);
+            result = "SUCCEEDED";
+            return value;
+        }
+        catch (Exception exception)
+        {
+            result = "OTHER_FAILURE";
+            diagnosticFingerprint = SanitizedExceptionFingerprint.Capture(exception);
+            throw;
+        }
+    }
+
+    private static string Name(SqlTlsMode mode) => mode switch
+    {
+        SqlTlsMode.Strict => "STRICT",
+        SqlTlsMode.TestUntrustedCertificate => "TEST_UNTRUSTED_CERTIFICATE",
+        _ => throw new InvalidOperationException("TLS_MODE_INVALID")
+    };
+}
+
+public static class TestTlsFallbackPolicy
 {
     private const int SqlServerStrictCertificateError = 17821;
     private static readonly HashSet<int> CertificateTrustHResults =
@@ -86,61 +160,6 @@ public sealed class TestTlsFallbackPolicy
         unchecked((int)0x800B010A), // CERT_E_CHAINING
         unchecked((int)0x80092012)  // CRYPT_E_NO_REVOCATION_CHECK
     ];
-
-    private bool fallbackAttempted;
-    private string initialResult = "NOT_ATTEMPTED";
-    private bool strictSucceeded;
-    private SanitizedExceptionFingerprint? diagnosticFingerprint;
-
-    public TestTlsFallbackPolicy(string environmentName, bool allowTestUntrustedCertificateFallback)
-    {
-        if (string.IsNullOrWhiteSpace(environmentName)) throw new ArgumentException("Environment is required.", nameof(environmentName));
-        if (allowTestUntrustedCertificateFallback && !string.Equals(environmentName, "TEST", StringComparison.Ordinal))
-            throw new InvalidOperationException("TEST_TLS_FALLBACK_FORBIDDEN_OUTSIDE_TEST");
-        FallbackAllowed = allowTestUntrustedCertificateFallback;
-    }
-
-    public bool FallbackAllowed { get; }
-
-    public TlsDiscoveryEvidence Evidence => new(
-        "STRICT",
-        initialResult,
-        FallbackAllowed,
-        fallbackAttempted,
-        fallbackAttempted ? "TEST_UNTRUSTED_CERTIFICATE" : "STRICT",
-        strictSucceeded && !fallbackAttempted,
-        true,
-        diagnosticFingerprint);
-
-    public async Task<T> ExecuteAsync<T>(
-        Func<SqlTlsMode, CancellationToken, Task<T>> attempt,
-        CancellationToken cancellationToken,
-        Func<Exception, bool>? certificateFailureClassifier = null)
-    {
-        ArgumentNullException.ThrowIfNull(attempt);
-        certificateFailureClassifier ??= IsCertificateTrustFailure;
-        if (fallbackAttempted)
-            return await attempt(SqlTlsMode.TestUntrustedCertificate, cancellationToken);
-        try
-        {
-            var result = await attempt(SqlTlsMode.Strict, cancellationToken);
-            strictSucceeded = true;
-            initialResult = "SUCCEEDED";
-            return result;
-        }
-        catch (Exception exception) when (FallbackAllowed && certificateFailureClassifier(exception))
-        {
-            initialResult = "CERTIFICATE_VALIDATION_FAILED";
-            fallbackAttempted = true;
-            return await attempt(SqlTlsMode.TestUntrustedCertificate, cancellationToken);
-        }
-        catch (Exception exception)
-        {
-            initialResult = "OTHER_FAILURE";
-            diagnosticFingerprint = SanitizedExceptionFingerprint.Capture(exception);
-            throw;
-        }
-    }
 
     public static bool IsCertificateTrustFailure(Exception exception)
         => ClassifyFailure(exception) == TlsFailureCategory.KnownCertificateTrust;

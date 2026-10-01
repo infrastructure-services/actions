@@ -19,6 +19,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("fallo de conexión se clasifica de forma estable", ConnectionFailureIsClassified),
     ("fingerprint SQL/TLS conserva sólo metadata sanitizada", SharedTlsFingerprintIsSanitized),
     ("schema capture conserva contrato al adjuntar fingerprint", SchemaCaptureFailureCarriesFingerprint),
+    ("schema capture aplica modo TLS explícito sin fallback", SchemaCaptureExplicitTlsPolicy),
     ("guard de schema capture admite solo SELECT", SchemaCaptureSqlGuard),
     ("queries degradan por versión SQL Server", SqlServerVersionQueriesDegradeSafely),
     ("metadata SQL observa servidor y base con SELECT", ServerMetadataObservesIdentity),
@@ -450,12 +451,43 @@ static Task SharedTlsFingerprintIsSanitized()
 static Task SchemaCaptureFailureCarriesFingerprint()
 {
     var fingerprint = SanitizedExceptionFingerprint.Capture(new TimeoutException("private"));
+    var tls = new SqlTlsPolicy("TEST", SqlTlsMode.TestUntrustedCertificate).Evidence;
     var failure = SchemaCaptureErrorClassifier.Classify(SchemaCapturePhase.OpenConnection, new InvalidOperationException("private"));
-    var exception = new SchemaCaptureException(failure, new InvalidOperationException("private"), fingerprint);
+    var exception = new SchemaCaptureException(failure, new InvalidOperationException("private"), fingerprint, tls);
     Equal(SchemaCaptureStatuses.DatabaseUnreachable, exception.Failure.Status);
     Equal(4, exception.Failure.ExitCode);
     Equal("TIMEOUT", exception.DiagnosticFingerprint?.TlsFailureCategory);
+    Equal("TEST_UNTRUSTED_CERTIFICATE", exception.TlsEvidence?.TlsRequestedMode);
     return Task.CompletedTask;
+}
+
+static async Task SchemaCaptureExplicitTlsPolicy()
+{
+    var policy = new SqlTlsPolicy("TEST", SqlTlsMode.TestUntrustedCertificate);
+    var builder = new SqlConnectionStringBuilder("Server=opaque;Encrypt=Strict;TrustServerCertificate=False");
+    policy.Apply(builder);
+    Equal(SqlConnectionEncryptOption.Mandatory, builder.Encrypt);
+    True(builder.TrustServerCertificate);
+    var opens = 0;
+    await policy.ExecuteAsync((mode, _) =>
+    {
+        opens++;
+        Equal(SqlTlsMode.TestUntrustedCertificate, mode);
+        return Task.FromResult(true);
+    }, default);
+    Equal(1, opens);
+    Equal("EXPLICIT_TEST_CONFIGURATION", policy.Evidence.TlsPolicySource);
+    True(policy.Evidence.TransportEncrypted);
+    True(!policy.Evidence.TlsCertificateValidated);
+    True(!policy.Evidence.TlsFallbackAttempted);
+    foreach (var environment in new[] { "QA", "PROD" })
+    {
+        var blocked = false;
+        try { _ = new SqlTlsPolicy(environment, SqlTlsMode.TestUntrustedCertificate); }
+        catch (InvalidOperationException) { blocked = true; }
+        True(blocked);
+    }
+
 }
 
 static Task SchemaCaptureSqlGuard()

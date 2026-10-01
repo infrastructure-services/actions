@@ -23,15 +23,18 @@ public sealed record SchemaCaptureFailure(string Status, string DiagnosticCode, 
 public sealed class SchemaCaptureException : Exception
 {
     public SchemaCaptureException(SchemaCaptureFailure failure, Exception? innerException = null,
-        SanitizedExceptionFingerprint? diagnosticFingerprint = null)
+        SanitizedExceptionFingerprint? diagnosticFingerprint = null,
+        TlsDiscoveryEvidence? tlsEvidence = null)
         : base(failure.Status, innerException)
     {
         Failure = failure;
         DiagnosticFingerprint = diagnosticFingerprint;
+        TlsEvidence = tlsEvidence;
     }
 
     public SchemaCaptureFailure Failure { get; }
     public SanitizedExceptionFingerprint? DiagnosticFingerprint { get; }
+    public TlsDiscoveryEvidence? TlsEvidence { get; }
 }
 
 public static class SchemaCaptureErrorClassifier
@@ -68,6 +71,7 @@ public sealed class SchemaCaptureSourceResult
     public int ServerMajorVersion { get; init; }
     public MetricsAvailability MetricsAvailability { get; init; }
     public string? MetricsDiagnosticCode { get; init; }
+    public TlsDiscoveryEvidence TlsEvidence { get; init; } = new SqlTlsPolicy("TEST").Evidence;
 }
 
 public sealed class SchemaCaptureMetadata

@@ -11,10 +11,10 @@ inputs:
   database-name:
     description: Nombre explícito de la base target observada.
     required: true
-  allow-test-untrusted-certificate-fallback:
-    description: Opt-in explícito, permitido únicamente en TEST, para un segundo intento cifrado ante falla de confianza del certificado.
+  tls-mode:
+    description: Política TLS explícita. STRICT por defecto; TEST_UNTRUSTED_CERTIFICATE sólo se permite en TEST.
     required: false
-    default: "false"
+    default: STRICT
   dotnet-version:
     description: Versión del SDK para la implementación existente.
     required: false
@@ -65,5 +65,5 @@ runs:
         ENVIRONMENT_NAME: ${{ inputs.environment-name }}
         SQL_SERVER_CONNECTION: ${{ inputs.server-connection-string }}
         SQL_DATABASE_NAME: ${{ inputs.database-name }}
-        ALLOW_TEST_UNTRUSTED_CERTIFICATE_FALLBACK: ${{ inputs.allow-test-untrusted-certificate-fallback }}
+        SQL_TLS_MODE: ${{ inputs.tls-mode }}
       run: node "$GITHUB_ACTION_PATH/../scripts/run-sql-discovery-v2-public.mjs"
