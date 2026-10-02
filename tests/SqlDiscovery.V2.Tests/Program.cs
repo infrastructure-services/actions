@@ -4,6 +4,19 @@ using System.Security.Authentication;
 using System.Text.Json;
 using SqlDiscovery.V2;
 
+if (args is ["--emit-success-envelope"] or ["--emit-target-failure-envelope"])
+{
+    var transport = SuccessfulTransport();
+    if (args[0] == "--emit-target-failure-envelope")
+        transport.ConnectTarget = _ => throw new InvalidOperationException("synthetic target failure");
+    var orchestrator = new SqlDiscoveryOrchestratorV2(transport);
+    var result = await orchestrator.DiscoverAsync(Target(), CancellationToken.None);
+    var policy = new SqlTlsPolicy("TEST", SqlTlsMode.TestUntrustedCertificate);
+    await policy.ExecuteAsync((_, _) => Task.FromResult(0), CancellationToken.None);
+    Console.WriteLine(SqlDiscoveryPublicCli.SerializeSuccessEnvelope(result, orchestrator.ProjectSources(result), policy.Evidence));
+    return 0;
+}
+
 var tests = new List<(string Name, Func<Task> Run)>
 {
     ("V1 exact standard schemas and SELECT-only coverage", TaxonomySqlContract),
