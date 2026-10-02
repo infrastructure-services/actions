@@ -64,7 +64,7 @@ try {
     const raw = JSON.parse(fs.readFileSync(env.GITHUB_OUTPUT, "utf8").match(/evidence-json<<SQL_DISCOVERY_V2_EOF\n([^\n]+)/u)[1]);
     assert.deepEqual(raw.physicalSource, value.physicalSource);
     value.physicalSource.taxonomy.counts.customSchemas = 1;
-    assert.throws(() => runPublicSqlDiscovery(sqlEnv("sql-taxonomy-invalid"), sqlExecutor(value)), /EVIDENCE_INVALID/);
+    assert.throws(() => runPublicSqlDiscovery(sqlEnv("sql-taxonomy-invalid"), sqlExecutor(value)), error => error.terminal.terminalReasonCode === "ENVELOPE_VALIDATION_FAILED");
   });
   test("SQL acepta TEST explícito", () => assert.doesNotThrow(() => validateSqlEnvironment("TEST")));
   for (const value of [undefined, "", "QA", "PROD", "test"]) test(`SQL rechaza ambiente ${String(value)}`, () => assert.throws(() => validateSqlEnvironment(value), /ENVIRONMENT_NOT_ALLOWED/));
@@ -137,8 +137,8 @@ try {
   test("SQL falla cerrado sin identidad target", () => {
     const env = sqlEnv("sql-missing-identity");
     const evidence = sqlEvidence("SUCCEEDED"); delete evidence.observedDatabaseIdentity;
-    assert.throws(() => runPublicSqlDiscovery(env, sqlExecutor(evidence)), /EVIDENCE_INVALID/);
-    assert.equal(fs.existsSync(env.GITHUB_OUTPUT), false);
+    assert.throws(() => runPublicSqlDiscovery(env, sqlExecutor(evidence)), error => error.terminal.terminalReasonCode === "ENVELOPE_VALIDATION_FAILED");
+    assert.match(fs.readFileSync(env.GITHUB_OUTPUT, "utf8"), /terminal-reason-code[\s\S]*ENVELOPE_VALIDATION_FAILED/);
   });
   test("SQL projection blocked preserva envelope y mantiene failure", () => {
     const env = sqlEnv("sql-identity-cli-blocked");

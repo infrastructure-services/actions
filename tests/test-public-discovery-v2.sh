@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 node "$SCRIPT_DIR/test-public-discovery-v2.mjs"
+node "$SCRIPT_DIR/test-sql-terminal-hardening-v2.mjs"
 
 ROUTING_ROOT="$(mktemp -d)"
 cleanup() {
