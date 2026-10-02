@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Text.Json.Serialization;
 
 namespace SqlDiscovery.V2;
 
@@ -10,7 +11,9 @@ public enum HistoryStatus { Absent, Empty, Present, Unreadable, InvalidStructure
 
 public sealed record SqlDiscoveryTarget(string ServerConnectionString, string DatabaseName);
 
-public sealed record ObservedDatabaseIdentity(string ServerInstance, string DatabaseName);
+public sealed record ObservedDatabaseIdentity(
+    [property: JsonPropertyName("serverInstance")] string ServerInstance,
+    [property: JsonPropertyName("databaseName")] string DatabaseName);
 public enum ObservedIdentityStatus { Available, Unavailable, NotAttempted }
 public sealed record ObservedIdentityResult(
     ObservedIdentityStatus Status,

@@ -36,41 +36,7 @@ public static class SqlDiscoveryPublicCli
                 return 75;
             }
 
-            var tlsEvidence = new Dictionary<string, object?>
-            {
-                ["tlsRequestedMode"] = transport.TlsEvidence.TlsRequestedMode,
-                ["tlsInitialMode"] = transport.TlsEvidence.TlsInitialMode,
-                ["tlsInitialResult"] = transport.TlsEvidence.TlsInitialResult,
-                ["tlsFallbackAllowed"] = transport.TlsEvidence.TlsFallbackAllowed,
-                ["tlsFallbackAttempted"] = transport.TlsEvidence.TlsFallbackAttempted,
-                ["tlsEffectiveMode"] = transport.TlsEvidence.TlsEffectiveMode,
-                ["tlsCertificateValidated"] = transport.TlsEvidence.TlsCertificateValidated,
-                ["transportEncrypted"] = transport.TlsEvidence.TransportEncrypted,
-                ["tlsPolicySource"] = transport.TlsEvidence.TlsPolicySource
-            };
-            if (transport.TlsEvidence.DiagnosticFingerprint is not null)
-                tlsEvidence["diagnosticFingerprint"] = transport.TlsEvidence.DiagnosticFingerprint;
-
-            var publicEvidence = new Dictionary<string, object?>(projection.Sources)
-            {
-                ["tls"] = tlsEvidence,
-                ["serverConnectionStatus"] = result.ServerConnection.Status switch
-                {
-                    ConnectionStatus.Succeeded => "SUCCEEDED",
-                    ConnectionStatus.AuthenticationFailed => "AUTHENTICATION_FAILED",
-                    ConnectionStatus.TransportFailed => "TRANSPORT_FAILED",
-                    ConnectionStatus.TimedOut => "TIMEOUT",
-                    ConnectionStatus.Cancelled => "CANCELLED",
-                    ConnectionStatus.NotAttempted => "NOT_ATTEMPTED",
-                    _ => throw new InvalidOperationException("SERVER_CONNECTION_STATE_INVALID")
-                }
-            };
-            if (result.TargetConnection.Status == ConnectionStatus.Succeeded)
-            {
-                publicEvidence["observedDatabaseIdentity"] = result.ObservedIdentity.Identity
-                    ?? throw new InvalidOperationException("TARGET_IDENTITY_REQUIRED");
-            }
-            Console.WriteLine(JsonSerializer.Serialize(publicEvidence));
+            Console.WriteLine(SerializeSuccessEnvelope(result, projection, transport.TlsEvidence));
             return 0;
         }
         catch (Exception)
@@ -88,6 +54,46 @@ public static class SqlDiscoveryPublicCli
         {
             Environment.SetEnvironmentVariable("SQL_SERVER_CONNECTION", null);
         }
+    }
+
+    public static string SerializeSuccessEnvelope(SqlDiscoveryResult result, SourceProjection projection, TlsDiscoveryEvidence tls)
+    {
+        if (!projection.IsRepresentable || projection.Sources is null) throw new ArgumentException("PROJECTION_REQUIRED");
+        var tlsEvidence = new Dictionary<string, object?>
+        {
+            ["tlsRequestedMode"] = tls.TlsRequestedMode,
+            ["tlsInitialMode"] = tls.TlsInitialMode,
+            ["tlsInitialResult"] = tls.TlsInitialResult,
+            ["tlsFallbackAllowed"] = tls.TlsFallbackAllowed,
+            ["tlsFallbackAttempted"] = tls.TlsFallbackAttempted,
+            ["tlsEffectiveMode"] = tls.TlsEffectiveMode,
+            ["tlsCertificateValidated"] = tls.TlsCertificateValidated,
+            ["transportEncrypted"] = tls.TransportEncrypted,
+            ["tlsPolicySource"] = tls.TlsPolicySource
+        };
+        if (tls.DiagnosticFingerprint is not null)
+            tlsEvidence["diagnosticFingerprint"] = tls.DiagnosticFingerprint;
+
+        var publicEvidence = new Dictionary<string, object?>(projection.Sources)
+        {
+            ["tls"] = tlsEvidence,
+            ["serverConnectionStatus"] = result.ServerConnection.Status switch
+            {
+                ConnectionStatus.Succeeded => "SUCCEEDED",
+                ConnectionStatus.AuthenticationFailed => "AUTHENTICATION_FAILED",
+                ConnectionStatus.TransportFailed => "TRANSPORT_FAILED",
+                ConnectionStatus.TimedOut => "TIMEOUT",
+                ConnectionStatus.Cancelled => "CANCELLED",
+                ConnectionStatus.NotAttempted => "NOT_ATTEMPTED",
+                _ => throw new InvalidOperationException("SERVER_CONNECTION_STATE_INVALID")
+            }
+        };
+        if (result.TargetConnection.Status == ConnectionStatus.Succeeded)
+        {
+            publicEvidence["observedDatabaseIdentity"] = result.ObservedIdentity.Identity
+                ?? throw new InvalidOperationException("TARGET_IDENTITY_REQUIRED");
+        }
+        return JsonSerializer.Serialize(publicEvidence);
     }
 
     public static IReadOnlyDictionary<string, object?> BuildFailureEnvelope(
