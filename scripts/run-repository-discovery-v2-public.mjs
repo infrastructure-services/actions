@@ -20,12 +20,24 @@ export function buildRequest(env, io = fs) {
   validateEnvironment(env.ENVIRONMENT_NAME);
   if (!env.INSPECTION_STATUS) throw new Error("INSPECTION_STATUS_REQUIRED");
   if (!new Set(["READY", "UNKNOWN", "NOT_ATTEMPTED"]).has(env.INSPECTION_STATUS)) throw new Error("INSPECTION_STATUS_INVALID");
-  if (env.INSPECTION_STATUS !== "READY") return { repositoryDiscoveryContractVersion: 1, inspectionStatus: env.INSPECTION_STATUS };
+  const hasEfSource = typeof env.EF_SOURCE_JSON === "string" && env.EF_SOURCE_JSON.length > 0;
+  const hasRevision = typeof env.ACTUAL_SOURCE_REVISION === "string" && env.ACTUAL_SOURCE_REVISION.length > 0;
+  if (hasEfSource !== hasRevision) throw new Error("ADOPTION_INPUT_PARTIAL");
+  if (env.INSPECTION_STATUS !== "READY") {
+    if (hasEfSource) throw new Error("ADOPTION_REQUIRES_READY");
+    return { repositoryDiscoveryContractVersion: 1, inspectionStatus: env.INSPECTION_STATUS };
+  }
   if (!env.WORKSPACE || !env.GITHUB_WORKSPACE) throw new Error("WORKSPACE_REQUIRED");
   const governed = io.realpathSync(env.GITHUB_WORKSPACE);
   const requested = io.realpathSync(env.WORKSPACE);
   if (!within(governed, requested) || io.lstatSync(env.WORKSPACE).isSymbolicLink()) throw new Error("WORKSPACE_NOT_ALLOWED");
-  return { repositoryDiscoveryContractVersion: 1, inspectionStatus: "READY", workspace: requested };
+  const request = { repositoryDiscoveryContractVersion: 1, inspectionStatus: "READY", workspace: requested };
+  if (hasEfSource) {
+    try { request.efSource = JSON.parse(env.EF_SOURCE_JSON); }
+    catch { throw new Error("EF_SOURCE_JSON_INVALID"); }
+    request.actualSourceRevision = env.ACTUAL_SOURCE_REVISION;
+  }
+  return request;
 }
 
 function appendOutput(file, name, value) {
@@ -41,9 +53,15 @@ export function runPublicRepositoryDiscovery(env = process.env, execute = spawnS
   const evidence = JSON.parse(child.stdout);
   if (evidence === null || typeof evidence !== "object" || !STATUSES.has(evidence.status)) throw new Error("EVIDENCE_INVALID");
   if ((child.status === 75) !== (evidence.status === "ERROR")) throw new Error("EVIDENCE_EXIT_MISMATCH");
-  appendOutput(env.GITHUB_OUTPUT, "status", evidence.status);
-  appendOutput(env.GITHUB_OUTPUT, "evidence-json", JSON.stringify(evidence));
-  appendOutput(env.GITHUB_OUTPUT, "migration-ids-json", JSON.stringify(evidence.migrations?.ids ?? []));
+  const adoptionRequested = Object.hasOwn(request, "efSource");
+  if (adoptionRequested && (evidence.rawEvidence === null || typeof evidence.rawEvidence !== "object" || evidence.adoption === null || typeof evidence.adoption !== "object")) throw new Error("ADOPTION_EVIDENCE_REQUIRED");
+  if (!adoptionRequested && (Object.hasOwn(evidence, "rawEvidence") || Object.hasOwn(evidence, "adoption"))) throw new Error("ADOPTION_EVIDENCE_NOT_ALLOWED");
+  const repositorySource = { status: evidence.status, ...(evidence.migrations ? { migrations: evidence.migrations } : {}) };
+  appendOutput(env.GITHUB_OUTPUT, "status", repositorySource.status);
+  appendOutput(env.GITHUB_OUTPUT, "evidence-json", JSON.stringify(repositorySource));
+  appendOutput(env.GITHUB_OUTPUT, "migration-ids-json", JSON.stringify(repositorySource.migrations?.ids ?? []));
+  if (Object.hasOwn(evidence, "rawEvidence")) appendOutput(env.GITHUB_OUTPUT, "raw-evidence-json", JSON.stringify(evidence.rawEvidence));
+  if (Object.hasOwn(evidence, "adoption")) appendOutput(env.GITHUB_OUTPUT, "managed-evidence-json", JSON.stringify({ ...repositorySource, adoption: evidence.adoption }));
   return evidence;
 }
 

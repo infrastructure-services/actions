@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -91,6 +92,27 @@ test("H NEW candidate conserva bloqueo técnico", () => {
 test("I ausencia de migrations no infiere LEGACY_UNMANAGED", () => {
   const result = classification(envelope({ repositorySource: { status: "ABSENT" } }));
   assert.notEqual(result.inferences.scenario, "EXISTING_LEGACY"); assert.equal(result.declarations.changeManagementMode, "EF_MIGRATIONS");
+});
+test("J lineage adoptada de siete IDs conserva EXACT_MATCH y EXISTING_EF", () => {
+  const adoptedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "local-adopted-v2-"));
+  try {
+    const projectRoot = path.join(adoptedRoot, "src", "Infrastructure"); const migrations = path.join(projectRoot, "Migrations");
+    fs.mkdirSync(migrations, { recursive: true }); fs.writeFileSync(path.join(projectRoot, "Infrastructure.csproj"), "<Project />\n");
+    const ids = ["20260616182600_A", "20260618202000_B", "20260619160000_C", "20260619184141_D", "20260624000000_E", "20260624000001_F", "20260630141200_G"];
+    const legacy = path.join(migrations, "20211214152511_sql-init.cs"); fs.writeFileSync(legacy, "partial class SqlInit : Migration {}\n");
+    for (const migrationId of ids) {
+      fs.writeFileSync(path.join(migrations, `${migrationId}.cs`), "partial class Body : Migration {}\n");
+      fs.writeFileSync(path.join(migrations, `${migrationId}.Designer.cs`), `[Migration("${migrationId}")]\npartial class Metadata {}\n`);
+    }
+    fs.writeFileSync(path.join(migrations, "ApplicationDbContextModelSnapshot.cs"), "class Snapshot {}\n");
+    const sourceRevision = "a".repeat(40);
+    const efSource = { sourceRepository: "infrastructure-services/synthetic-api", sourceRevision, projectPath: "src/Infrastructure/Infrastructure.csproj", managedMigrationStartId: ids[0],
+      preAdoptionArtifacts: [{ path: "src/Infrastructure/Migrations/20211214152511_sql-init.cs", sha256: crypto.createHash("sha256").update(fs.readFileSync(legacy)).digest("hex"), disposition: "EXCLUDE_FROM_MANAGED_LINEAGE", reason: "Synthetic adoption" }] };
+    const managed = discoverRepository({ repositoryDiscoveryContractVersion: 1, inspectionStatus: "READY", workspace: adoptedRoot, efSource, actualSourceRevision: sourceRevision }).repositorySource;
+    assert.equal(managed.status, "PRESENT_VALID"); assert.deepEqual(managed.migrations.ids, ids);
+    const result = classification(envelope({ historySource: { status: "PRESENT", migrationCount: 7, migrationIds: ids }, repositorySource: { status: managed.status, migrations: managed.migrations } }));
+    assert.equal(result.observations.repoHistoryRelation, "EXACT_MATCH"); assert.equal(result.inferences.scenario, "EXISTING_EF"); assert.equal(result.decision.status, "ELIGIBLE_FOR_NEXT_READ_ONLY_STAGE");
+  } finally { fs.rmSync(adoptedRoot, { recursive: true, force: true }); }
 });
 
 console.log(`OK: ${passed} casos de composición local V2`);
