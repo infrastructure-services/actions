@@ -11,6 +11,12 @@ inputs:
   workspace:
     description: Directorio dentro de GITHUB_WORKSPACE; requerido sólo para READY.
     required: false
+  ef-source-json:
+    description: Declaración efSource gobernada; opcional y válida sólo junto con actual-source-revision.
+    required: false
+  actual-source-revision:
+    description: SHA Git completa del source tree ya disponible; no realiza checkout.
+    required: false
 
 outputs:
   status:
@@ -21,6 +27,12 @@ outputs:
   migration-ids-json:
     description: MigrationId exactos y ordenados; [] cuando no corresponda.
     value: ${{ steps.discover.outputs.migration-ids-json }}
+  raw-evidence-json:
+    description: Evidencia raw auditable; se publica cuando efSource está presente.
+    value: ${{ steps.discover.outputs.raw-evidence-json }}
+  managed-evidence-json:
+    description: Resultado de validación y proyección managed; se publica cuando efSource está presente.
+    value: ${{ steps.discover.outputs.managed-evidence-json }}
 
 runs:
   using: composite
@@ -32,4 +44,6 @@ runs:
         ENVIRONMENT_NAME: ${{ inputs.environment-name }}
         INSPECTION_STATUS: ${{ inputs.inspection-status }}
         WORKSPACE: ${{ inputs.workspace }}
+        EF_SOURCE_JSON: ${{ inputs.ef-source-json }}
+        ACTUAL_SOURCE_REVISION: ${{ inputs.actual-source-revision }}
       run: node "$GITHUB_ACTION_PATH/../scripts/run-repository-discovery-v2-public.mjs"

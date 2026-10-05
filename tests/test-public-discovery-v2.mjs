@@ -244,6 +244,23 @@ try {
     const env = { ENVIRONMENT_NAME: "TEST", INSPECTION_STATUS: "READY", WORKSPACE: temporaryRoot, GITHUB_WORKSPACE: temporaryRoot, GITHUB_OUTPUT: output("repo-error-mismatch"), GITHUB_ACTION_PATH: path.join(root, "repository-discovery-v2") };
     assert.throws(() => runPublicRepositoryDiscovery(env, () => ({ status: 0, stdout: '{"status":"ERROR"}\n', stderr: "" })), /EVIDENCE_EXIT_MISMATCH/);
   });
+  test("Repository agrega adoption sólo cuando ambos inputs están presentes", () => {
+    const efSource = { sourceRepository: "infrastructure-services/source", sourceRevision: "a".repeat(40), projectPath: "src/App.csproj", managedMigrationStartId: "20260101000000_A", preAdoptionArtifacts: [] };
+    const env = { ENVIRONMENT_NAME: "TEST", INSPECTION_STATUS: "READY", WORKSPACE: temporaryRoot, GITHUB_WORKSPACE: temporaryRoot, EF_SOURCE_JSON: JSON.stringify(efSource), ACTUAL_SOURCE_REVISION: "a".repeat(40) };
+    assert.deepEqual(buildRequest(env), { repositoryDiscoveryContractVersion: 1, inspectionStatus: "READY", workspace: fs.realpathSync(temporaryRoot), efSource, actualSourceRevision: "a".repeat(40) });
+    assert.throws(() => buildRequest({ ...env, ACTUAL_SOURCE_REVISION: "" }), /ADOPTION_INPUT_PARTIAL/);
+    assert.throws(() => buildRequest({ ...env, EF_SOURCE_JSON: "{" }), /EF_SOURCE_JSON_INVALID/);
+  });
+  test("Repository publica raw y managed por separado sin contaminar evidence-json", () => {
+    const env = { ENVIRONMENT_NAME: "TEST", INSPECTION_STATUS: "READY", WORKSPACE: temporaryRoot, GITHUB_WORKSPACE: temporaryRoot, GITHUB_OUTPUT: output("repo-adopted"), GITHUB_ACTION_PATH: path.join(root, "repository-discovery-v2"), EF_SOURCE_JSON: "{}", ACTUAL_SOURCE_REVISION: "a".repeat(40) };
+    const payload = { status: "PRESENT_VALID", migrations: { count: 1, ids: ["20260101000000_A"] }, adoption: { status: "VALID", issues: [] }, rawEvidence: { rawEvidenceContractVersion: 1, migrationArtifacts: [] } };
+    runPublicRepositoryDiscovery(env, () => ({ status: 0, stdout: JSON.stringify(payload), stderr: "" }));
+    const persisted = fs.readFileSync(env.GITHUB_OUTPUT, "utf8");
+    const source = JSON.parse(persisted.match(/evidence-json<<REPOSITORY_DISCOVERY_V2_EOF\n([^\n]+)/u)[1]);
+    assert.deepEqual(source, { status: payload.status, migrations: payload.migrations });
+    assert.match(persisted, /raw-evidence-json[\s\S]*rawEvidenceContractVersion/u);
+    assert.match(persisted, /managed-evidence-json[\s\S]*"adoption":\{"status":"VALID"/u);
+  });
 
   test("contratos action.yml son explícitos y no tienen default TEST", () => {
     for (const action of ["sql-discovery-v2", "repository-discovery-v2"]) {
