@@ -60,6 +60,7 @@ public sealed class SqlNewEfRuntime(string inspectionMaster, string provisioning
         await VerifyServerAbsenceAsync(c,p,true,token);
         await using var create = c.CreateCommand(); create.CommandTimeout = 60;
         create.CommandText = "CREATE DATABASE [CICD_NEW_EF_TEST];";
+        _=NewEfContract.RemainingDeadline(p); token.ThrowIfCancellationRequested();
         await create.ExecuteNonQueryAsync(token); // FIRST SQL WRITE; never retried.
         await using var q = c.CreateCommand(); q.CommandTimeout = 30;
         q.CommandText = """
@@ -173,12 +174,13 @@ public sealed class SqlNewEfRuntime(string inspectionMaster, string provisioning
         }
         await using var transaction=(SqlTransaction)await c.BeginTransactionAsync(token);
         foreach(var batch in batches) {
+            _=NewEfContract.RemainingDeadline(p);
             token.ThrowIfCancellationRequested();
             await using var command=c.CreateCommand(); command.Transaction=transaction;
             command.CommandTimeout=60; command.CommandText=batch;
             await command.ExecuteNonQueryAsync(token);
         }
-        token.ThrowIfCancellationRequested(); await transaction.CommitAsync(token);
+        _=NewEfContract.RemainingDeadline(p); token.ThrowIfCancellationRequested(); await transaction.CommitAsync(token);
         // Disposal rolls back uncommitted work. A lost commit response stops the
         // cycle; neither phase retry nor automatic DOWN/DROP is permitted.
     }

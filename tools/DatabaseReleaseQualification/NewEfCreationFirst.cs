@@ -28,6 +28,11 @@ public static class NewEfContract
     {
         if (!condition) throw new LegacyContractException(reason);
     }
+    public static TimeSpan RemainingDeadline(NewEfPlanV1 p) {
+        var remaining=p.ExpiresAtUtc-DateTimeOffset.UtcNow;
+        Require(remaining>TimeSpan.Zero,"NEW_EF_GRANT_EXPIRED");
+        return remaining<TimeSpan.FromSeconds(p.TimeoutSeconds)?remaining:TimeSpan.FromSeconds(p.TimeoutSeconds);
+    }
     public static void Verify(NewEfPlanV1 p, string trustedHash, byte[] up, byte[] down, DateTimeOffset now)
     {
         Require(p.ContractVersion == 1 && p.Kind == "NEW_EF_CREATION_FIRST_PLAN"
@@ -172,7 +177,7 @@ public sealed class NewEfCycle(INewEfRuntime runtime, Action<NewEfPhaseEvidence>
             && Guid.TryParse(creation.DatabaseIncarnation, out _)
             && NewEfContract.Hash(creation with { ReceiptHash = "" }) == creation.ReceiptHash, "NEW_EF_CREATION_RECEIPT_INVALID");
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
-        deadline.CancelAfter(TimeSpan.FromSeconds(plan.TimeoutSeconds));
+        deadline.CancelAfter(NewEfContract.RemainingDeadline(plan));
         var phases = new List<NewEfPhaseEvidence>();
         bool recovery = false, reapply = false;
         void Record(string phase, string status, NewEfObservation? observation = null, string? hash = null)

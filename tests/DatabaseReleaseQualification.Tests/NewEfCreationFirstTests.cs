@@ -27,6 +27,13 @@ internal static class NewEfCreationFirstTests
             ("NEW creation-first SQL rejects unsupported/cross-target payloads",Sql),
             ("NEW creation-first connection rejects wrong original catalogs and sources",Connection),
             ("NEW creation-first repeat invocation cannot resume",Repeat)
+            ,("NEW grant expiry cancels during PRE before SQL write",async()=> {
+                var p=NewEfContract.Bind(Plan() with {ExpiresAtUtc=DateTimeOffset.UtcNow.AddMilliseconds(200)});
+                var runtime=new Fake("grant-expires");var creation=Creation(p);
+                var result=await new NewEfCycle(runtime).RunAsync(p,p.PlanHash,Up,Down,creation,creation.AuthorizationReference,CancellationToken.None);
+                if(result.Status!="BLOCKED" || result.Reason!="NEW_EF_CANCELLED_OR_TIMEOUT" || runtime.Writes.Count!=0)
+                    throw new Exception("Expired authority allowed write");
+            })
             ,("NEW security capture proves globals before object exists",()=> {
                 var empty=new SchemaSnapshot();
                 var scope=SqlNewEfRuntime.SecurityScope(empty,"MigrationTestItems");
@@ -144,6 +151,10 @@ internal static class NewEfCreationFirstTests
             return Task.CompletedTask;
         }
         public Task<NewEfObservation> CaptureAsync(NewEfPlanV1 p,CancellationToken token) {
+            if(fault=="grant-expires") {
+                async Task<NewEfObservation> Delayed() {await Task.Delay(TimeSpan.FromSeconds(5),token);throw new Exception("Grant expiry deadline ignored");}
+                return Delayed();
+            }
             if(fault=="cancelled")throw new OperationCanceledException();
             bool post=Writes.Count is 1 or 3, recovered=Writes.Count==2;
             var history=post?HistoryStatus.Present:recovered?HistoryStatus.Empty:HistoryStatus.Absent;

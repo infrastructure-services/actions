@@ -37,6 +37,9 @@ any alternate model shape block. Hashing is over original bytes. AST canonicaliz
 shape only; execution uses original byte-derived batch spans and does not regenerate SQL.
 Each UP1/DOWN/UP2 phase has its own outer transaction, no retry, command timeout 60 seconds,
 connection timeout 15 seconds and total deadline at most 1200 seconds. Cancellation stops the
+operation also at grant expiry; each batch and commit rechecks remaining validity. Expiration
+while catalog capture is pending cancels before any migration write.
+Cancellation stops the
 cycle; disposal rolls back an uncommitted transaction. A lost commit response remains uncertain.
 
 The actual generated DOWN drops MigrationTestItems and removes its EF history row but leaves

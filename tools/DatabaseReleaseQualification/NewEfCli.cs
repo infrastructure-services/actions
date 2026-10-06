@@ -101,7 +101,7 @@ public static class NewEfCli
             if(operation=="CREATE") {
                 NewEfContract.Require(options.Count==4,"NEW_EF_ARGUMENTS_INVALID");
                 using var deadline=CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token);
-                deadline.CancelAfter(TimeSpan.FromSeconds(p.TimeoutSeconds));
+                deadline.CancelAfter(NewEfContract.RemainingDeadline(p));
                 await Write(output+".intent.json",new {status="CREATE_STARTED_RESULT_UNKNOWN",p.OperationId,p.PlanHash});
                 var receipt=await runtime.CreateAsync(p,authorization,deadline.Token);
                 await Write(output,receipt);
