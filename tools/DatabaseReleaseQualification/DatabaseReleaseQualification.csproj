@@ -7,6 +7,10 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../SqlDiscovery/TestTlsFallbackPolicy.cs" Link="Shared/TestTlsFallbackPolicy.cs" />
+    <Compile Include="../SqlDiscovery/V2Contracts.cs" Link="Shared/V2Contracts.cs" />
+    <Compile Include="../SqlDiscovery/EmptyForNewEfV1.cs" Link="Shared/EmptyForNewEfV1.cs" />
+    <Compile Include="../SqlDiscovery/SqlDiscoveryOrchestratorV2.cs" Link="Shared/SqlDiscoveryOrchestratorV2.cs" />
+    <Compile Include="../SqlDiscovery/SqlClientDiscoveryTransportV2.cs" Link="Shared/SqlClientDiscoveryTransportV2.cs" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.2" />
     <PackageReference Include="Microsoft.SqlServer.TransactSql.ScriptDom" Version="180.102.0" />
   </ItemGroup>
