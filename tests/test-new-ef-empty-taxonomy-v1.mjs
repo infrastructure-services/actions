@@ -101,6 +101,9 @@ for (const [name, mutate, reason] of [
 });
 test("public SQL boundary preserves complete coverage and rejects incoherent taxonomy", () => {
   const value = { serverConnectionStatus: "SUCCEEDED", ...Object.fromEntries(Object.entries(sources()).filter(([key]) => ["connectionSource", "databaseLookupSource", "targetConnectionSource", "metadataSource", "physicalSource", "historySource"].includes(key))), observedDatabaseIdentity: { serverInstance: "SQL01", databaseName: "Fixture" } };
+  value.tls = { tlsRequestedMode: "TEST_UNTRUSTED_CERTIFICATE", tlsInitialMode: "TEST_UNTRUSTED_CERTIFICATE", tlsInitialResult: "SUCCEEDED", tlsFallbackAllowed: false, tlsFallbackAttempted: false, tlsEffectiveMode: "TEST_UNTRUSTED_CERTIFICATE", tlsCertificateValidated: false, transportEncrypted: true, tlsPolicySource: "EXPLICIT_TEST_CONFIGURATION" };
+  const missingTls = structuredClone(value); delete missingTls.tls;
+  assert.throws(() => validateEvidence(missingTls), /EVIDENCE_INVALID/);
   assert.deepEqual(validateEvidence(value).physicalSource, physical()); value.physicalSource.taxonomy.counts.databaseTriggers = 1;
   assert.throws(() => validateEvidence(value), /EVIDENCE_INVALID/);
 });
