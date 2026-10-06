@@ -73,7 +73,7 @@ runs:
         SQL_SERVER_CONNECTION: ${{ inputs.server-connection-string }}
       run: echo "::add-mask::$SQL_SERVER_CONNECTION"
     - name: Setup .NET for SQL Discovery V2
-      uses: actions/setup-dotnet@v5
+      uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
       with:
         dotnet-version: ${{ inputs.dotnet-version }}
     - name: Discover SQL evidence in TEST (read only)
