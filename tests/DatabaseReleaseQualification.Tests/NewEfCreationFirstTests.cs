@@ -105,6 +105,15 @@ internal static class NewEfCreationFirstTests
         if(fault=="valid") {
             if(result.Status!="NEW_EF_REHEARSAL_COMPLETE_NOT_CERTIFIED"||!result.RecoveryVerified||!result.ReapplyVerified
                 ||!runtime.Writes.SequenceEqual(new[]{"UP","DOWN","UP"}))throw new Exception("Cycle incomplete");
+            var pre=result.Phases.Single(x=>x.Phase=="PRE");var pre2=result.Phases.Single(x=>x.Phase=="PRE2");
+            var post1=result.Phases.Single(x=>x.Phase=="POST1");var post2=result.Phases.Single(x=>x.Phase=="POST2");
+            if(pre.BusinessSchemaHash is null || pre.BusinessSchemaHash!=pre2.BusinessSchemaHash
+                || pre.BusinessSecurityHash is null || pre.BusinessSecurityHash!=pre2.BusinessSecurityHash
+                || post1.HistorySchemaHash is null || post1.HistorySchemaHash!=pre2.HistorySchemaHash
+                || post1.HistorySecurityHash is null || post1.HistorySecurityHash!=pre2.HistorySecurityHash
+                || post1.SchemaHash!=post2.SchemaHash || post1.DatabaseIncarnation!=creation.DatabaseIncarnation
+                || post2.DataEmpty!=true || post2.HistoryProductVersionValid!=true
+                || !post2.MigrationIds!.SequenceEqual(p.MigrationIds))throw new Exception("Receipt omits recovery evidence");
         } else {
             if(result.Status!="BLOCKED")throw new Exception("Fault accepted: "+fault);
             if(fault is "classification" or "not-found" or "populated" or "history-empty-before-UP" or "taxonomy-partial"

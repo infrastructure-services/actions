@@ -46,6 +46,9 @@ equal, and POST1/PRE2 retained history schema/security equal. It does not reuse 
 ABSENT semantics and does not manually edit history. POST1/POST2 full schema/security, exact
 history lineage, expected ProductVersion and empty business data must match. The successful
 receipt is `NEW_EF_REHEARSAL_COMPLETE_NOT_CERTIFIED`. No provisioning recovery is implied.
+Each captured phase persists full/business/history schema hashes, business/history security
+hashes, incarnation, history state/IDs and data/ProductVersion checks in the external journal
+and receipt, so the comparisons can be audited without retaining raw schema or data values.
 
 Security capture always includes DATABASE and dbo SCHEMA. An object scope is added only when
 complete schema capture observes it; the existing security reader correctly refuses unproven

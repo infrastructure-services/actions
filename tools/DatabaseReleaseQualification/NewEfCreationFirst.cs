@@ -136,7 +136,11 @@ public sealed record NewEfObservation(SqlDiscoveryResult Discovery, SchemaSnapsh
     string BusinessSecurityHash, string HistorySecurityHash, string DatabaseIncarnation,
     bool DataEmpty, bool HistoryProductVersionValid);
 public sealed record NewEfPhaseEvidence(string Phase, string Status, string? ScriptHash,
-    string? SchemaHash, string? HistoryState, DateTimeOffset AtUtc);
+    string? SchemaHash, string? HistoryState, DateTimeOffset AtUtc,
+    string? BusinessSchemaHash = null, string? HistorySchemaHash = null,
+    string? BusinessSecurityHash = null, string? HistorySecurityHash = null,
+    string? DatabaseIncarnation = null, bool? DataEmpty = null,
+    bool? HistoryProductVersionValid = null, IReadOnlyList<string>? MigrationIds = null);
 public sealed record NewEfCycleReceipt(string Kind, string Status, string PlanHash, string CreationReceiptHash,
     string RecoveryStrategy, bool RecoveryVerified, bool ReapplyVerified,
     IReadOnlyList<NewEfPhaseEvidence> Phases, string? Reason, string ReceiptHash);
@@ -174,7 +178,11 @@ public sealed class NewEfCycle(INewEfRuntime runtime, Action<NewEfPhaseEvidence>
         void Record(string phase, string status, NewEfObservation? observation = null, string? hash = null)
         {
             var item = new NewEfPhaseEvidence(phase, status, hash, observation?.SchemaHash,
-                observation?.Discovery.History.Status.ToString(), DateTimeOffset.UtcNow);
+                observation?.Discovery.History.Status.ToString(), DateTimeOffset.UtcNow,
+                observation?.BusinessSchemaHash, observation?.HistorySchemaHash,
+                observation?.BusinessSecurityHash, observation?.HistorySecurityHash,
+                observation?.DatabaseIncarnation, observation?.DataEmpty,
+                observation?.HistoryProductVersionValid, observation?.Discovery.History.MigrationIds.ToArray());
             phases.Add(item); journal?.Invoke(item);
         }
         async Task<NewEfObservation> Observe()
