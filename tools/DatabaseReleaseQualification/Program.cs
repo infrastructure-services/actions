@@ -32,6 +32,10 @@ public static class QualificationCli
             "execute-ef-test-script" => EfTestMigrationCli.RunAsync(args.Skip(1).ToArray()),
             "validate-ef-test-script" => EfTestMigrationCli.ValidateAsync(args.Skip(1).ToArray()),
             "bind-ef-test-plan" => EfTestMigrationCli.BindAsync(args.Skip(1).ToArray()),
+            "prepare-new-ef-plan" => NewEfCli.RunAsync("PREPARE", args.Skip(1).ToArray()),
+            "validate-new-ef-payload" => NewEfCli.RunAsync("PAYLOAD", args.Skip(1).ToArray()),
+            "create-new-ef-database" => NewEfCli.RunAsync("CREATE", args.Skip(1).ToArray()),
+            "qualify-new-ef-initial" => NewEfCli.RunAsync("QUALIFY", args.Skip(1).ToArray()),
             _ => InvalidCommand()
         };
     }

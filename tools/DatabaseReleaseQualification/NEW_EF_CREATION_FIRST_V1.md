@@ -1,0 +1,72 @@
+# NEW EF creation-first TEST pilot
+
+This isolated path implements creation and initial-migration rehearsal for application 3602,
+target `8d0c7254-5c54-4a93-aeec-a75f8a5a6fc3`, database `CICD_NEW_EF_TEST`, server
+`sqlv1testdcsrv1`, endpoint `DBCICDV3TEST`. It does not certify a Registry record or deploy an application.
+Existing CICDV3 and legacy execution remain on their existing paths.
+
+## Contracts
+
+`prepare-new-ef-plan` uses an inspection connection whose original catalog is `master`.
+It proves complete server visibility and absence and creates a plan bound to exact source,
+Workflow, Actions, governance/onboarding bytes, run attempt 1, operation ID, TLS, timeout,
+migration IDs and UP/DOWN byte hashes. The plan expires in one hour.
+
+`create-new-ef-database` revalidates the plan, clean immutable checkouts, remote main ancestry,
+actual referenced reusable revision and actual independent protected-environment approval.
+The same verified master connection then rechecks server identity, absence, CREATE authority,
+full catalog visibility and absence of enabled server DDL triggers. The first SQL write is
+exactly `CREATE DATABASE [CICD_NEW_EF_TEST];`. Existing databases always block, even when empty.
+Only this fixed literal is accepted; this is not an administrative SQL runner.
+
+A create intent precedes the attempt. The external receipt records target, creator principal,
+server, operation, approval reference, time, database_guid incarnation, revisions and plan hash.
+No ownership table is created. Lost responses stop with an uncertain result; no retry or DROP.
+
+`qualify-new-ef-initial` requires that receipt, unchanged HG2/HG3 NEW_EF classification and a
+fresh capture through unchanged SQL Discovery V2 and the existing schema/security readers.
+Initial PRE requires FOUND, complete physical taxonomy, business/technical counts zero,
+history ABSENT, deterministic complete schema and matching database incarnation.
+
+## Frozen SQL and recovery
+
+The real EF 10.0.12 migration is `20261006205713_InitialMigrationTestItems`. Only its closed
+UP/DOWN AST shapes are accepted, including EF-owned history INSERT/DELETE. GO repetition,
+dynamic SQL, cross-database references, arbitrary DML, transactions inside the payload and
+any alternate model shape block. Hashing is over original bytes. AST canonicalization validates
+shape only; execution uses original byte-derived batch spans and does not regenerate SQL.
+Each UP1/DOWN/UP2 phase has its own outer transaction, no retry, command timeout 60 seconds,
+connection timeout 15 seconds and total deadline at most 1200 seconds. Cancellation stops the
+operation also at grant expiry; each batch and commit rechecks remaining validity. Expiration
+while catalog capture is pending cancels before any migration write.
+Cancellation stops the
+cycle; disposal rolls back an uncommitted transaction. A lost commit response remains uncertain.
+
+The actual generated DOWN drops MigrationTestItems and removes its EF history row but leaves
+the history table. Recovery policy `MIGRATION_EMPTY_EQUIVALENT_WITH_EF_HISTORY_V1` therefore
+requires PRE2 physical empty, history EMPTY, PRE/PRE2 business schema and DB/schema security
+equal, and POST1/PRE2 retained history schema/security equal. It does not reuse initial-bootstrap
+ABSENT semantics and does not manually edit history. POST1/POST2 full schema/security, exact
+history lineage, expected ProductVersion and empty business data must match. The successful
+receipt is `NEW_EF_REHEARSAL_COMPLETE_NOT_CERTIFIED`. No provisioning recovery is implied.
+Each captured phase persists full/business/history schema hashes, business/history security
+hashes, incarnation, history state/IDs and data/ProductVersion checks in the external journal
+and receipt, so the comparisons can be audited without retaining raw schema or data values.
+
+Security capture always includes DATABASE and dbo SCHEMA. An object scope is added only when
+complete schema capture observes it; the existing security reader correctly refuses unproven
+object absence. SQL Server 2022/2025 and sufficient VIEW SECURITY DEFINITION visibility are
+required by the reused security adapter. Missing visibility blocks rather than downgrading.
+
+Artifacts contain plan, exact controlled SQL, hashes, sanitized metadata and receipts; no
+connection strings or exception messages. They are retained for seven days by the workflow.
+Abrupt runner loss can prevent evidence upload; the intent and no-retry rule require manual
+read-only reconciliation before any later attempt. A successful run leaves the DB provisioned
+and UP2 applied; another NEW run against it must block. Manual cleanup requires separate authority.
+
+## Offline verification
+
+`dotnet run --project tests/DatabaseReleaseQualification.Tests -c Release -- --new-ef-creation`
+exercises fake CREATE/UP/DOWN/UP and directed failures. `validate-new-ef-payload --up <file>
+--down <file> --output <new-file>` validates actual generated bytes without environment or SQL.
+The Workflow guard tests use fake GitHub API responses and current unchanged classification.
