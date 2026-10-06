@@ -7,6 +7,10 @@ inputs:
   environment-name:
     description: Ambiente permitido.
     default: TEST
+  tls-mode:
+    description: Política TLS explícita. STRICT por defecto; TEST_UNTRUSTED_CERTIFICATE sólo se permite en TEST.
+    required: false
+    default: STRICT
   output-directory:
     description: Directorio de evidencia observada.
     default: artifacts/db-schema-capture-new/TEST
@@ -38,7 +42,7 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-dotnet@v5
+    - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
       with:
         dotnet-version: ${{ inputs.dotnet-version }}
     - id: capture
@@ -46,5 +50,6 @@ runs:
       env:
         DB_CONNECTION: ${{ inputs.connection-string }}
         ENVIRONMENT_NAME: ${{ inputs.environment-name }}
+        TLS_MODE: ${{ inputs.tls-mode }}
         OUTPUT_DIRECTORY: ${{ inputs.output-directory }}
       run: bash "$GITHUB_ACTION_PATH/run-schema-capture.sh"

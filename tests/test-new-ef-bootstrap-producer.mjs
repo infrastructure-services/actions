@@ -18,10 +18,15 @@ fs.writeFileSync(dotnet, `import fs from 'node:fs';
 const args=process.argv.slice(2), command=args[0]==='restore'||args[0]==='build'?args[0]:args[1];
 fs.appendFileSync(process.env.MOCK_CALLS,command+'\\n');
 if(command==='restore'||command==='build') process.exit(0);
+const tlsMode=args[args.indexOf('--tls-mode')+1];
+if(command==='capture-schema') {
+  if(!args.includes('--tls-mode')||tlsMode!==process.env.MOCK_EXPECTED_TLS) process.exit(91);
+  if(args.includes(process.env.DB_CONNECTION)) process.exit(92);
+}
 const result=args[args.indexOf('--result')+1], hash='a'.repeat(64);
 const failed=process.env.MOCK_FAILURE==='capture'&&command==='capture-schema';
 const nondeterministic=process.env.MOCK_FAILURE==='determinism'&&command==='compare-schema-captures';
-const tls={tlsRequestedMode:'TEST_UNTRUSTED_CERTIFICATE',tlsInitialMode:'TEST_UNTRUSTED_CERTIFICATE',tlsInitialResult:failed?'OTHER_FAILURE':'SUCCEEDED',tlsFallbackAllowed:false,tlsFallbackAttempted:false,tlsEffectiveMode:'TEST_UNTRUSTED_CERTIFICATE',tlsCertificateValidated:false,transportEncrypted:true,tlsPolicySource:'EXPLICIT_TEST_CONFIGURATION'};
+const tls={tlsRequestedMode:tlsMode,tlsInitialMode:tlsMode,tlsInitialResult:failed?'OTHER_FAILURE':'SUCCEEDED',tlsFallbackAllowed:false,tlsFallbackAttempted:false,tlsEffectiveMode:tlsMode,tlsCertificateValidated:tlsMode==='STRICT'&&!failed,transportEncrypted:true,tlsPolicySource:tlsMode==='STRICT'?'DEFAULT_STRICT':'EXPLICIT_TEST_CONFIGURATION'};
 const value=command==='capture-schema'?{status:failed?'FAIL_DATABASE_UNREACHABLE':'SUCCESS',diagnosticCode:failed?'SQL_0':'MOCK_CAPTURE',tls,...(failed?{diagnosticFingerprint:{exceptionType:'Microsoft.Data.SqlClient.SqlException',hResult:'0x80131904',sqlExceptionNumber:0,sqlErrorNumbers:[0],sqlErrorStates:[0],sqlErrorClasses:[20],innerExceptionType:'System.Security.Authentication.AuthenticationException',innerHResult:'0x80131501',nativeErrorCode:null,tlsFailureCategory:'TRANSPORT_OTHER'}}:{}),databaseName:'Orders',serverVersion:'16',schemaCoverage:'COMPLETE',metricsAvailability:'COMPLETE',objectCounts:{},unsupportedSchemaFeatures:[]}:command==='compare-schema-captures'?{status:'SUCCESS',diagnosticCode:'MOCK_COMPARE',identityConsistent:true,observedServerInstance:'SQL01',observedDatabaseName:'Orders',capture1SchemaHash:hash,capture2SchemaHash:hash,deterministic:process.env.MOCK_FAILURE!=='determinism'}:{status:'SUCCESS',registryStatus:'BASELINE_REQUIRED',driftStatus:'BASELINE_REQUIRED',gateStatus:'BLOCKED',reason:'ONBOARDING_BASELINE_REQUIRED',baselineCandidate:true,observedSchemaHash:hash,certifiedSchemaHash:null,registryFormatVersion:1,registryProvenance:{registryCommitSha:'b'.repeat(40)}};
 if(nondeterministic)value.status='FAIL_SCHEMA_CAPTURE_NONDETERMINISTIC';
 fs.writeFileSync(result,JSON.stringify(value));process.exit(failed||nondeterministic?6:0);
@@ -40,11 +45,14 @@ console.log(typeof result==='object'?JSON.stringify(result):String(result));
 `);
 for (const [name, file] of [["dotnet", dotnet], ["jq", jq]]) fs.writeFileSync(path.join(bin, name), `#!/usr/bin/env bash\nexec node "${posix(file)}" "$@"\n`, { mode: 0o755 });
 let passed = 0;
-function run({ ordinary = false, failure = "", registryContext = false } = {}) {
+function run({ ordinary = false, failure = "", registryContext = false, tlsMode = "TEST_UNTRUSTED_CERTIFICATE", environment = "TEST" } = {}) {
   const root = fs.mkdtempSync(path.join(temp, "case-"));
   const output = path.join(root, "output.txt"), calls = path.join(root, "calls.txt"); fs.writeFileSync(output, ""); fs.writeFileSync(calls, "");
   const env = { ...process.env, GITHUB_ACTION_PATH: posix(path.join(repo, ordinary ? "schema-capture" : "schema-capture-new-ef-bootstrap")), GITHUB_WORKSPACE: posix(root), RUNNER_TEMP: posix(root), GITHUB_OUTPUT: posix(output), GITHUB_STEP_SUMMARY: "", ENVIRONMENT_NAME: "TEST", TLS_MODE: "TEST_UNTRUSTED_CERTIFICATE", OUTPUT_DIRECTORY: "artifacts", DB_CONNECTION: "synthetic-never-opened", MOCK_CALLS: calls, MOCK_FAILURE: failure,
     APPLICATION_ID: "", REGISTRY_FILE: "", REGISTRY_REPOSITORY: "", REGISTRY_REF: "", REGISTRY_COMMIT_SHA: "", REGISTRY_LOGICAL_FILE_PATH: "", REGISTRY_FILE_SHA256: "" };
+  env.ENVIRONMENT_NAME = environment;
+  env.MOCK_EXPECTED_TLS = tlsMode || "STRICT";
+  if (tlsMode === null) delete env.TLS_MODE; else env.TLS_MODE = tlsMode;
   if (ordinary) {
     const registry = path.join(root, "database-registry", "targets.json"); fs.mkdirSync(path.dirname(registry)); fs.writeFileSync(registry, "{}");
     Object.assign(env, { APPLICATION_ID: "orders", REGISTRY_FILE: posix(registry), REGISTRY_REPOSITORY: "fixture/registry", REGISTRY_REF: "main", REGISTRY_COMMIT_SHA: "b".repeat(40), REGISTRY_LOGICAL_FILE_PATH: "database-registry/targets.json", REGISTRY_FILE_SHA256: crypto.createHash("sha256").update("{}").digest("hex") });
@@ -67,6 +75,25 @@ try {
     assert.match(action, /run: bash "\$GITHUB_ACTION_PATH\/run-schema-capture.sh"/);
   });
   test("bootstrap captures twice, never evaluates Registry", () => { const r = run(); assert.equal(r.status, 0, r.stderr); assert.equal(r.calls.split("capture-schema").length - 1, 2); assert.ok(!r.calls.includes("evaluate-database-state")); assert.match(r.outputs, /registry_status=NOT_EVALUATED/); assert.match(r.outputs, /gate_status=BLOCKED/); assert.match(r.outputs, /gate_reason=NEW_EF_CERTIFICATION_NOT_EVALUATED/); });
+  test("bootstrap action wires the existing TLS contract and immutable setup-dotnet", () => {
+    const action = fs.readFileSync(path.join(repo, "schema-capture-new-ef-bootstrap/action.yml"), "utf8");
+    const sqlAction = fs.readFileSync(path.join(repo, "sql-discovery-v2/action.yml"), "utf8");
+    const pin = "actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1";
+    assert.ok(action.includes(pin) && sqlAction.includes(pin));
+    assert.match(action, /tls-mode:\s+description: [^\n]+\s+required: false\s+default: STRICT/);
+    assert.ok(action.includes("TLS_MODE: ${{ inputs.tls-mode }}"));
+    const refs = [...action.matchAll(/uses:\s+(\S+)/g)].map(match => match[1]);
+    assert.ok(refs.length > 0 && refs.every(ref => /@[0-9a-f]{40}$/.test(ref)));
+  });
+  for (const tlsMode of ["STRICT", "TEST_UNTRUSTED_CERTIFICATE", null]) test(`bootstrap propagates TLS ${tlsMode ?? "default STRICT"}`, () => {
+    const r = run({ tlsMode }); assert.equal(r.status, 0, r.stderr);
+    const tls = JSON.parse(r.tlsEvidence).tls;
+    assert.equal(tls.tlsRequestedMode, tlsMode ?? "STRICT");
+    assert.equal(tls.tlsEffectiveMode, tlsMode ?? "STRICT");
+    assert.equal(tls.transportEncrypted, true); assert.equal(tls.tlsFallbackAttempted, false);
+  });
+  test("invalid TLS fails before build or capture", () => { const r = run({ tlsMode: "INVALID" }); assert.equal(r.status, 3, r.stderr); assert.equal(r.calls, ""); assert.equal(r.outputs, ""); });
+  for (const environment of ["QA", "PROD"]) test(`bootstrap rejects ${environment} before build or capture`, () => { const r = run({ environment }); assert.equal(r.status, 3, r.stderr); assert.equal(r.calls, ""); assert.equal(r.outputs, ""); });
   test("supplied Registry context rejected before capture/evaluation", () => { const r = run({ registryContext: true }); assert.equal(r.status, 2, r.stderr); assert.equal(r.calls, ""); assert.ok(!r.outputs.includes("NOT_EVALUATED")); });
   for (const failure of ["capture", "determinism"]) test(`${failure} failure never becomes intentional NOT_EVALUATED`, () => { const r = run({ failure }); assert.notEqual(r.status, 0); assert.ok(!r.outputs.includes("NOT_EVALUATED")); assert.ok(!r.calls.includes("evaluate-database-state")); });
   test("capture failure publishes only sanitized TLS fingerprint", () => { const r = run({ failure: "capture" }); const value = JSON.parse(r.tlsDiagnostic); assert.equal(value.captureId, "capture-1"); assert.equal(value.diagnosticFingerprint.sqlExceptionNumber, 0); assert.equal(value.diagnosticFingerprint.tlsFailureCategory, "TRANSPORT_OTHER"); for (const forbidden of ["password", "token", "connectionString", "message", "stackTrace"]) assert.equal(r.tlsDiagnostic.toLowerCase().includes(forbidden.toLowerCase()), false); });
