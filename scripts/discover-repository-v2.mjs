@@ -194,10 +194,16 @@ function blocked(rawEvidence, issues) {
   return { status: "INVALID", adoption: { status: "BLOCKED", issues: [...new Set(issues)] }, rawEvidence };
 }
 
-export function projectManagedRepository(rawEvidence, efSource, actualSourceRevision) {
+export function projectManagedRepository(rawEvidence, efSource, actualSourceRevision, callerSource) {
   const issues = [];
   if (!validEfSource(efSource)) return blocked(rawEvidence, ["ADOPTION_CONTRACT_INVALID"]);
   if (typeof actualSourceRevision !== "string" || !SOURCE_REVISION_PATTERN.test(actualSourceRevision)) issues.push("ACTUAL_SOURCE_REVISION_INVALID");
+  else if (callerSource !== undefined) {
+    if (!exactKeys(callerSource, ["sourceRepository", "sourceRevision"], ["sourceRepository", "sourceRevision"]) ||
+        callerSource.sourceRepository !== efSource.sourceRepository ||
+        typeof callerSource.sourceRevision !== "string" || !SOURCE_REVISION_PATTERN.test(callerSource.sourceRevision) ||
+        callerSource.sourceRevision.toLowerCase() !== actualSourceRevision.toLowerCase()) issues.push("CALLER_SOURCE_MISMATCH");
+  }
   else if (actualSourceRevision.toLowerCase() !== efSource.sourceRevision.toLowerCase()) issues.push("SOURCE_REVISION_MISMATCH");
   const projectMatches = rawEvidence.projects.filter(item => item.path === efSource.projectPath);
   if (projectMatches.length === 0) issues.push("PROJECT_NOT_FOUND");
@@ -242,7 +248,7 @@ export function projectManagedRepository(rawEvidence, efSource, actualSourceRevi
   return {
     status: "PRESENT_VALID",
     migrations: { count: ids.length, ids },
-    adoption: { status: "VALID", sourceRevision: actualSourceRevision.toLowerCase(), projectPath: efSource.projectPath, managedMigrationStartId: efSource.managedMigrationStartId, excludedArtifacts: [...excluded].sort() },
+    adoption: { status: "VALID", ...(callerSource === undefined ? {} : { acquisitionMode: "CALLER_SOURCE", adoptionSourceRevision: efSource.sourceRevision.toLowerCase(), sourceRepository: callerSource.sourceRepository }), sourceRevision: actualSourceRevision.toLowerCase(), projectPath: efSource.projectPath, managedMigrationStartId: efSource.managedMigrationStartId, excludedArtifacts: [...excluded].sort() },
     rawEvidence
   };
 }
@@ -256,22 +262,22 @@ export function inspectRepository(workspace, io = fs) {
 }
 
 export function discoverRepository(request, io = fs) {
-  if (!exactKeys(request, ["repositoryDiscoveryContractVersion", "inspectionStatus"], ["repositoryDiscoveryContractVersion", "inspectionStatus", "workspace", "efSource", "actualSourceRevision"])) {
+  if (!exactKeys(request, ["repositoryDiscoveryContractVersion", "inspectionStatus"], ["repositoryDiscoveryContractVersion", "inspectionStatus", "workspace", "efSource", "actualSourceRevision", "callerSource"])) {
     return invalid("REQUEST_INVALID");
   }
   if (request.repositoryDiscoveryContractVersion !== 1) return invalid("CONTRACT_VERSION_INVALID");
   if (!["READY", "UNKNOWN", "NOT_ATTEMPTED"].includes(request.inspectionStatus)) return invalid("INSPECTION_STATUS_INVALID");
   if (request.inspectionStatus !== "READY") {
-    if (Object.hasOwn(request, "workspace") || Object.hasOwn(request, "efSource") || Object.hasOwn(request, "actualSourceRevision")) return invalid("WORKSPACE_NOT_ALLOWED");
+    if (Object.hasOwn(request, "workspace") || Object.hasOwn(request, "efSource") || Object.hasOwn(request, "actualSourceRevision") || Object.hasOwn(request, "callerSource")) return invalid("WORKSPACE_NOT_ALLOWED");
     return { exitCode: 0, repositorySource: source(request.inspectionStatus) };
   }
   if (typeof request.workspace !== "string" || request.workspace.length === 0) return invalid("WORKSPACE_REQUIRED");
   const hasEfSource = Object.hasOwn(request, "efSource");
-  if (hasEfSource !== Object.hasOwn(request, "actualSourceRevision")) return invalid("ADOPTION_INPUT_PARTIAL");
+  if ((!hasEfSource && Object.hasOwn(request, "callerSource")) || hasEfSource !== Object.hasOwn(request, "actualSourceRevision")) return invalid("ADOPTION_INPUT_PARTIAL");
   let repositorySource;
   try {
     const rawEvidence = inspectRawRepository(request.workspace, io);
-    repositorySource = hasEfSource ? projectManagedRepository(rawEvidence, request.efSource, request.actualSourceRevision) : legacyProjection(rawEvidence);
+    repositorySource = hasEfSource ? projectManagedRepository(rawEvidence, request.efSource, request.actualSourceRevision, request.callerSource) : legacyProjection(rawEvidence);
   } catch {
     repositorySource = source("ERROR");
   }

@@ -18,6 +18,10 @@ inputs:
     description: SHA Git completa del source tree ya disponible; no realiza checkout.
     required: false
 
+  caller-source-json:
+    description: Identidad y SHA efectivos del caller; separados de la provenance historica de adopcion.
+    required: false
+
 outputs:
   status:
     value: ${{ steps.discover.outputs.status }}
@@ -46,4 +50,5 @@ runs:
         WORKSPACE: ${{ inputs.workspace }}
         EF_SOURCE_JSON: ${{ inputs.ef-source-json }}
         ACTUAL_SOURCE_REVISION: ${{ inputs.actual-source-revision }}
+        CALLER_SOURCE_JSON: ${{ inputs.caller-source-json }}
       run: node "$GITHUB_ACTION_PATH/../scripts/run-repository-discovery-v2-public.mjs"
