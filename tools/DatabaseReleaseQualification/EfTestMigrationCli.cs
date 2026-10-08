@@ -187,6 +187,11 @@ public static class EfTestMigrationCli
 
     internal static IReadOnlyList<string> ExactBatches(string sql)
     {
+        // Decode strictly at the callers; normalize only one absolute leading BOM.
+        // Hashing still uses the original bytes, while executable batches omit it.
+        if (sql.StartsWith('\uFEFF')) sql = sql[1..];
+        if (sql.Contains('\uFEFF'))
+            throw new LegacyContractException("EF_TEST_SCRIPT_UNSUPPORTED");
         if (Regex.IsMatch(sql,
                 @"\bUSE\b|\bEXEC(?:UTE)?\b|\bOPEN(?:QUERY|ROWSET|DATASOURCE)\b|\bBULK\b",
                 RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
@@ -232,7 +237,8 @@ public static class EfTestMigrationCli
                     throw new LegacyContractException("EF_TEST_SCRIPT_UNSUPPORTED");
                 transactionOpen = false;
             }
-            else if (!supported.Contains(kind))
+            else if (!supported.Contains(kind)
+                && !(statement is IfStatement conditional && EfIdentityInsertContract.Accepts(conditional)))
                 throw new LegacyContractException("EF_TEST_SCRIPT_UNSUPPORTED");
         }
         if (transactionOpen) throw new LegacyContractException("EF_TEST_SCRIPT_UNSUPPORTED");

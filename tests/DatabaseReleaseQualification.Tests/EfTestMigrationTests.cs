@@ -14,7 +14,8 @@ internal static class EfTestMigrationTests
         ("ef TEST rejects stale analysis", () => Check("stale")),
         ("ef TEST SQL runner rejects cross-database and unsupported statements", ScriptGuard),
         ("ef TEST plan validates exact SQL before approval", ScriptValidationCli),
-        ("ef TEST preserves balanced EF transaction wrappers", TransactionWrappers)
+        ("ef TEST preserves balanced EF transaction wrappers", TransactionWrappers),
+        .. EfIdentityInsertTests.Cases
     ];
     private static Task Check(string fault)
     {
