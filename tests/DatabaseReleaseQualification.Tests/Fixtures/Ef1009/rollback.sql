@@ -1,0 +1,9 @@
+﻿BEGIN TRANSACTION;
+DROP TABLE [SEBLOB];
+
+DELETE FROM [__EFMigrationsHistory]
+WHERE [MigrationId] = N'20260701161500_AddSeblobTable';
+
+COMMIT;
+GO
+

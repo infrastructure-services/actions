@@ -7,5 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../tools/DatabaseReleaseQualification/DatabaseReleaseQualification.csproj" />
+    <None Include="Fixtures/Ef1009/*.sql" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

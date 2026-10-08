@@ -14,3 +14,4 @@
 /scripts/run-repository-discovery-v2-public.mjs text eol=lf
 /tests/test-public-discovery-v2.mjs text eol=lf
 /tests/test-public-discovery-v2.sh text eol=lf
+/tests/DatabaseReleaseQualification.Tests/Fixtures/Ef1009/*.sql -text
