@@ -13,7 +13,8 @@ internal static class EfTestMigrationTests
         ("ef TEST rejects missing protected job authority", () => Check("authority")),
         ("ef TEST rejects stale analysis", () => Check("stale")),
         ("ef TEST SQL runner rejects cross-database and unsupported statements", ScriptGuard),
-        ("ef TEST plan validates exact SQL before approval", ScriptValidationCli)
+        ("ef TEST plan validates exact SQL before approval", ScriptValidationCli),
+        ("ef TEST preserves balanced EF transaction wrappers", TransactionWrappers)
     ];
     private static Task Check(string fault)
     {
@@ -88,6 +89,23 @@ internal static class EfTestMigrationTests
         })
         {
             try { EfTestMigrationCli.ExactBatches(sql); throw new Exception("Unsafe SQL accepted"); }
+            catch (LegacyContractException) { }
+        }
+        return Task.CompletedTask;
+    }
+
+    private static Task TransactionWrappers()
+    {
+        const string body = "CREATE TABLE dbo.SEBLOB (OID varchar(450) NOT NULL PRIMARY KEY);\nGO\nINSERT INTO dbo.SEBLOB VALUES ('SEBLOB-INITIAL');\nGO\n";
+        var wrapped = "BEGIN TRANSACTION;\nGO\n" + body + "COMMIT;\nGO\n";
+        if (EfTestMigrationCli.ExactBatches(wrapped).Count != 4)
+            throw new Exception("Expected unchanged EF transaction batches");
+        foreach (var sql in new[] { "COMMIT;", "BEGIN TRANSACTION;" + body,
+            "BEGIN TRANSACTION; BEGIN TRANSACTION; COMMIT; COMMIT;",
+            "BEGIN TRANSACTION named; COMMIT TRANSACTION named;",
+            "BEGIN TRANSACTION; ROLLBACK;", "BEGIN TRANSACTION; USE QA; COMMIT;" })
+        {
+            try { EfTestMigrationCli.ExactBatches(sql); throw new Exception("Unsafe transaction accepted"); }
             catch (LegacyContractException) { }
         }
         return Task.CompletedTask;

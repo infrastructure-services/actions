@@ -22,7 +22,7 @@ export function buildRequest(env, io = fs) {
   if (!new Set(["READY", "UNKNOWN", "NOT_ATTEMPTED"]).has(env.INSPECTION_STATUS)) throw new Error("INSPECTION_STATUS_INVALID");
   const hasEfSource = typeof env.EF_SOURCE_JSON === "string" && env.EF_SOURCE_JSON.length > 0;
   const hasRevision = typeof env.ACTUAL_SOURCE_REVISION === "string" && env.ACTUAL_SOURCE_REVISION.length > 0;
-  if (hasEfSource !== hasRevision) throw new Error("ADOPTION_INPUT_PARTIAL");
+  if ((env.CALLER_SOURCE_JSON && !hasEfSource) || hasEfSource !== hasRevision) throw new Error("ADOPTION_INPUT_PARTIAL");
   if (env.INSPECTION_STATUS !== "READY") {
     if (hasEfSource) throw new Error("ADOPTION_REQUIRES_READY");
     return { repositoryDiscoveryContractVersion: 1, inspectionStatus: env.INSPECTION_STATUS };
@@ -36,6 +36,7 @@ export function buildRequest(env, io = fs) {
     try { request.efSource = JSON.parse(env.EF_SOURCE_JSON); }
     catch { throw new Error("EF_SOURCE_JSON_INVALID"); }
     request.actualSourceRevision = env.ACTUAL_SOURCE_REVISION;
+    if (env.CALLER_SOURCE_JSON) request.callerSource = JSON.parse(env.CALLER_SOURCE_JSON);
   }
   return request;
 }

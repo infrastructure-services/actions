@@ -127,6 +127,24 @@ try {
   test("contrato parcial falla cerrado", () => { const fixture = adopted("partial-contract"); delete fixture.efSource.sourceRepository; expectIssue(fixture, "ADOPTION_CONTRACT_INVALID"); });
   test("input adoption parcial falla en boundary", () => { const fixture = adopted("partial-input"); assert.equal(discoverRepository({ repositoryDiscoveryContractVersion: 1, inspectionStatus: "READY", workspace: fixture.root, efSource: fixture.efSource }).code, "ADOPTION_INPUT_PARTIAL"); });
   test("disposition desconocida falla cerrado", () => { const fixture = adopted("unknown-disposition"); fixture.efSource.preAdoptionArtifacts[0].disposition = "IGNORE"; expectIssue(fixture, "ADOPTION_CONTRACT_INVALID"); });
+  test("caller revision after adoption preserves metadata and detects eight managed migrations", () => {
+    const fixture = adopted("caller-current");
+    migration(fixture.projectRoot, "20260701161500_AddSeblobTable");
+    const current = "c".repeat(40);
+    const request = { repositoryDiscoveryContractVersion: 1, inspectionStatus: "READY", workspace: fixture.root, efSource: fixture.efSource, actualSourceRevision: current, callerSource: { sourceRepository: fixture.efSource.sourceRepository, sourceRevision: current } };
+    const result = discoverRepository(request).repositorySource;
+    assert.equal(result.status, "PRESENT_VALID");
+    assert.equal(result.migrations.count, 8);
+    assert.deepEqual(result.migrations.ids, [...adoptedIds, "20260701161500_AddSeblobTable"]);
+    assert.equal(result.adoption.adoptionSourceRevision, revision);
+    assert.equal(result.adoption.sourceRevision, current);
+    assert.deepEqual(result.adoption.excludedArtifacts, [fixture.efSource.preAdoptionArtifacts[0].path]);
+    for (const callerSource of [{ ...request.callerSource, sourceRepository: "other/repo" }, { ...request.callerSource, sourceRevision: revision }, null, {}]) {
+      assert.equal(discoverRepository({ ...request, callerSource }).repositorySource.status, "INVALID");
+    }
+    fixture.efSource.preAdoptionArtifacts[0].sha256 = "0".repeat(64);
+    assert.ok(discoverRepository(request).repositorySource.adoption.issues.includes("PRE_ADOPTION_ARTIFACT_HASH_MISMATCH"));
+  });
 } finally {
   fs.rmSync(temporaryRoot, { recursive: true, force: true });
 }

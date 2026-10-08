@@ -280,6 +280,14 @@ try {
       assert.doesNotMatch(text, /\beval\s*\(|\b(?:INSERT\s+INTO|UPDATE\s+[^\s]+\s+SET|DELETE\s+FROM|MERGE\s+INTO|CREATE\s+(?:TABLE|DATABASE)|ALTER\s+(?:TABLE|DATABASE)|DROP\s+(?:TABLE|DATABASE)|TRUNCATE\s+TABLE)/i);
     }
   });
+  test("public repository passes caller acquisition separately from adoption", () => {
+    const env = { ENVIRONMENT_NAME: "TEST", INSPECTION_STATUS: "READY", GITHUB_WORKSPACE: temporaryRoot, WORKSPACE: temporaryRoot, EF_SOURCE_JSON: JSON.stringify({ sourceRevision: "a".repeat(40) }), ACTUAL_SOURCE_REVISION: "b".repeat(40), CALLER_SOURCE_JSON: JSON.stringify({ sourceRepository: "org/app", sourceRevision: "b".repeat(40) }) };
+    const request = buildRequest(env);
+    assert.equal(request.efSource.sourceRevision, "a".repeat(40));
+    assert.equal(request.callerSource.sourceRevision, "b".repeat(40));
+    assert.throws(() => buildRequest({ ...env, EF_SOURCE_JSON: "", ACTUAL_SOURCE_REVISION: "" }), /ADOPTION_INPUT_PARTIAL/);
+    assert.throws(() => buildRequest({ ...env, CALLER_SOURCE_JSON: "{" }));
+  });
 } finally {
   fs.rmSync(temporaryRoot, { recursive: true, force: true });
 }

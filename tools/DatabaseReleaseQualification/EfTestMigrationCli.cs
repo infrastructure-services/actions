@@ -212,9 +212,30 @@ public static class EfTestMigrationCli
             "InsertStatement", "UpdateStatement", "DeleteStatement",
             "CreateSequenceStatement", "AlterSequenceStatement", "DropSequenceStatement"
         };
-        if (script.Batches.SelectMany(x => x.Statements)
-            .Any(x => !supported.Contains(x.GetType().Name)))
-            throw new LegacyContractException("EF_TEST_SCRIPT_UNSUPPORTED");
+        // Preserve EF's transaction wrappers verbatim on the same connection.
+        // Only balanced, unnamed, non-nested BEGIN TRANSACTION / COMMIT are allowed;
+        // the existing DDL/DML and database-boundary allow-lists remain unchanged.
+        var transactionOpen = false;
+        foreach (var statement in script.Batches.SelectMany(x => x.Statements))
+        {
+            var kind = statement.GetType().Name;
+            var text = sql.Substring(statement.StartOffset, statement.FragmentLength).Trim();
+            if (kind == "BeginTransactionStatement")
+            {
+                if (transactionOpen || !Regex.IsMatch(text, @"\ABEGIN\s+TRANSACTION\s*;?\z", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+                    throw new LegacyContractException("EF_TEST_SCRIPT_UNSUPPORTED");
+                transactionOpen = true;
+            }
+            else if (kind == "CommitTransactionStatement")
+            {
+                if (!transactionOpen || !Regex.IsMatch(text, @"\ACOMMIT(?:\s+TRANSACTION)?\s*;?\z", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+                    throw new LegacyContractException("EF_TEST_SCRIPT_UNSUPPORTED");
+                transactionOpen = false;
+            }
+            else if (!supported.Contains(kind))
+                throw new LegacyContractException("EF_TEST_SCRIPT_UNSUPPORTED");
+        }
+        if (transactionOpen) throw new LegacyContractException("EF_TEST_SCRIPT_UNSUPPORTED");
         return batches;
     }
 
