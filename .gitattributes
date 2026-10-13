@@ -15,3 +15,4 @@
 /tests/test-public-discovery-v2.mjs text eol=lf
 /tests/test-public-discovery-v2.sh text eol=lf
 /tests/DatabaseReleaseQualification.Tests/Fixtures/Ef1009/*.sql -text whitespace=cr-at-eol,-blank-at-eof
+/tests/test-ef-release-plan-static.sh text eol=lf

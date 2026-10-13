@@ -208,7 +208,9 @@ var tests = new (string Name, Func<Task> Run)[]
     ("Evidence ID conserva semántica case-sensitive", CommitProtocolEvidenceIdIsCaseSensitive)
 };
 
-tests = args.Contains("--new-ef-creation", StringComparer.Ordinal)
+tests = args.Contains("--ef-release-plan", StringComparer.Ordinal)
+    ? EfReleasePlanTests.Cases
+    : args.Contains("--new-ef-creation", StringComparer.Ordinal)
     ? NewEfCreationFirstTests.Cases
     : args.Contains("--legacy-rehearsal", StringComparer.Ordinal)
     ? LegacyRehearsalTests.Cases
@@ -229,7 +231,7 @@ tests = args.Contains("--new-ef-creation", StringComparer.Ordinal)
             : tests.Concat(RecoveryCoverageTests.Cases).Concat(LegacyArtifactTests.Cases)
                 .Concat(LegacySecurityReaderTests.Cases).Concat(LegacySafetyTests.Cases)
                 .Concat(LegacyReadinessTests.Cases).Concat(LegacyRuntimeResolverTests.Cases)
-                .Concat(LegacyRehearsalTests.Cases).Concat(EfTestMigrationTests.Cases).Concat(NewEfCreationFirstTests.Cases).ToArray();
+                .Concat(LegacyRehearsalTests.Cases).Concat(EfTestMigrationTests.Cases).Concat(NewEfCreationFirstTests.Cases).Concat(EfReleasePlanTests.Cases).ToArray();
 var failed = 0;
 foreach (var test in tests)
 {
