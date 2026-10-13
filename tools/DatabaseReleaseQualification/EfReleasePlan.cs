@@ -49,7 +49,7 @@ public sealed record EfPlanManifestV1(int ContractVersion, string Kind, string S
     EfPlanPolicyV1 Policy, EfPlanGovernanceV1 Authority, EfPlanSourceV1 Source,
     ReleasePayloadMetadata Payload, EfPlanStateV1 Pre, EfPlanStateV1 ExpectedPost,
     string[] PendingMigrationIds, RiskAnalysisReport? Risk, bool ImpactComplete,
-    EfPlanRecoverySummaryV1 Recovery, string[] BlockingReasons)
+    EfPlanRecoverySummaryV1 Recovery, string[] BlockingReasons, EfPlanAcquisitionV1? Acquisition = null)
 {
     public bool ExecutionAuthorized => false;
 }
@@ -170,11 +170,21 @@ public static class EfReleasePlannerV1
 
     public static EfPlanResultV1 Build(EfPlanRequestV1 request, ReleaseScript forward,
         ReleaseScript rollback, DateTimeOffset now)
+        => BuildCore(request, forward, rollback, now, null);
+
+    internal static EfPlanResultV1 BuildAcquired(EfPlanRequestV1 request, ReleaseScript forward,
+        ReleaseScript rollback, DateTimeOffset now, EfPlanAcquisitionV1 acquisition)
+        => BuildCore(request, forward, rollback, now, acquisition);
+
+    private static EfPlanResultV1 BuildCore(EfPlanRequestV1 request, ReleaseScript forward,
+        ReleaseScript rollback, DateTimeOffset now, EfPlanAcquisitionV1? acquisition)
     {
         try
         {
             // Snapshot every mutable input before validating or hashing it.
             var r = JsonSerializer.Deserialize<EfPlanRequestV1>(JsonSerializer.Serialize(request, JsonDefaults.Compact), JsonDefaults.Compact)!;
+            if (acquisition is not null)
+                acquisition = JsonSerializer.Deserialize<EfPlanAcquisitionV1>(JsonSerializer.Serialize(acquisition, JsonDefaults.Compact), JsonDefaults.Compact)!;
             Require(r.ContractVersion == 1 && Token(r.ReleaseId) && Guid.TryParseExact(r.OperationId, "D", out _), "REQUEST_INVALID");
             Provenance(r.Policy.Provenance);
             Require(Token(r.Policy.PolicyId) && r.Policy.MaximumValiditySeconds > 0
@@ -183,7 +193,22 @@ public static class EfReleasePlannerV1
             Authority(r); Migrations(r.Source.ManagedMigrationIds);
             Require(forward.Role == "forward" && rollback.Role == "rollback", "SQL_ROLE_INVALID");
             var pre = State(r.Pre, r.Authority.Target, now);
-            var post = State(r.ExpectedPost, r.Authority.Target, now);
+            var qualificationTarget = acquisition?.RehearsalTarget ?? r.Authority.Target;
+            var qualificationPre = acquisition?.RehearsalPre ?? pre;
+            var post = State(r.ExpectedPost, qualificationTarget, now);
+            if (acquisition is not null)
+            {
+                Require(qualificationTarget.TargetId != pre.TargetId
+                    && qualificationPre.DatabaseIncarnation != pre.DatabaseIncarnation
+                    && (!qualificationPre.DatabaseName.Equals(pre.DatabaseName, StringComparison.OrdinalIgnoreCase)
+                        || !qualificationPre.ServerInstance.Equals(pre.ServerInstance, StringComparison.OrdinalIgnoreCase)), "REHEARSAL_ISOLATION_REQUIRED");
+                Require(qualificationTarget.SourceRepository == r.Source.Repository
+                    && qualificationTarget.ServerMatchPolicy is "ALLOW_LIST" or "MANAGED_ENDPOINT", "REHEARSAL_BINDING_INVALID");
+                SameContent(pre, qualificationPre, "REHEARSAL_PRE_NOT_EQUIVALENT");
+                Reference(acquisition.QualificationEvidence); Reference(acquisition.SqlResolution.Evidence);
+                Reference(acquisition.ContentHashContract);
+                foreach (var evidence in acquisition.Evidence) Reference(evidence);
+            }
             if (r.Authority.Scenario == "EXISTING_EF")
             {
                 Require(r.Authority.CertifiedBaseline is { } baseline && Hash(baseline.SchemaHash)
@@ -191,8 +216,8 @@ public static class EfReleasePlannerV1
                 Provenance(r.Authority.CertifiedBaseline!.Provenance);
             }
             Require((now - r.Pre.CapturedAtUtc).TotalSeconds <= r.Policy.MaximumValiditySeconds, "PRE_EVIDENCE_STALE");
-            Require(pre.DatabaseIncarnation == post.DatabaseIncarnation, "QUALIFICATION_INCARNATION_MISMATCH");
-            Require(pre.CapturedAtUtc <= post.CapturedAtUtc, "QUALIFICATION_TIME_INVALID");
+            Require(qualificationPre.DatabaseIncarnation == post.DatabaseIncarnation, "QUALIFICATION_INCARNATION_MISMATCH");
+            Require(qualificationPre.CapturedAtUtc <= post.CapturedAtUtc, "QUALIFICATION_TIME_INVALID");
             Require(pre.Evidence.EvidenceId != post.Evidence.EvidenceId, "INDEPENDENT_POST_EVIDENCE_REQUIRED");
             var repositoryIds = r.Source.ManagedMigrationIds;
             Require(pre.AppliedMigrationIds.Length < repositoryIds.Length
@@ -210,7 +235,10 @@ public static class EfReleasePlannerV1
                 ReleaseId = r.ReleaseId, Environment = r.Authority.Target.Environment, SourceKind = "EF",
                 Scenario = r.Authority.Scenario, DatabaseLifecycle = r.Authority.Lifecycle
             }, forward, rollback);
-            var f = Analyze(forward, r.Pre.Schema); var b = Analyze(rollback, r.ExpectedPost.Schema);
+            var f = acquisition is null ? Analyze(forward, r.Pre.Schema)
+                : EfSqlSemanticAnalysisV1.Analyze(forward, r.Pre.Schema, acquisition.SqlResolution).Analysis;
+            var b = acquisition is null ? Analyze(rollback, r.ExpectedPost.Schema)
+                : EfSqlSemanticAnalysisV1.Analyze(rollback, r.ExpectedPost.Schema, acquisition.SqlResolution).Analysis;
             var impact = RecoveryImpact.Derive(f, b);
             var metricsComplete = r.Pre.ImpactCoverage == "COMPLETE" && r.ExpectedPost.ImpactCoverage == "COMPLETE"
                 && MetricsComplete(f, r.Pre.Schema) && MetricsComplete(b, r.ExpectedPost.Schema);
@@ -233,15 +261,15 @@ public static class EfReleasePlannerV1
                 reasons.Add("IMPACT_COVERAGE_REQUIRED");
             if (f.Findings.Concat(b.Findings).Any(x => x.Severity == FindingSeverity.Blocking))
                 reasons.Add("BLOCKING_DEPENDENCY");
-            var recovery = Recovery(r.Recovery, payload, pre, post, impact,
-                f.HasPotentialDataLoss || b.HasPotentialDataLoss, r.Authority.Target, now, reasons);
+            var recovery = Recovery(r.Recovery, payload, qualificationPre, post, impact,
+                f.HasPotentialDataLoss || b.HasPotentialDataLoss, qualificationTarget, now, reasons);
             var status = reasons.Count == 0 ? "PLAN_EVIDENCE_CONSISTENT_NOT_AUTHORIZED" : "BLOCKED";
             var codes = reasons.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
             var manifest = new EfPlanManifestV1(1, "EF_RELEASE_PLAN", status, r.OperationId,
                 r.PreparedAtUtc, r.ExpiresAtUtc, r.Policy, r.Authority, r.Source, payload, pre, post,
                 repositoryIds.Skip(pre.AppliedMigrationIds.Length).ToArray(),
                 analysisComplete && impact.Complete && metricsComplete ? risk : null,
-                analysisComplete && impact.Complete && metricsComplete, recovery, codes);
+                analysisComplete && impact.Complete && metricsComplete, recovery, codes, acquisition);
             return new(status, new EfReleasePlanV1(manifest), codes);
         }
         catch (ContractError e) { return new("BLOCKED", null, [e.Message]); }
@@ -343,7 +371,9 @@ public static class EfReleasePlannerV1
             Require(observed.Evidence.EvidenceId != p.Pre.Evidence.EvidenceId
                 && observed.Evidence.EvidenceId != p.ExpectedPost.Evidence.EvidenceId
                 && observed.Evidence.EvidenceId != execution.Evidence.EvidenceId, "INDEPENDENT_POST_EVIDENCE_REQUIRED");
-            SameState(p.ExpectedPost, State(observed, p.Authority.Target, now), "POST_STATE_MISMATCH");
+            var actual = State(observed, p.Authority.Target, now);
+            Require(actual.DatabaseIncarnation == p.Pre.DatabaseIncarnation, "POST_INCARNATION_MISMATCH");
+            SameContent(p.ExpectedPost, actual, "POST_STATE_MISMATCH");
         }, "POST_MATCH_NOT_CERTIFIED");
 
     private static EfPlanResultV1 Check(EfReleasePlanV1 plan, string trustedHash, Action validate, string status)
@@ -358,8 +388,31 @@ public static class EfReleasePlannerV1
         catch { return new("BLOCKED", null, ["EF_PLAN_INPUT_INVALID"]); }
     }
     private static void SameState(EfPlanStateV1 expected, EfPlanStateV1 actual, string code)
-        => Require(expected.DatabaseIncarnation == actual.DatabaseIncarnation
-            && expected.HistoryStatus == actual.HistoryStatus && expected.AppliedMigrationIds.SequenceEqual(actual.AppliedMigrationIds)
+    {
+        Require(expected.DatabaseIncarnation == actual.DatabaseIncarnation, code);
+        SameContent(expected, actual, code);
+    }
+    private static void SameContent(EfPlanStateV1 expected, EfPlanStateV1 actual, string code)
+        => Require(expected.HistoryStatus == actual.HistoryStatus && expected.AppliedMigrationIds.SequenceEqual(actual.AppliedMigrationIds)
             && expected.SchemaHash == actual.SchemaHash && expected.DataHash == actual.DataHash
             && expected.SecurityHash == actual.SecurityHash, code);
+
+    internal static EfPlanStateV1 Observe(EfPlanObservationV1 observation, EfPlanTargetV1 target, DateTimeOffset now)
+        => State(observation, target, now);
+
+    internal static EfPlanStateV1 ValidateNoChanges(EfPlanRequestV1 request, DateTimeOffset now)
+    {
+        Authority(request); Migrations(request.Source.ManagedMigrationIds);
+        Provenance(request.Policy.Provenance);
+        Require(request.Policy.MaximumValiditySeconds > 0 && request.PreparedAtUtc <= now
+            && now < request.ExpiresAtUtc && (request.ExpiresAtUtc - request.PreparedAtUtc).TotalSeconds <= request.Policy.MaximumValiditySeconds,
+            "PLAN_VALIDITY_INVALID");
+        var pre = State(request.Pre, request.Authority.Target, now);
+        Require(request.Authority.Scenario == "EXISTING_EF" && pre.HistoryStatus == "PRESENT"
+            && pre.AppliedMigrationIds.SequenceEqual(request.Source.ManagedMigrationIds), "NO_CHANGES_NOT_PROVEN");
+        Require((now - pre.CapturedAtUtc).TotalSeconds <= request.Policy.MaximumValiditySeconds, "PRE_EVIDENCE_STALE");
+        Require(request.Authority.CertifiedBaseline is { } baseline && baseline.SchemaHash == pre.SchemaHash, "CERTIFIED_PRE_MISMATCH");
+        Provenance(request.Authority.CertifiedBaseline!.Provenance);
+        return pre;
+    }
 }

@@ -10,7 +10,7 @@ internal static class EfReleasePlanTests
     private static EfPlanProvenanceV1 Provenance(string id) => new("platform/governance", new string('a', 40), Ref(id));
     private static void Assert(bool value, string why) { if (!value) throw new Exception(why); }
     private static T Copy<T>(T value) => JsonSerializer.Deserialize<T>(JsonSerializer.Serialize(value, JsonDefaults.Compact), JsonDefaults.Compact)!;
-    private sealed record Fixture(EfPlanRequestV1 Request, ReleaseScript Forward, ReleaseScript Rollback)
+    internal sealed record Fixture(EfPlanRequestV1 Request, ReleaseScript Forward, ReleaseScript Rollback)
     {
         public EfPlanResultV1 Build() => EfReleasePlannerV1.Build(Request, Forward, Rollback, Now);
     }
@@ -31,15 +31,15 @@ internal static class EfReleasePlanTests
         ("EF generic plan: invalid SQL, encoding and null evidence fail closed", Malformed)
     ];
 
-    private static async Task<Fixture> Make(string name = "Orders", int applied = 2, int pending = 1, bool initial = false)
+    internal static async Task<Fixture> Make(string name = "Orders", int applied = 2, int pending = 1, bool initial = false, string schema = "dbo")
     {
         var all = Enumerable.Range(1, applied + pending).Select(i => $"202601{i:00}120000_Change{i}").ToArray();
         var tables = Enumerable.Range(applied + 1, pending).Select(i => $"{name}Item{i}").ToArray();
         var forward = ReleaseScript.FromText("forward", string.Join("\n", tables.Zip(all.Skip(applied), (t, id) =>
-            $"CREATE TABLE dbo.{t} (Id int NOT NULL); INSERT INTO dbo.__EFMigrationsHistory (MigrationId, ProductVersion) VALUES (N'{id}', N'10.0.9');")));
+            $"CREATE TABLE {schema}.{t} (Id int NOT NULL); INSERT INTO {schema}.__EFMigrationsHistory (MigrationId, ProductVersion) VALUES (N'{id}', N'10.0.9');")));
         var rollback = ReleaseScript.FromText("rollback", string.Join("\n", tables.Zip(all.Skip(applied), (t, id) =>
-            $"DROP TABLE dbo.{t}; DELETE FROM dbo.__EFMigrationsHistory WHERE MigrationId=N'{id}';").Reverse()));
-        var preSchema = Snapshot([]); var postSchema = Snapshot(tables);
+            $"DROP TABLE {schema}.{t}; DELETE FROM {schema}.__EFMigrationsHistory WHERE MigrationId=N'{id}';").Reverse()));
+        var preSchema = Snapshot([], schema); var postSchema = Snapshot(tables, schema);
         var descriptor = new ReleaseDescriptor { ReleaseId = "release-" + name, Environment = "TEST", SourceKind = "EF", Scenario = initial ? "NEW_EF" : "EXISTING_EF", DatabaseLifecycle = initial ? "NEW" : "EXISTING" };
         var payload = ReleasePayloadBuilder.Build(descriptor, forward, rollback);
         var lab = new Lab(preSchema, postSchema);
@@ -66,11 +66,11 @@ internal static class EfReleasePlanTests
             new(target.SourceRepository, new string('b', 40), "src/Infrastructure/Infrastructure.csproj", "src/Host/Host.csproj", all, Ref("repository"), null),
             pre, post, recovery), forward, rollback);
     }
-    private static SchemaSnapshot Snapshot(string[] tables) => new() {
-        Objects = tables.Prepend("__EFMigrationsHistory").Select(t => new SchemaObject { Kind = "table", Schema = "dbo", Name = t }).ToList(),
-        ImpactMetrics = tables.Prepend("__EFMigrationsHistory").Select(t => new TableImpactMetric { Schema = "dbo", Table = t, RowCount = 4 }).ToList()
+    private static SchemaSnapshot Snapshot(string[] tables, string schema = "dbo") => new() {
+        Objects = tables.Prepend("__EFMigrationsHistory").Select(t => new SchemaObject { Kind = "table", Schema = schema, Name = t }).ToList(),
+        ImpactMetrics = tables.Prepend("__EFMigrationsHistory").Select(t => new TableImpactMetric { Schema = schema, Table = t, RowCount = 4 }).ToList()
     };
-    private sealed class Lab(SchemaSnapshot pre, SchemaSnapshot post) : IRehearsalDatabase, IRecoverySecurityEvidenceProvider,
+    internal sealed class Lab(SchemaSnapshot pre, SchemaSnapshot post) : IRehearsalDatabase, IRecoverySecurityEvidenceProvider,
         IDataRollbackValidationContract, IDataReapplyValidationContract
     {
         private int writes;

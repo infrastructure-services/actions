@@ -1,9 +1,11 @@
-# EF release plan evidence V1 (A1)
+# EF release plan evidence V1 (A1 / A2.1)
 
 `EfReleasePlannerV1` composes a frozen, versioned EF evidence manifest and performs
 pure PRE and POST comparisons. This increment is in Actions only. It adds no CLI,
 workflow, credential provider, SQL executor, approval grant or Registry writer.
 Existing NEW_EF, EXISTING_EF pilot and LEGACY consumers remain unchanged.
+The A2.1 service boundary and its remaining production dependencies are described
+below; the original public `Build` API retains its A1 behavior.
 
 **Evidence consistency is not authenticity, execution authority or certification.**
 Every result and manifest has `ExecutionAuthorized = false`. Nothing here enables
@@ -132,7 +134,7 @@ The real EF 10.0.9 UP/DOWN fixtures retain their recorded hashes and provenance 
 `tests/DatabaseReleaseQualification.Tests/Fixtures/Ef1009/README.md`. The recorded
 seven-of-eight managed prefix has pending `20260701161500_AddSeblobTable`. This is
 an offline expectation, not a fresh observation of CICDV3. The test intentionally
-supplies synthetic observations and verifies blocking: acceptance by the closed
+supplies synthetic observations and verifies blocking in the original A1 API: acceptance by the closed
 exact-batch parser does not establish complete generic semantic analysis or a
 verified recovery exercise for those bytes. The generic analyzer currently lacks
 the required coverage for the fixture's implicit schema / identity-insert wrapper.
@@ -152,3 +154,121 @@ After the independent Actions PR, stop for human review/merge. No Workflow/calle
 repin, runtime adapter, dispatch or real E2E is part of A1. Further work requires an
 explicit integration increment and independent evidence for the listed operational
 dependencies; the final corporate circuit is not complete in this PR.
+
+## A2.1 preparation service and trust boundary
+
+The library entrypoint is
+`new EfEvidencePreparationV1(hostProvider).PrepareAsync(selection, now, token)`.
+It authenticates referenced content through `IEfAuthorizedEvidenceProviderV1`,
+verifies actual SHA-256 bytes, checks strict JSON (including duplicate/unknown
+fields), composes A1 inputs and checks current evidence again before returning.
+`new EfEvidencePreparationV1()` always blocks with `AUTHORIZED_PROVIDER_REQUIRED`.
+There is no production provider or workflow integration in A2.1.
+
+The host, not request JSON, selects the provider. `ReadAuthorizedAsync` must
+independently authenticate producer identity, immutable code revision, permitted
+purpose, target, repository revision and acquisition session. The provider must
+verify the producer's derivation of normalized documents from raw evidence, not
+merely permit downloading bytes at a caller-supplied hash. Producer receipts are
+retained in the frozen manifest. A valid hash or a caller's `COMPLETE` value does
+not establish authenticity. Test providers authorize in-memory fixture bytes;
+they are deliberately not presented as authentication infrastructure.
+
+`VerifyCurrentAsync` must reject changed source revisions, governance/baseline
+pointers, revoked authorization and rebound evidence for that scope. It is a
+required host check, not a local timestamp substitute. A subsequent APPLY still
+needs atomic freshness/authorization enforcement; no evidence check here grants
+a capability to execute. The trusted plan hash must come from protected evidence.
+
+| Authorized document / purpose | Content used by preparation |
+| --- | --- |
+| `GOVERNANCE` | Target, lifecycle, onboarding, classification, certified baseline or bootstrap, policy and their independent content references. |
+| `SOURCE` | Actual source revision, managed history, project paths, historical adoption provenance and original UP/DOWN bytes; historical adoption need not equal the current revision. |
+| `TARGET_PRE`, `FRESH_PRE`, `ACTUAL_POST` | Distinct observations of the real endpoint, identity/incarnation, existing Discovery V2 states/history, canonical schema, data/security hashes, coverage and metrics. |
+| `SQL_NAME_RESOLUTION` | Governed effective schema resolution tied to inspection/generation context. The producer must exclude ambiguous default-schema/dbo fallback; the analyzer never guesses dbo. |
+| `ISOLATED_QUALIFICATION` | Separate lab target, lab PRE/POST/PRE2/POST2, payload/source binding and existing recovery evidence. |
+| `RECOVERY_EXERCISE`, `RECOVERY_APPROVAL` | Actual exercise bytes and independent approval bound to target, payload, strategy and validity. |
+| `CONTENT_HASH_CONTRACT` | Versioned full content scope and pinned data/security projection producer revisions. |
+
+Nested references are read under their own purposes (governance/onboarding bytes,
+policy, existing V2 classification/repository discovery, baseline, bootstrap and
+adoption). Missing, denied, stale, malformed or mismatched evidence blocks with
+sanitized reason codes. Discovery V2 and classification implementations are reused,
+not reimplemented or invoked through another SQL path.
+
+## A2.1 EF semantics and isolated qualification
+
+`EfSqlSemanticAnalysisV1` reuses `ExactBatches`, ScriptDom,
+`EfIdentityInsertContract` and `SqlScriptAnalyzer.AnalyzeParsed`. It preserves the
+original bytes/hash, accepts one leading BOM, resolves names only with explicit
+producer evidence, and records paired identity ON/OFF operations. Both wrappers
+must have identical predicates; only inserts into that table may intervene.
+
+Supported direct effects include CREATE/DROP TABLE, column changes, primary keys,
+indexes and literal INSERT/UPDATE/DELETE. DML targets must exist at that point in
+the script or in PRE. The subset blocks unknown syntax, indirect functions,
+subqueries, sequence effects, FK definitions and DML with unproven catalog effects
+(triggers, FK relationships, dependencies, existing default/check constraints or
+computed columns). This conservatism can block valid SQL until its indirect impact
+has a dedicated model. It does not widen the closed executor's grammar.
+
+`SEMANTIC_ANALYSIS_COMPLETE` describes structural effects under the supplied
+snapshot/resolution contract; it does not prove runtime success or safe recovery.
+The unchanged EF 10.0.9 fixture now has complete UP and DOWN semantics in A2.1.
+Its identity pair, new table, seeded row and migration-history writes are modeled;
+DOWN still carries potential data loss. Without an authenticated qualification,
+preparation returns `BLOCKED` / `QUALIFIED_POST_REQUIRED`, never invented recovery.
+
+The acquired manifest keeps real PRE and lab PRE/qualified POST distinct. Lab
+target, physical database and incarnation must differ from the real target, while
+PRE content must match. Recovered PRE and reapplied POST retain lab identity;
+existing rehearsal/security evidence must identify that lab. Qualified POST is
+an independently produced state, never a projection from migration names.
+
+Clone comparison requires a pinned content-hash contract. Its producer must
+preserve complete data scope and security semantics (principals, SIDs, grants,
+ownership and affected objects), while separately binding physical identity.
+A2.1 does not silently strip identity from existing security evidence or invent
+a production projection algorithm. Missing projection evidence blocks. The host
+must verify the same contract for real PRE, lab states, fresh PRE and actual POST.
+
+`RevalidateAsync` authenticates a new real PRE plus the current source and compares
+all plan dimensions. `VerifyPostAsync` authenticates an execution receipt and an
+independent actual POST, retaining the real incarnation while comparing content
+against qualified lab POST. Uncertain/failed/partial receipts cannot match.
+
+FullReversible evidence can produce `PLAN_EVIDENCE_CONSISTENT_NOT_AUTHORIZED`.
+Down availability, potential data loss and verified exercise remain separate.
+SchemaOnly, RestoreRequired and ForwardFixOnly still require dedicated verified
+exercise adapters; references alone cannot enable them.
+
+## Continuous operation and remaining integration
+
+Equal managed/applied history requires authenticated fresh PRE, matching certified
+baseline and empty SQL; it returns `NO_CHANGES` with an evidence-set hash and no
+plan/write capability. First NEW_EF preparation still requires independently
+evidenced bootstrap and the A1 exact empty-PRE recovery contract. The stabilized
+NEW_EF retained-history behavior is unchanged and needs an explicit adapter.
+
+`ProposeBaselineTransitionAsync` authenticates actual POST, receipt, current
+predecessor and separate transition authorization bound to plan/operation/target,
+validity and risk/recovery dimensions. It reuses `CertificationDecisionEngine`
+and returns `BASELINE_TRANSITION_CANDIDATE_NOT_COMMITTED`, with `Committed=false`.
+It never writes or certifies Registry. A future authorized store commit must check
+the predecessor atomically; a successive release consumes that independently
+committed baseline without repeating adoption.
+
+A2.2 must supply authenticated host/provider adapters over existing governance,
+Discovery V2 and repository evidence; pinned portable content projections; an
+isolated qualification producer supporting the EF semantic subset; and effective
+approval/permission evidence. Restore/forward-fix adapters, retained-history NEW
+recovery and atomic baseline persistence remain explicit dependencies if those
+paths are integrated. Runtime authorization remains separately required.
+
+Offline tests (`--ef-preparation`, also in the full suite) cover the real fixture,
+Inventory/Payments/Fleet across different repositories, applications, endpoints,
+schemas and pending histories; independent fake lab qualification; NO_CHANGES;
+successive baseline transitions; and adversarial provenance/drift/uncertain states.
+No fake result establishes production readiness. All A1/A2.1 results preserve
+`ExecutionAuthorized=false`. Stop after the Actions PR for human review/merge;
+do not automatically begin A2.2 or repin consumers.
