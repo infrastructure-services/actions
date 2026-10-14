@@ -90,17 +90,24 @@ and cancellation. It does not use download URLs or arbitrary hosts.
 
 Corporate authority repositories are fixed in host code to the existing
 `infrastructure-services/workflow` and `infrastructure-services/actions`.
-The adapter checks current main against all three requested immutable revisions
-(Workflow, Actions and source). Content is fetched at the exact Workflow SHA,
-verified against Git blob identity and recorded with SHA-256. This initial host is
-main-only; it does not execute code from a floating reference.
+The adapter requires current Workflow main for governance freshness. An immutable
+Actions pin must equal the frozen Actions main tip or be its ancestor, verified by
+GitHub's compare endpoint using both exact SHAs. Diverged/unmerged revisions block.
+Source follows the existing corporate caller-source contract: same-repository
+`push` or `workflow_dispatch`, matching immutable caller SHA and current branch
+ref. PR/merge refs remain `SOURCE_REF_POLICY_REQUIRED` until their trust policy is
+approved. Content is fetched at the exact Workflow SHA, verified against Git blob
+identity and recorded with SHA-256; no floating code is executed. All observed refs
+are checked again after acquisition; changed governance, engine tip or source blocks.
 
 It authenticates the existing governance/onboarding/Registry source bytes and
-reuses the exact `resolve-governance-runtime.mjs` and `validate-ef-source.mjs`
+reuses the exact `resolve-governance-runtime.mjs`, `validate-ef-source.mjs` and
+`prepare-ef-source-runtime.mjs`
 modules from that revision in an isolated, credential-free subprocess. Target,
 application, TEST, EF mode and onboarding must match. Adoption repository is
 checked when present; the historical adoption SHA is not required to equal current
-source. A final current-ref check detects changes during acquisition, including a
+source. The corporate source resolver authorizes the caller selection separately
+from historical adoption metadata. A final current-ref check detects changes during acquisition, including a
 new baseline commit. Registry bytes are not reclassified as a certified baseline.
 
 This proves only Git-source provenance, conditional on the trusted runner/host
@@ -129,6 +136,13 @@ by the offline tests. The implementation contains no automatic database creation
 NEW requires an externally provisioned target and independently evidenced bootstrap.
 
 ## Corporate workflow integration boundary
+
+A2.2B adds the local composite `ef-release-plan/action.yml` and its strict process/
+artifact adapter. It consumes the existing Release build from the same immutable
+Actions Git checkout; it performs no build, restore, Discovery or SQL itself. See
+[`EF_CORPORATE_PLAN_A2_2B.md`](EF_CORPORATE_PLAN_A2_2B.md) for its review boundary,
+offline evidence and pending Workflow/authentication work. This is a prerequisite
+Actions increment; Workflow must wait for human merge before consuming its SHA.
 
 After the missing adapters are implemented and Actions is human-merged, a bounded
 Workflow PR can add a generic TEST PLAN job using the integrated Actions SHA,

@@ -32,7 +32,8 @@ internal static class EfOperationalTests
         ("EF host: continuation authenticates frozen plan, fresh PRE and actual POST", Continuations),
         ("EF host: timeout and cancellation retain distinct exit semantics", Cancellation),
         ("EF host: authenticated Git subset never attests missing observation producers", GitSources),
-        ("EF host: Git credential, content, target and revision failures block", GitNegatives)
+        ("EF host: Git credential, content, target and revision failures block", GitNegatives),
+        ("EF host: integrated engine pins and corporate caller branch source remain separate", GitRevisionPolicy)
     ];
     private static async Task<EfOperationalOutcomeV1> Run(EfPreparationTests.Fixture f, EfOperationalRequestV1? r = null)
         => await EfOperationalHostV1.RunAsync(r ?? Request(f), new Factory(f.Provider), Now);
@@ -242,6 +243,7 @@ internal static class EfOperationalTests
         internal string? Fault;
         internal int Calls;
         internal int MainCalls;
+        internal int CompareCalls;
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
             token.ThrowIfCancellationRequested(); Calls++;
@@ -252,12 +254,23 @@ internal static class EfOperationalTests
             if (Fault == "large") return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(new string('x', 2 * 1024 * 1024 + 1)) });
             var uri = request.RequestUri!;
             object body;
-            if (uri.AbsolutePath.EndsWith("/git/ref/heads/main", StringComparison.Ordinal))
+            if (uri.AbsolutePath.Contains("/git/ref/", StringComparison.Ordinal))
             {
                 MainCalls++;
                 var sha = uri.AbsolutePath.Contains("/workflow/") ? r.GovernanceRevision : uri.AbsolutePath.Contains("/actions/") ? r.ActionsRevision : r.Selection.Scope.SourceRevision;
-                if (Fault == "revision" || Fault == "race" && MainCalls > 3) sha = new string('0', 40);
-                body = new { @ref = "refs/heads/main", @object = new { type = "commit", sha } };
+                if (uri.AbsolutePath.Contains("/actions/") && Fault?.StartsWith("pin-") == true) sha = new string('d', 40);
+                if (Fault == "revision" || Fault is "race" or "pin-race" && MainCalls > 3) sha = new string('0', 40);
+                if (Fault == "source-race" && MainCalls == 6) sha = new string('0', 40);
+                body = new { @ref = Fault == "ref" ? "refs/heads/other" : "refs/" + uri.AbsolutePath.Split("/git/ref/")[1], @object = new { type = "commit", sha } };
+            }
+            else if (uri.AbsolutePath.Contains("/compare/", StringComparison.Ordinal))
+            {
+                CompareCalls++;
+                Assert(uri.AbsolutePath == $"/repos/infrastructure-services/actions/compare/{r.ActionsRevision}...{new string('d', 40)}"
+                    && uri.Query == "?per_page=1", "Comparison did not use frozen immutable revisions");
+                body = new { status = Fault == "pin-diverged" ? "diverged" : "ahead", ahead_by = 2, behind_by = Fault == "pin-behind" ? 1 : 0,
+                    base_commit = new { sha = Fault == "pin-base" ? new string('0', 40) : r.ActionsRevision },
+                    merge_base_commit = new { sha = Fault == "pin-unmerged" ? new string('0', 40) : r.ActionsRevision } };
             }
             else
             {
@@ -271,7 +284,7 @@ internal static class EfOperationalTests
     }
     private static (EfGitHubSourceHostV1 Host, GitHandler Http) GitHost(EfOperationalRequestV1 r, string? fault = null, string? resolverRoot = null)
     {
-        var efSource = new { sourceRepository = r.Selection.Scope.SourceRepository, sourceRevision = new string('c', 40),
+        var efSource = new { sourceRepository = fault == "adoption-repo" ? "other/application" : r.Selection.Scope.SourceRepository, sourceRevision = new string('c', 40),
             projectPath = "src/Infra/Infra.csproj", managedMigrationStartId = "20260101120000_First", preAdoptionArtifacts = Array.Empty<object>() };
         var binding = new { endpointReference = "endpoint", databaseName = "ExampleDb", serverMatchPolicy = "ALLOW_LIST", allowedServerInstances = new[] { "ExampleServer" } };
         var authority = new { kind = "REGISTRY_GIT_PR", policyPath = "docs/policy.md" };
@@ -286,14 +299,18 @@ internal static class EfOperationalTests
         // Unit fixture modules are only an HTTP/host-process test, not governance
         // authentication. A separate explicit mode runs the unchanged real resolver.
         var response = new { status = "PRESENT", registryGovernance = new { targetId = record.targetId, governance = record }, onboarding = new { onboardingState = "MANAGED" } };
-        foreach (var name in new[] { "resolve-governance-runtime.mjs", "validate-ef-source.mjs" })
+        foreach (var name in new[] { "resolve-governance-runtime.mjs", "validate-ef-source.mjs", "prepare-ef-source-runtime.mjs" })
             files["database-registry/" + name] = resolverRoot is null
-                ? Encoding.UTF8.GetBytes(name.StartsWith("resolve") ? "export function resolveGovernanceRuntime() { return {result:" + JsonSerializer.Serialize(response) + "}; }" : "// HTTP fixture")
+                ? Encoding.UTF8.GetBytes(name.StartsWith("resolve") ? "export function resolveGovernanceRuntime() { return {result:" + JsonSerializer.Serialize(response) + "}; }"
+                    : name.StartsWith("prepare") ? "export function prepareEfSource(i) { return {exitCode:0,result:{status:'CALLER_SOURCE',...i.callerSource}}; }" : "// HTTP fixture")
                 : File.ReadAllBytes(Path.Combine(resolverRoot, "database-registry", name));
         var http = new GitHandler(r, files) { Fault = fault };
         string? EnvironmentValue(string key) => key switch {
-            "GITHUB_ACTIONS" => "true", "GITHUB_API_URL" => "https://api.github.com", "GITHUB_REPOSITORY" => r.Selection.Scope.SourceRepository,
-            "GITHUB_SHA" => r.Selection.Scope.SourceRevision, "EF_GOVERNANCE_READ_TOKEN" => fault == "credential" ? null : "FAKE_READ_ONLY_CREDENTIAL", _ => null
+            "GITHUB_ACTIONS" => "true", "GITHUB_API_URL" => "https://api.github.com", "GITHUB_REPOSITORY" => fault == "caller" ? "wrong/repository" : r.Selection.Scope.SourceRepository,
+            "GITHUB_SHA" => fault == "sha" ? new string('0', 40) : r.Selection.Scope.SourceRevision,
+            "GITHUB_REF" => fault == "pr" ? "refs/pull/4/merge" : fault == "branch" ? "refs/heads/release/next" : "refs/heads/main",
+            "GITHUB_EVENT_NAME" => fault == "pr" ? "pull_request" : "workflow_dispatch",
+            "EF_GOVERNANCE_READ_TOKEN" => fault == "credential" ? null : "FAKE_READ_ONLY_CREDENTIAL", _ => null
         };
         return (new(EnvironmentValue, () => http), http);
     }
@@ -301,26 +318,50 @@ internal static class EfOperationalTests
     {
         var f = await EfPreparationTests.Make(); var r = Request(f); var test = GitHost(r);
         var outcome = await test.Host.OpenAsync(r, CancellationToken.None);
-        Assert(outcome.Provider is null && outcome.VerifiedGitSources.Length == 5 && test.Http.MainCalls == 6
+        Assert(outcome.Provider is null && outcome.VerifiedGitSources.Length == 6 && test.Http.MainCalls == 6
             && outcome.BlockingReasons.Contains("A2_1_NORMALIZED_PRODUCER_ADAPTER_REQUIRED"), "Git bytes impersonated operational evidence");
         Assert(!JsonSerializer.Serialize(outcome, JsonDefaults.Compact).Contains("FAKE_READ_ONLY_CREDENTIAL"), "Credential leaked");
     }
     private static async Task GitNegatives()
     {
         var r = Request(await EfPreparationTests.Make());
-        foreach (var fault in new[] { "credential", "denied", "redirect", "revision", "race", "hash", "large", "target" })
+        foreach (var fault in new[] { "credential", "denied", "redirect", "revision", "race", "hash", "large", "target", "ref", "source-race", "pin-race", "caller", "sha", "adoption-repo" })
         {
             var test = GitHost(r, fault); var outcome = await test.Host.OpenAsync(r, CancellationToken.None);
             Assert(outcome.Provider is null && outcome.BlockingReasons.Length == 1
                 && !outcome.BlockingReasons.Contains("A2_1_NORMALIZED_PRODUCER_ADAPTER_REQUIRED"), "Source flaw accepted: " + fault);
-            if (fault == "credential") Assert(test.Http.Calls == 0, "Missing credential contacted service");
+            if (fault is "credential" or "caller" or "sha") Assert(test.Http.Calls == 0, "Unverified caller/credential contacted service");
+        }
+    }
+    private static async Task GitRevisionPolicy()
+    {
+        var r = Request(await EfPreparationTests.Make());
+        foreach (var fault in new[] { "pin-integrated", "branch" })
+        {
+            var test = GitHost(r, fault); var outcome = await test.Host.OpenAsync(r, CancellationToken.None);
+            Assert(outcome.Provider is null && outcome.BlockingReasons.Contains("EXECUTED_HOST_ATTESTATION_REQUIRED")
+                && outcome.VerifiedGitSources.Length == 6, "Integrated/caller source did not reach the external trust gate: " + fault);
+            Assert(test.Http.CompareCalls == (fault == "pin-integrated" ? 1 : 0), "Integration proof not requested");
+        }
+        foreach (var fault in new[] { "pin-diverged", "pin-behind", "pin-base", "pin-unmerged", "pr" })
+        {
+            var test = GitHost(r, fault); var outcome = await test.Host.OpenAsync(r, CancellationToken.None);
+            Assert(outcome.Provider is null && outcome.BlockingReasons.SequenceEqual(new[] {
+                fault == "pr" ? "SOURCE_REF_POLICY_REQUIRED" : "ACTIONS_REVISION_NOT_INTEGRATED" }), "Unsafe source accepted: " + fault);
+            Assert(outcome.VerifiedGitSources.Length == 0, "Unsafe code read before source gate");
+            if (fault == "pr") Assert(test.Http.Calls == 0, "PR policy failure contacted service");
         }
     }
     internal static async Task<int> RealResolver(string root)
     {
-        var r = Request(await EfPreparationTests.Make()); var test = GitHost(r, resolverRoot: root);
-        var outcome = await test.Host.OpenAsync(r, CancellationToken.None);
-        Assert(outcome.BlockingReasons.Contains("A2_1_NORMALIZED_PRODUCER_ADAPTER_REQUIRED"), "Real resolver integration failed: " + string.Join(",", outcome.BlockingReasons));
+        var r = Request(await EfPreparationTests.Make());
+        foreach (var fault in new[] { "branch", "pin-integrated", "adoption-repo" })
+        {
+            var test = GitHost(r, fault, resolverRoot: root);
+            var outcome = await test.Host.OpenAsync(r, CancellationToken.None);
+            Assert(outcome.BlockingReasons.Contains(fault == "adoption-repo" ? "ADOPTION_REPOSITORY_MISMATCH" : "A2_1_NORMALIZED_PRODUCER_ADAPTER_REQUIRED"),
+                "Real resolver integration failed: " + fault + ":" + string.Join(",", outcome.BlockingReasons));
+        }
         Console.WriteLine("PASS: unchanged governance resolver + synthetic authenticated HTTP transport; external authentication NOT executed");
         return 0;
     }

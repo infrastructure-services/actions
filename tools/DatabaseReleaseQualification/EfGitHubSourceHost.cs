@@ -3,6 +3,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace DatabaseReleaseQualification;
 
@@ -35,27 +36,56 @@ public sealed class EfGitHubSourceHostV1 : IEfOperationalSessionFactoryV1
                 "RUN_CONTEXT_UNVERIFIED");
             var credential = environment("EF_GOVERNANCE_READ_TOKEN");
             EfHostContract.Require(!string.IsNullOrWhiteSpace(credential), "GOVERNANCE_CREDENTIAL_REQUIRED");
+            // Source follows the corporate caller-source contract, not the engine
+            // integration policy. PR merge refs need a separately governed policy.
+            var sourceRef = environment("GITHUB_REF");
+            EfHostContract.Require(environment("GITHUB_EVENT_NAME") is "push" or "workflow_dispatch"
+                && sourceRef is not null && Regex.IsMatch(sourceRef, @"\Arefs/heads/[A-Za-z0-9][A-Za-z0-9._/-]{0,199}\z")
+                && !sourceRef.Contains("..", StringComparison.Ordinal) && !sourceRef.Contains("//", StringComparison.Ordinal)
+                && !sourceRef.EndsWith("/", StringComparison.Ordinal), "SOURCE_REF_POLICY_REQUIRED");
             using var client = new HttpClient(handler()) { Timeout = Timeout.InfiniteTimeSpan };
             client.DefaultRequestHeaders.Authorization = new("Bearer", credential);
             client.DefaultRequestHeaders.UserAgent.ParseAdd("ef-operational-host-v1");
             client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
             client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
+            async Task<string> ReadRef(string repository, string reference)
+            {
+                var encoded = string.Join("/", reference[5..].Split('/').Select(Uri.EscapeDataString));
+                using var doc = await Get(client, $"repos/{repository}/git/ref/{encoded}", token);
+                var value = doc.RootElement;
+                var sha = value.GetProperty("object").GetProperty("sha").GetString();
+                EfHostContract.Require(value.GetProperty("ref").GetString() == reference
+                    && value.GetProperty("object").GetProperty("type").GetString() == "commit"
+                    && EfHostContract.Sha(sha), "GIT_REF_INVALID");
+                return sha!;
+            }
+            // Governance is always current (baseline freshness). An Actions pin
+            // may be older, but must be an ancestor of the frozen integrated tip.
+            EfHostContract.Require(await ReadRef(GovernanceRepository, "refs/heads/main") == request.GovernanceRevision,
+                "INTEGRATED_SOURCE_CHANGED");
+            var integratedActions = await ReadRef(ActionsRepository, "refs/heads/main");
+            if (integratedActions != request.ActionsRevision)
+            {
+                using var comparison = await Get(client,
+                    $"repos/{ActionsRepository}/compare/{request.ActionsRevision}...{integratedActions}?per_page=1", token);
+                var c = comparison.RootElement;
+                EfHostContract.Require(c.GetProperty("status").GetString() == "ahead"
+                    && c.GetProperty("base_commit").GetProperty("sha").GetString() == request.ActionsRevision
+                    && c.GetProperty("merge_base_commit").GetProperty("sha").GetString() == request.ActionsRevision
+                    && c.GetProperty("ahead_by").GetInt64() > 0 && c.GetProperty("behind_by").GetInt64() == 0,
+                    "ACTIONS_REVISION_NOT_INTEGRATED");
+            }
+            EfHostContract.Require(await ReadRef(scope.SourceRepository, sourceRef!) == scope.SourceRevision,
+                "CALLER_SOURCE_CHANGED");
             async Task CheckCurrent()
             {
-                foreach (var (repository, revision) in new[] { (GovernanceRepository, request.GovernanceRevision),
-                    (ActionsRepository, request.ActionsRevision), (scope.SourceRepository, scope.SourceRevision) })
-                {
-                    using var doc = await Get(client, $"repos/{repository}/git/ref/heads/main", token);
-                    EfHostContract.Require(doc.RootElement.GetProperty("ref").GetString() == "refs/heads/main"
-                        && doc.RootElement.GetProperty("object").GetProperty("type").GetString() == "commit"
-                        && doc.RootElement.GetProperty("object").GetProperty("sha").GetString() == revision,
-                        "INTEGRATED_SOURCE_CHANGED");
-                }
+                EfHostContract.Require(await ReadRef(GovernanceRepository, "refs/heads/main") == request.GovernanceRevision
+                    && await ReadRef(ActionsRepository, "refs/heads/main") == integratedActions
+                    && await ReadRef(scope.SourceRepository, sourceRef!) == scope.SourceRevision, "INTEGRATED_SOURCE_CHANGED");
             }
-            await CheckCurrent();
             var files = new Dictionary<string, byte[]>(StringComparer.Ordinal);
             foreach (var name in new[] { "resolve-governance-runtime.mjs", "validate-ef-source.mjs",
-                "governance-targets.json", "onboarding-targets.json", "targets.json" })
+                "prepare-ef-source-runtime.mjs", "governance-targets.json", "onboarding-targets.json", "targets.json" })
             {
                 var path = "database-registry/" + name;
                 using var doc = await Get(client, $"repos/{GovernanceRepository}/contents/{path}?ref={request.GovernanceRevision}", token);
@@ -72,7 +102,8 @@ public sealed class EfGitHubSourceHostV1 : IEfOperationalSessionFactoryV1
                 files.Add(path, bytes);
                 verified.Add(new(GovernanceRepository, request.GovernanceRevision, path, Hashing.Sha256(bytes)));
             }
-            var governed = await ResolveGovernance(files, request, token);
+            var resolved = await ResolveGovernance(files, request, token);
+            var governed = resolved.GetProperty("authority");
             EfHostContract.Require(governed.GetProperty("status").GetString() == "PRESENT", "GOVERNED_TARGET_UNAVAILABLE");
             var selected = governed.GetProperty("registryGovernance");
             var governance = selected.GetProperty("governance");
@@ -86,6 +117,14 @@ public sealed class EfGitHubSourceHostV1 : IEfOperationalSessionFactoryV1
                 || lifecycle == "NEW" && onboarding.GetProperty("onboardingState").GetString() == "NOT_REQUIRED", "ONBOARDING_NOT_READY");
             if (governance.TryGetProperty("efSource", out var adoption))
                 EfHostContract.Require(adoption.GetProperty("sourceRepository").GetString() == scope.SourceRepository, "ADOPTION_REPOSITORY_MISMATCH");
+            var source = resolved.GetProperty("source");
+            EfHostContract.Require(source.GetProperty("exitCode").GetInt32() == 0
+                && source.GetProperty("result").GetProperty("status").GetString() == "CALLER_SOURCE",
+                "CALLER_SOURCE_NOT_AUTHORIZED");
+            if (governance.TryGetProperty("efSource", out _))
+                EfHostContract.Require(source.GetProperty("result").GetProperty("sourceRepository").GetString() == scope.SourceRepository
+                    && source.GetProperty("result").GetProperty("sourceRevision").GetString() == scope.SourceRevision,
+                    "CALLER_SOURCE_CONTEXT_MISMATCH");
             await CheckCurrent(); // Detect changes during acquisition, including baseline commits.
             // Git provenance cannot attest SQL observations, generated SQL, an
             // isolated exercise, effective approval or the executing job identity.
@@ -130,10 +169,11 @@ public sealed class EfGitHubSourceHostV1 : IEfOperationalSessionFactoryV1
         // not a caller path or a mutable checkout. No copy of its policy logic.
         var root = Path.Combine(Path.GetTempPath(), "ef-governance-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
-        string[] names = ["resolve-governance-runtime.mjs", "validate-ef-source.mjs", "invoke.mjs"];
+        string[] names = ["resolve-governance-runtime.mjs", "validate-ef-source.mjs", "prepare-ef-source-runtime.mjs", "invoke.mjs"];
         const string driver = """
             import fs from 'node:fs';
             import { resolveGovernanceRuntime } from './resolve-governance-runtime.mjs';
+            import { prepareEfSource } from './prepare-ef-source-runtime.mjs';
             const i = JSON.parse(fs.readFileSync(0, 'utf8'));
             const reader = {
               repositoryIdentity: () => i.repository,
@@ -142,15 +182,17 @@ public sealed class EfGitHubSourceHostV1 : IEfOperationalSessionFactoryV1
               readFile: (revision, path) => { if (revision !== i.revision || !Object.hasOwn(i.files, path)) throw new Error(); return Buffer.from(i.files[path], 'base64'); }
             };
             const outcome = resolveGovernanceRuntime(i.request, reader);
-            process.stdout.write(JSON.stringify(outcome.result));
+            const source = prepareEfSource({sourceAcquisitionContractVersion:1, operation:'PLAN', authority:outcome.result, callerSource:i.callerSource});
+            process.stdout.write(JSON.stringify({authority:outcome.result, source}));
             """;
         try
         {
-            foreach (var name in names.Take(2)) await File.WriteAllBytesAsync(Path.Combine(root, name), files["database-registry/" + name], token);
-            await File.WriteAllTextAsync(Path.Combine(root, names[2]), driver, new UTF8Encoding(false), token);
+            foreach (var name in names.Take(3)) await File.WriteAllBytesAsync(Path.Combine(root, name), files["database-registry/" + name], token);
+            await File.WriteAllTextAsync(Path.Combine(root, names[3]), driver, new UTF8Encoding(false), token);
             object Claim(string name) => new { sourcePath = "database-registry/" + name, sourceSha256 = Hashing.Sha256(files["database-registry/" + name]) };
             var input = JsonSerializer.Serialize(new {
                 repository = GovernanceRepository, revision = request.GovernanceRevision,
+                callerSource = new { sourceRepository = request.Selection.Scope.SourceRepository, sourceRevision = request.Selection.Scope.SourceRevision },
                 files = files.Where(x => x.Key.EndsWith(".json", StringComparison.Ordinal)).ToDictionary(x => x.Key, x => Convert.ToBase64String(x.Value)),
                 request = new { runtimeContractVersion = 1, target = new { targetId = request.Selection.Scope.TargetId },
                     provenance = new { sourceRepository = GovernanceRepository, requestedRevision = request.GovernanceRevision,
@@ -158,7 +200,7 @@ public sealed class EfGitHubSourceHostV1 : IEfOperationalSessionFactoryV1
             });
             var start = new ProcessStartInfo("node") { WorkingDirectory = root, UseShellExecute = false,
                 RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
-            start.ArgumentList.Add(Path.Combine(root, names[2]));
+            start.ArgumentList.Add(Path.Combine(root, names[3]));
             // No token, SQL connection, NODE_OPTIONS or application-controlled code
             // is inherited by the pure governance subprocess.
             start.Environment.TryGetValue("PATH", out var path);
