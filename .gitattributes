@@ -17,3 +17,6 @@
 /tests/DatabaseReleaseQualification.Tests/Fixtures/Ef1009/*.sql -text whitespace=cr-at-eol,-blank-at-eof
 /tests/test-ef-release-plan-static.sh text eol=lf
 /tests/test-ef-operational-host-static.sh text eol=lf
+/ef-release-plan/action.yml text eol=lf
+/scripts/run-ef-release-plan.mjs text eol=lf
+/tests/test-ef-release-plan-adapter.mjs text eol=lf

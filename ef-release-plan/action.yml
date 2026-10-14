@@ -1,0 +1,45 @@
+name: EF operational PLAN (TEST only)
+description: Invokes the existing built EF CLI; validates sanitized artifacts and preserves every blocking exit.
+inputs:
+  request-path:
+    description: Versioned selectors-only PLAN request; never an evidence bundle or SQL credential.
+    required: true
+  governance-read-token:
+    description: Existing corporate read-only Git credential, scoped to governed repositories.
+    required: true
+  timeout-seconds:
+    description: Acquisition deadline, from 1 to 900 seconds.
+    default: '120'
+outputs:
+  status:
+    description: Validated operational status; never grants SQL execution.
+    value: ${{ steps.plan.outputs.status }}
+  reasons-json:
+    description: Exact sanitized CLI blocking reason codes.
+    value: ${{ steps.plan.outputs.reasons-json }}
+  exit-code:
+    description: Validated CLI exit code, also preserved as the step outcome.
+    value: ${{ steps.plan.outputs.exit-code }}
+  artifacts-ready:
+    description: True only after completion marker and strict artifact validation.
+    value: ${{ steps.plan.outputs.artifacts-ready }}
+  artifact-directory:
+    description: Unique private directory containing only allowed review artifacts.
+    value: ${{ steps.plan.outputs.artifact-directory }}
+  execution-authorized:
+    description: Always false on every validated result.
+    value: ${{ steps.plan.outputs.execution-authorized }}
+  certified:
+    description: Always false on every validated result.
+    value: ${{ steps.plan.outputs.certified }}
+runs:
+  using: composite
+  steps:
+    - name: Invoke built corporate EF engine for PLAN only
+      id: plan
+      shell: bash
+      env:
+        EF_PLAN_REQUEST: ${{ inputs.request-path }}
+        EF_PLAN_TIMEOUT: ${{ inputs.timeout-seconds }}
+        EF_GOVERNANCE_READ_TOKEN: ${{ inputs.governance-read-token }}
+      run: node "$GITHUB_ACTION_PATH/../scripts/run-ef-release-plan.mjs"
