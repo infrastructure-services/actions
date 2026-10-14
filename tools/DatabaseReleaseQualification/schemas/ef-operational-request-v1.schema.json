@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EF operational request V1 (selectors only)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "operation", "applicationId", "environment", "governanceRevision", "actionsRevision", "selection"],
+  "properties": {
+    "contractVersion": { "const": 1 },
+    "operation": { "enum": ["PLAN", "REVALIDATE", "VERIFY_POST"] },
+    "applicationId": { "$ref": "#/$defs/token" },
+    "environment": { "const": "TEST" },
+    "governanceRevision": { "$ref": "#/$defs/revision" },
+    "actionsRevision": { "$ref": "#/$defs/revision" },
+    "selection": {
+      "type": "object", "additionalProperties": false,
+      "required": ["scope", "releaseId", "operationId", "governance", "source", "pre"],
+      "properties": {
+        "scope": {
+          "type": "object", "additionalProperties": false,
+          "required": ["targetId", "sourceRepository", "sourceRevision", "sessionId"],
+          "properties": {
+            "targetId": { "$ref": "#/$defs/token" },
+            "sourceRepository": { "type": "string", "maxLength": 200, "pattern": "^[A-Za-z0-9_-][A-Za-z0-9_.-]*/[A-Za-z0-9_-][A-Za-z0-9_.-]*$" },
+            "sourceRevision": { "$ref": "#/$defs/revision" },
+            "sessionId": { "$ref": "#/$defs/token" }
+          }
+        },
+        "releaseId": { "$ref": "#/$defs/token" },
+        "operationId": { "type": "string", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" },
+        "governance": { "$ref": "#/$defs/evidence" },
+        "source": { "$ref": "#/$defs/evidence" },
+        "pre": { "$ref": "#/$defs/evidence" },
+        "qualification": { "anyOf": [{ "$ref": "#/$defs/evidence" }, { "type": "null" }] }
+      }
+    },
+    "continuation": {
+      "anyOf": [{ "type": "null" }, {
+        "type": "object", "additionalProperties": false, "required": ["plan"],
+        "properties": {
+          "plan": { "$ref": "#/$defs/evidence" },
+          "freshPre": { "anyOf": [{ "$ref": "#/$defs/evidence" }, { "type": "null" }] },
+          "currentSource": { "anyOf": [{ "$ref": "#/$defs/evidence" }, { "type": "null" }] },
+          "execution": { "anyOf": [{ "$ref": "#/$defs/evidence" }, { "type": "null" }] },
+          "actualPost": { "anyOf": [{ "$ref": "#/$defs/evidence" }, { "type": "null" }] }
+        }
+      }]
+    }
+  },
+  "allOf": [
+    { "if": { "properties": { "operation": { "const": "PLAN" } } }, "then": { "properties": { "continuation": { "type": "null" } } } },
+    { "if": { "properties": { "operation": { "const": "REVALIDATE" } } }, "then": {
+      "required": ["continuation"], "properties": { "continuation": { "type": "object", "required": ["freshPre", "currentSource"], "properties": {
+        "freshPre": { "$ref": "#/$defs/evidence" }, "currentSource": { "$ref": "#/$defs/evidence" }, "execution": { "type": "null" }, "actualPost": { "type": "null" }
+      } } }
+    } },
+    { "if": { "properties": { "operation": { "const": "VERIFY_POST" } } }, "then": {
+      "required": ["continuation"], "properties": { "continuation": { "type": "object", "required": ["execution", "actualPost"], "properties": {
+        "execution": { "$ref": "#/$defs/evidence" }, "actualPost": { "$ref": "#/$defs/evidence" }, "freshPre": { "type": "null" }, "currentSource": { "type": "null" }
+      } } }
+    } }
+  ],
+  "$defs": {
+    "token": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "evidence": {
+      "type": "object", "additionalProperties": false, "required": ["evidenceId", "evidenceSha256"],
+      "properties": {
+        "evidenceId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$" },
+        "evidenceSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "storageLocator": { "type": "null" }
+      }
+    }
+  }
+}

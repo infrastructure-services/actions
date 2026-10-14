@@ -5,7 +5,7 @@ using SqlDiscovery.V2;
 
 internal static class EfPreparationTests
 {
-    private static readonly DateTimeOffset Now = new(2026, 10, 9, 12, 0, 0, TimeSpan.Zero);
+    internal static readonly DateTimeOffset Now = new(2026, 10, 9, 12, 0, 0, TimeSpan.Zero);
     private static string Hash(string s) => Hashing.Sha256(s);
     private static byte[] Bytes<T>(T value) => JsonSerializer.SerializeToUtf8Bytes(value, JsonDefaults.Compact);
     private static void Assert(bool b, string why) { if (!b) throw new Exception(why); }
@@ -26,7 +26,7 @@ internal static class EfPreparationTests
         ("EF A2.1: initial NEW bootstrap contract remains isolated", New)
     ];
 
-    private sealed class Provider(EfEvidenceScopeV1 expected) : IEfAuthorizedEvidenceProviderV1
+    internal sealed class Provider(EfEvidenceScopeV1 expected) : IEfAuthorizedEvidenceProviderV1
     {
         internal readonly Dictionary<string, byte[]> Content = [];
         internal readonly HashSet<(string Id, string Purpose)> Allowed = [];
@@ -58,7 +58,7 @@ internal static class EfPreparationTests
             return Task.CompletedTask;
         }
     }
-    private sealed record Fixture(Provider Provider, EfPreparationSelectionV1 Selection,
+    internal sealed record Fixture(Provider Provider, EfPreparationSelectionV1 Selection,
         EfReleasePlanTests.Fixture Original, EfGovernedPreparationV1 Governance,
         EfObservationEvidenceV1 Pre, EfQualificationEvidenceV1 Qualification)
     {
@@ -73,7 +73,7 @@ internal static class EfPreparationTests
                 _ => throw new Exception("Unknown fixture document") } };
         }
     }
-    private static async Task<Fixture> Make(string name = "Inventory", int applied = 2, int pending = 1,
+    internal static async Task<Fixture> Make(string name = "Inventory", int applied = 2, int pending = 1,
         string schema = "dbo", bool initial = false, EfReleasePlanTests.Fixture? original = null)
     {
         var f = original ?? await EfReleasePlanTests.Make(name, applied, pending, initial, schema); var r = f.Request;
@@ -113,7 +113,7 @@ internal static class EfPreparationTests
             p.Publish("pre-input", "TARGET_PRE", pre), p.Publish("qualification-input", "ISOLATED_QUALIFICATION", q));
         return new(p, selection, f, g, pre, q);
     }
-    private static EfObservationEvidenceV1 Observe(Provider p, EfPlanObservationV1 o, string phase, EvidenceReference hashContract)
+    internal static EfObservationEvidenceV1 Observe(Provider p, EfPlanObservationV1 o, string phase, EvidenceReference hashContract)
     {
         var raw = p.Publish(phase.ToLowerInvariant() + "-capture", phase, new { o.TargetId, o.ServerInstance, o.DatabaseName,
             o.DatabaseIncarnation, o.Schema, o.DataHash, o.SecurityHash, o.AppliedMigrationIds, o.CapturedAtUtc });
@@ -281,7 +281,7 @@ internal static class EfPreparationTests
         var swapped = f.Provider.Publish("swapped-source", "SOURCE", new EfSourcePreparationV1(f.Original.Request.Source with { Revision = new string('c', 40) }, f.Original.Forward.Bytes, f.Original.Rollback.Bytes));
         Assert((await f.Service.RevalidateAsync(plan, plan.Sha256, f.Selection.Scope, reference, swapped, Now)).Status == "BLOCKED", "Concurrent revision accepted");
     }
-    private static (EvidenceReference Execution, EvidenceReference Post, EfPlanExecutionEvidenceV1 Receipt, EfObservationEvidenceV1 Observation) Execution(Fixture f, EfReleasePlanV1 plan)
+    internal static (EvidenceReference Execution, EvidenceReference Post, EfPlanExecutionEvidenceV1 Receipt, EfObservationEvidenceV1 Observation) Execution(Fixture f, EfReleasePlanV1 plan)
     {
         var m = plan.Read(); var pre = f.Pre.Observation; var qualified = f.Qualification.Post.Observation;
         var actual = qualified with { TargetId = pre.TargetId, EndpointReference = pre.EndpointReference, ServerInstance = pre.ServerInstance,

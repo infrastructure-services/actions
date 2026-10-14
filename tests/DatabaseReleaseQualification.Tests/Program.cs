@@ -3,6 +3,9 @@ using DatabaseReleaseQualification;
 using Microsoft.Data.SqlClient;
 using SqlDiscovery.V2;
 
+if (args.Length == 4 && args[0] == "--ef-host-child") return await EfOperationalTests.Child(args.Skip(1).ToArray());
+if (args.Length == 2 && args[0] == "--ef-host-governance-contract") return await EfOperationalTests.RealResolver(args[1]);
+
 var tests = new (string Name, Func<Task> Run)[]
 {
     ("fingerprint estable ante distinto orden", FingerprintIgnoresOrder),
@@ -208,7 +211,9 @@ var tests = new (string Name, Func<Task> Run)[]
     ("Evidence ID conserva semántica case-sensitive", CommitProtocolEvidenceIdIsCaseSensitive)
 };
 
-tests = args.Contains("--ef-preparation", StringComparer.Ordinal)
+tests = args.Contains("--ef-operational-host", StringComparer.Ordinal)
+    ? EfOperationalTests.Cases
+    : args.Contains("--ef-preparation", StringComparer.Ordinal)
     ? EfPreparationTests.Cases
     : args.Contains("--ef-release-plan", StringComparer.Ordinal)
     ? EfReleasePlanTests.Cases
@@ -233,7 +238,7 @@ tests = args.Contains("--ef-preparation", StringComparer.Ordinal)
             : tests.Concat(RecoveryCoverageTests.Cases).Concat(LegacyArtifactTests.Cases)
                 .Concat(LegacySecurityReaderTests.Cases).Concat(LegacySafetyTests.Cases)
                 .Concat(LegacyReadinessTests.Cases).Concat(LegacyRuntimeResolverTests.Cases)
-                .Concat(LegacyRehearsalTests.Cases).Concat(EfTestMigrationTests.Cases).Concat(NewEfCreationFirstTests.Cases).Concat(EfReleasePlanTests.Cases).Concat(EfPreparationTests.Cases).ToArray();
+                .Concat(LegacyRehearsalTests.Cases).Concat(EfTestMigrationTests.Cases).Concat(NewEfCreationFirstTests.Cases).Concat(EfReleasePlanTests.Cases).Concat(EfPreparationTests.Cases).Concat(EfOperationalTests.Cases).ToArray();
 var failed = 0;
 foreach (var test in tests)
 {

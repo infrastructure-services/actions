@@ -23,6 +23,7 @@ public static class QualificationCli
             "compare-schema-captures" => CompareSchemaCapturesAsync(args.Skip(1).ToArray()),
             "evaluate-database-state" => EvaluateDatabaseStateAsync(args.Skip(1).ToArray()),
             "qualify-legacy-package" => LegacyPackageCli.RunAsync(args.Skip(1).ToArray()),
+            "prepare-ef-release" => EfOperationalCli.RunAsync(args.Skip(1).ToArray()),
             "rehearse-legacy-package" => LegacyRehearsalCli.RunAsync(args.Skip(1).ToArray()),
             "prepare-legacy-rehearsal" => LegacyRehearsalCli.RunAsync(args.Skip(1).ToArray(), rehearse: false),
             "legacy-phase-pre" => LegacyPhasedCli.RunAsync(args.Skip(1).ToArray(), "PRE"),
