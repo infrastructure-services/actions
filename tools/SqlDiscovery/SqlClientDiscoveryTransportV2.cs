@@ -49,25 +49,25 @@ public sealed class SqlClientDiscoveryTransportV2(
     public async Task<ObservedIdentityResult> ConnectTargetAsync(SqlDiscoveryTarget target, CancellationToken cancellationToken)
     {
         await using var connection = await OpenConnectionAsync(target, target.DatabaseName, cancellationToken);
-        try
-        {
-            await using var command = CreateCommand(connection, """
-                SELECT
-                    CONVERT(nvarchar(128), SERVERPROPERTY(N'ServerName')),
-                    DB_NAME();
-                """);
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            if (!await reader.ReadAsync(cancellationToken) || reader.IsDBNull(0) || reader.IsDBNull(1))
-                return IdentityUnavailable();
-            var identity = new ObservedDatabaseIdentity(reader.GetString(0), reader.GetString(1));
-            return ObservedIdentityValidator.IsValid(identity)
-                ? new(ObservedIdentityStatus.Available, identity)
-                : IdentityUnavailable();
-        }
-        catch
-        {
+        await using var command = CreateCommand(connection, """
+            SELECT
+                CONVERT(nvarchar(128), SERVERPROPERTY(N'ServerName')),
+                DB_NAME();
+            """);
+        return await ReadTargetIdentityAsync(command, cancellationToken);
+    }
+
+    internal static async Task<ObservedIdentityResult> ReadTargetIdentityAsync(DbCommand command, CancellationToken cancellationToken)
+    {
+        // The orchestrator owns sanitized failure classification. A failed SQL
+        // read must not become a successful target connection with no identity.
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken) || reader.IsDBNull(0) || reader.IsDBNull(1))
             return IdentityUnavailable();
-        }
+        var identity = new ObservedDatabaseIdentity(reader.GetString(0), reader.GetString(1));
+        return ObservedIdentityValidator.IsValid(identity)
+            ? new(ObservedIdentityStatus.Available, identity)
+            : IdentityUnavailable();
     }
 
     public async Task<MetadataResult> InspectMetadataAsync(SqlDiscoveryTarget target, CancellationToken cancellationToken)

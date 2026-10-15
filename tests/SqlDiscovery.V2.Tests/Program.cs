@@ -74,6 +74,10 @@ var tests = new List<(string Name, Func<Task> Run)>
     ("límite taxonómico bloquea elegibilidad NEW_EF", IntegrationNewEfTaxonomyGap)
 };
 
+var identityReadTests = TargetIdentityReadTests.Cases().ToList();
+if (args is ["--target-identity-read"]) tests = identityReadTests;
+else tests.AddRange(identityReadTests);
+
 var failures = new List<string>();
 foreach (var test in tests)
 {
