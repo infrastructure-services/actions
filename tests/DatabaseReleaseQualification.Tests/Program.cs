@@ -211,7 +211,11 @@ var tests = new (string Name, Func<Task> Run)[]
     ("Evidence ID conserva semántica case-sensitive", CommitProtocolEvidenceIdIsCaseSensitive)
 };
 
-tests = args.Contains("--ef-operational-host", StringComparer.Ordinal)
+tests = args.Contains("--ef-bootstrap", StringComparer.Ordinal)
+    ? EfBootstrapTests.Cases
+    : args.Contains("--ef-preparation-directed", StringComparer.Ordinal)
+    ? EfPreparationTests.Cases.Where(x => !x.Name.Contains("successive release", StringComparison.Ordinal)).ToArray()
+    : args.Contains("--ef-operational-host", StringComparer.Ordinal)
     ? EfOperationalTests.Cases
     : args.Contains("--ef-preparation", StringComparer.Ordinal)
     ? EfPreparationTests.Cases
@@ -238,7 +242,7 @@ tests = args.Contains("--ef-operational-host", StringComparer.Ordinal)
             : tests.Concat(RecoveryCoverageTests.Cases).Concat(LegacyArtifactTests.Cases)
                 .Concat(LegacySecurityReaderTests.Cases).Concat(LegacySafetyTests.Cases)
                 .Concat(LegacyReadinessTests.Cases).Concat(LegacyRuntimeResolverTests.Cases)
-                .Concat(LegacyRehearsalTests.Cases).Concat(EfTestMigrationTests.Cases).Concat(NewEfCreationFirstTests.Cases).Concat(EfReleasePlanTests.Cases).Concat(EfPreparationTests.Cases).Concat(EfOperationalTests.Cases).ToArray();
+                .Concat(LegacyRehearsalTests.Cases).Concat(EfTestMigrationTests.Cases).Concat(NewEfCreationFirstTests.Cases).Concat(EfReleasePlanTests.Cases).Concat(EfPreparationTests.Cases).Concat(EfOperationalTests.Cases).Concat(EfBootstrapTests.Cases).ToArray();
 var failed = 0;
 foreach (var test in tests)
 {

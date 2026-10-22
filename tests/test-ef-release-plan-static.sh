@@ -4,7 +4,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONTRACT="$ROOT/tools/DatabaseReleaseQualification/EfReleasePlan.cs"
 BOUNDARY="$ROOT/tools/DatabaseReleaseQualification/EfEvidencePreparation.cs"
 SEMANTICS="$ROOT/tools/DatabaseReleaseQualification/EfSqlSemanticAnalysis.cs"
-SOURCES=("$CONTRACT" "$BOUNDARY" "$SEMANTICS")
+SOURCES=("$CONTRACT" "$BOUNDARY" "$SEMANTICS" "$ROOT/tools/DatabaseReleaseQualification/EfPreprovisionedBootstrap.cs")
 
 # A pure evidence API must not grow an I/O path or inherit pilot authority.
 if grep -En 'SqlConnection|SqlCommand|ExecuteNonQuery|ExecuteSqlAsync|QualifyAsync|HttpClient|Process[.]|Environment[.]|File[.]|Directory[.]|System[.]IO|Microsoft[.]Data' "${SOURCES[@]}"; then

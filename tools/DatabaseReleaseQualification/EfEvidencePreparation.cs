@@ -166,13 +166,19 @@ public sealed class EfEvidencePreparationV1(IEfAuthorizedEvidenceProviderV1? pro
             _ = await Read(scope, source.Source.RepositoryEvidence, "REPOSITORY_DISCOVERY_V2", used, token);
             if (source.Source.AdoptionProvenance is { } adoption) await Provenance(scope, adoption, "ADOPTION", used, token);
             if (g.Authority.CertifiedBaseline is { } baseline) await Provenance(scope, baseline.Provenance, "CERTIFIED_BASELINE", used, token);
-            if (g.Authority.BootstrapEvidence is { } bootstrap) _ = await Read(scope, bootstrap, "NEW_BOOTSTRAP", used, token);
             _ = await Read(scope, g.SqlResolution.Evidence, "SQL_NAME_RESOLUTION", used, token);
             var hashContract = await Document<EfContentHashContractV1>(scope, g.ContentHashContract, "CONTENT_HASH_CONTRACT", used, token);
             Require(hashContract.Version == 1 && Hash(hashContract.ScopeHash), "CONTENT_HASH_CONTRACT_INVALID");
             await Provenance(scope, hashContract.DataProjection, "DATA_PROJECTION", used, token);
             await Provenance(scope, hashContract.SecurityProjection, "SECURITY_PROJECTION", used, token);
             await Observation(scope, pre, "TARGET_PRE", g.ContentHashContract, used, token);
+            if (g.Authority.Scenario == "NEW_EF")
+            {
+                Require(g.Authority.BootstrapEvidence is not null, "NEW_BOOTSTRAP_EVIDENCE_REQUIRED");
+                var bootstrap = await Document<EfPreprovisionedBootstrapV1>(scope, g.Authority.BootstrapEvidence!, "NEW_BOOTSTRAP", used, token);
+                EfPreprovisionedBootstrap.Validate(bootstrap, s, g, pre, now);
+            }
+            else Require(g.Authority.BootstrapEvidence is null, "UNEXPECTED_BOOTSTRAP_EVIDENCE");
             Require(g.Policy.MaximumValiditySeconds > 0, "PLAN_VALIDITY_INVALID");
             var request = new EfPlanRequestV1(1, s.ReleaseId, s.OperationId, now, now.AddSeconds(g.Policy.MaximumValiditySeconds),
                 g.Policy, g.Authority, source.Source, pre.Observation, null!, null!);
@@ -229,6 +235,7 @@ public sealed class EfEvidencePreparationV1(IEfAuthorizedEvidenceProviderV1? pro
             await provider!.VerifyCurrentAsync(Clone(scope), used.Select(Clone).ToArray(), token);
             return new(result.Status, result, forwardAnalysis, rollbackAnalysis, result.Reasons, EvidenceHash(used));
         }
+        catch (EfBootstrapException e) { return new("BLOCKED", null, forwardAnalysis, rollbackAnalysis, [e.Message], null); }
         catch (Block e) { return new("BLOCKED", null, forwardAnalysis, rollbackAnalysis, [e.Message], null); }
         catch (OperationCanceledException) { return new("BLOCKED", null, forwardAnalysis, rollbackAnalysis, ["EVIDENCE_ACQUISITION_CANCELLED"], null); }
         catch { return new("BLOCKED", null, forwardAnalysis, rollbackAnalysis, ["EVIDENCE_NOT_VERIFIABLE"], null); }

@@ -84,7 +84,6 @@ internal static class EfPreparationTests
         Provenance(r.Policy.Provenance, "POLICY"); p.Admit(r.Authority.Classification, "CLASSIFICATION_V2");
         p.Admit(r.Source.RepositoryEvidence, "REPOSITORY_DISCOVERY_V2");
         if (r.Authority.CertifiedBaseline is { } baseline) Provenance(baseline.Provenance, "CERTIFIED_BASELINE");
-        if (r.Authority.BootstrapEvidence is { } bootstrap) p.Admit(bootstrap, "NEW_BOOTSTRAP");
         if (r.Source.AdoptionProvenance is { } adoption) Provenance(adoption, "ADOPTION");
         EfPlanProvenanceV1 Projection(string id, string purpose) => new("platform/projections", new string('e', 40), p.Raw(id, purpose, Encoding.UTF8.GetBytes(id)));
         var hashContract = p.Publish("hash-contract", "CONTENT_HASH_CONTRACT", new EfContentHashContractV1(1, Hash("fixture-full-content"),
@@ -111,7 +110,8 @@ internal static class EfPreparationTests
             p.Publish("governed-input", "GOVERNANCE", g),
             p.Publish("source-input", "SOURCE", new EfSourcePreparationV1(r.Source, f.Forward.Bytes, f.Rollback.Bytes)),
             p.Publish("pre-input", "TARGET_PRE", pre), p.Publish("qualification-input", "ISOLATED_QUALIFICATION", q));
-        return new(p, selection, f, g, pre, q);
+        var fixture = new Fixture(p, selection, f, g, pre, q);
+        return initial ? EfBootstrapTests.Admit(fixture) : fixture;
     }
     internal static EfObservationEvidenceV1 Observe(Provider p, EfPlanObservationV1 o, string phase, EvidenceReference hashContract)
     {

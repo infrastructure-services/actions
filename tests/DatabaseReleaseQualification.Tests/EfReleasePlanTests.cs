@@ -40,6 +40,7 @@ internal static class EfReleasePlanTests
         var rollback = ReleaseScript.FromText("rollback", string.Join("\n", tables.Zip(all.Skip(applied), (t, id) =>
             $"DROP TABLE {schema}.{t}; DELETE FROM {schema}.__EFMigrationsHistory WHERE MigrationId=N'{id}';").Reverse()));
         var preSchema = Snapshot([], schema); var postSchema = Snapshot(tables, schema);
+        if (initial) preSchema.ImpactMetrics[0] = new() { Schema = schema, Table = "__EFMigrationsHistory", RowCount = 0 };
         var descriptor = new ReleaseDescriptor { ReleaseId = "release-" + name, Environment = "TEST", SourceKind = "EF", Scenario = initial ? "NEW_EF" : "EXISTING_EF", DatabaseLifecycle = initial ? "NEW" : "EXISTING" };
         var payload = ReleasePayloadBuilder.Build(descriptor, forward, rollback);
         var lab = new Lab(preSchema, postSchema);
