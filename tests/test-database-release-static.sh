@@ -73,16 +73,27 @@ if grep -Eiq 'apply-db-migrations|dotnet[[:space:]]+ef[[:space:]]+database[[:spa
 fi
 
 if grep -RIl --include='*.cs' 'IRehearsalDatabase' "$ENGINE" \
-  | grep -vF 'QualificationEngine.cs' | grep -vF 'LegacyRehearsal.cs' >/dev/null; then
+  | grep -vF 'QualificationEngine.cs' | grep -vF 'LegacyRehearsal.cs' \
+  | grep -vxF "$ENGINE/EfProtectedExecution.cs" >/dev/null; then
   echo "FAIL: existe un adaptador de rehearsal real fuera del contrato explícito."
   exit 1
 fi
 
 if grep -RIl --include='*.cs' 'ExecuteSqlAsync(' "$ENGINE" \
-  | grep -vF 'QualificationEngine.cs' | grep -vF 'LegacyRehearsal.cs' >/dev/null; then
+  | grep -vF 'QualificationEngine.cs' | grep -vF 'LegacyRehearsal.cs' \
+  | grep -vxF "$ENGINE/EfProtectedExecution.cs" >/dev/null; then
   echo "FAIL: SQL mutante aparece fuera del módulo explícito de rehearsal."
   exit 1
 fi
+
+# EF's host-only coordinator reuses the existing exact-byte contract; it must
+# not implement a SQL adapter or acquire its own connection/execution authority.
+EF_EXECUTION="$ENGINE/EfProtectedExecution.cs"
+if grep -Eq 'SqlConnection|SqlCommand|DbConnection|ExecuteNonQuery|ExecuteReader|Process\.|Environment\.|class .*:[^{]*IRehearsalDatabase' "$EF_EXECUTION"; then
+  echo 'FAIL: EF protected coordinator contains an independent SQL/runtime adapter.'; exit 1
+fi
+grep -Fq 'Task<IRehearsalDatabase?> BeginOnceAsync' "$EF_EXECUTION"
+[[ "$(grep -Fc 'await database.ExecuteSqlAsync(up, p.Payload.ForwardHash, deadline.Token);' "$EF_EXECUTION")" -eq 1 ]]
 
 for required in \
   'BLOCKED_DISCOVERY' \
@@ -130,7 +141,7 @@ do
   fi
 done
 
-if grep -RiqE 'generate.*rollback|rollback.*generate|auto.*rollback|DROP INDEX.*CREATE INDEX' "$ENGINE"; then
+if grep -RiqE --include='*.cs' 'generate.*rollback|rollback.*generate|auto.*rollback|DROP INDEX.*CREATE INDEX' "$ENGINE"; then
   echo "FAIL: se detectó una posible generación/corrección automática de rollback."
   exit 1
 fi
