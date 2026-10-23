@@ -39,7 +39,7 @@ const BLOCK_CODES = new Set([
   "BLOCKED_HISTORY_RELATION_CONFLICT", "BLOCKED_LEGACY_NOT_DECLARED", "BLOCKED_LEGACY_WITH_EF_REPOSITORY",
   "BLOCKED_LEGACY_WITH_EF_HISTORY", "BLOCKED_LEGACY_EMPTY_UNDECIDED", "BLOCKED_REGISTRY_INVALID",
   "BLOCKED_REGISTRY_CONTRADICTION", "BLOCKED_PHYSICAL_DRIFT", "BLOCKED_SCHEMA_EVIDENCE_INSUFFICIENT",
-  "BLOCKED_BASELINE_REQUIRED", "BLOCKED_BASELINE_APPROVAL_PENDING", "BLOCKED_ONBOARDING_PENDING"
+  "BLOCKED_BASELINE_REQUIRED", "BLOCKED_BASELINE_APPROVAL_PENDING", "BLOCKED_ONBOARDING_PENDING", "INITIAL_HISTORY_STATE_UNVERIFIED"
 ]);
 
 function issue(code, issuePath, message) {
@@ -106,7 +106,11 @@ export function validateContract(raw) {
   if (!isPlainObject(raw)) {
     return [issue("ROOT_OBJECT_REQUIRED", "$", "Input root must be an object.")];
   }
-  checkObject(raw, "$", ROOT_KEYS.filter(key => key !== "targetConnection"), errors, ROOT_KEYS);
+  checkObject(raw, "$", ROOT_KEYS.filter(key => key !== "targetConnection"), errors, [...ROOT_KEYS, "efInitialHistoryPolicy"]);
+  if (Object.hasOwn(raw, "efInitialHistoryPolicy")) {
+    checkEnum(raw.efInitialHistoryPolicy, ["NOT_VERIFIED", "HISTORY_ABSENT_V1", "EMPTY_HISTORY_ATTESTED_V1"], "efInitialHistoryPolicy", errors);
+    if (raw.declarations?.changeManagementMode !== "EF_MIGRATIONS") errors.push(issue("EF_MODE_REQUIRED", "efInitialHistoryPolicy", "The extension is restricted to EF."));
+  }
   if (Object.hasOwn(raw, "contractVersion") && raw.contractVersion !== 2) {
     errors.push(issue("CONTRACT_VERSION_INVALID", "contractVersion", "Contract version must be integer 2."));
   }
@@ -290,7 +294,8 @@ export function normalize(raw) {
     repoHistoryRelation: relationFor(raw),
     schemaRelation: raw.schema.status,
     registryState: raw.registry.status,
-    onboardingState: raw.onboarding.status
+    onboardingState: raw.onboarding.status,
+    ...(Object.hasOwn(raw, "efInitialHistoryPolicy") ? { efInitialHistoryPolicy: raw.efInitialHistoryPolicy } : {})
   };
 }
 
@@ -313,7 +318,8 @@ export function classifierArguments(facts) {
     "--repo-history-relation", facts.repoHistoryRelation,
     "--schema-relation", facts.schemaRelation,
     "--registry-state", facts.registryState,
-    "--onboarding-state", facts.onboardingState
+    "--onboarding-state", facts.onboardingState,
+    ...(Object.hasOwn(facts, "efInitialHistoryPolicy") ? ["--ef-initial-history-policy", facts.efInitialHistoryPolicy] : [])
   ];
 }
 
@@ -338,8 +344,15 @@ function safeCodeArray(value, allowed) {
 }
 
 export function validateClassifierOutput(output, facts) {
-  if (!hasExactKeys(output, OUTPUT_ROOT_KEYS)) return false;
-  if (output.contractVersion !== 2 || output.rulesVersion !== "1") return false;
+  const extended = Object.hasOwn(facts, "efInitialHistoryPolicy");
+  if (!hasExactKeys(output, extended ? [...OUTPUT_ROOT_KEYS, "ef"] : OUTPUT_ROOT_KEYS)) return false;
+  if (output.contractVersion !== 2 || output.rulesVersion !== (extended ? "2" : "1")) return false;
+  if (extended && (!hasExactKeys(output.ef, ["variant", "reason", "initialHistoryPolicy", "executionAuthorized", "allowedStages", "forbiddenStages"])
+    || !/^V[1-6]$/.test(output.ef.variant) || !/^[A-Z0-9_]+$/.test(output.ef.reason)
+    || output.ef.initialHistoryPolicy !== facts.efInitialHistoryPolicy || output.ef.executionAuthorized !== false
+    || !equalArray(output.ef.forbiddenStages, ["APPLY", "CERTIFY", "CREATE_DATABASE"])
+    || !equalArray(output.ef.allowedStages, ["V2", "V3", "V4"].includes(output.ef.variant)
+      ? ["PLAN", "QUALIFICATION", "REVALIDATE"] : output.ef.variant === "V5" ? ["NO_CHANGES"] : []))) return false;
   if (!hasExactKeys(output.declarations, ["databaseLifecycle", "changeManagementMode"]) ||
       output.declarations.databaseLifecycle !== facts.databaseLifecycle ||
       output.declarations.changeManagementMode !== facts.changeManagementMode) return false;

@@ -53,9 +53,28 @@ internal static class EfPreprovisionedBootstrap
                     && (x.Kind == "table" && x.Name == "__EFMigrationsHistory"
                         || x.Parent == "__EFMigrationsHistory" && x.Kind is "column" or "key-constraint-column" or "index-column")),
             "BOOTSTRAP_SCHEMA_INVALID");
+        Require(o.HistoryStatus != "EMPTY" || ValidHistorySchema(o.Schema.Objects.Where(x => x.Schema == "dbo"
+            && (x.Name == "__EFMigrationsHistory" || x.Parent == "__EFMigrationsHistory"))), "BOOTSTRAP_HISTORY_STRUCTURE_INVALID");
         Require(b.DataCoverage == "COMPLETE" && b.BusinessRowCount == 0
             && o.Schema.ImpactMetrics.Count == history.Length
             && o.Schema.ImpactMetrics.All(x => x.Schema == "dbo" && x.Table == "__EFMigrationsHistory" && x.RowCount == 0),
             "BOOTSTRAP_DATA_NOT_EMPTY_OR_UNVERIFIED");
+    }
+
+    internal static bool ValidHistorySchema(IEnumerable<SchemaObject> history)
+    {
+        var objects = history.ToArray();
+        return objects.Count(x => x.Kind == "table" && x.Name == "__EFMigrationsHistory") == 1
+            && objects.Count(x => x.Kind == "column") == 2
+            && new[] { ("MigrationId", "300"), ("ProductVersion", "64") }.All(spec =>
+                objects.Count(x => x.Kind == "column" && x.Name == spec.Item1 && x.Parent == "__EFMigrationsHistory"
+                    && x.Properties.GetValueOrDefault("dataType") == "nvarchar"
+                    && x.Properties.GetValueOrDefault("maxLength") == spec.Item2
+                    && x.Properties.GetValueOrDefault("nullable") == "false") == 1)
+            && objects.Count(x => x.Kind == "key-constraint-column") == 1
+            && objects.Any(x => x.Kind == "key-constraint-column" && x.Parent == "__EFMigrationsHistory"
+                && x.Properties.GetValueOrDefault("constraintType") == "PK"
+                && x.Properties.GetValueOrDefault("column") == "MigrationId"
+                && x.Properties.GetValueOrDefault("ordinal") == "1");
     }
 }

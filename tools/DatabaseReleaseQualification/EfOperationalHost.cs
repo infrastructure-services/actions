@@ -81,6 +81,11 @@ internal static class EfHostContract
             && Sha(scope.SourceRevision) && Token(s.ReleaseId) && Guid.TryParseExact(s.OperationId, "D", out _), "SELECTION_INVALID");
         Reference(s.Governance); Reference(s.Source); Reference(s.Pre);
         if (s.Qualification is not null) Reference(s.Qualification);
+        if (s.PreSources is { } sources)
+        {
+            Reference(sources.Discovery); Reference(sources.Schema);
+            Reference(sources.Data); Reference(sources.Security);
+        }
         var c = r.Continuation;
         if (r.Operation == "PLAN") Require(c is null, "UNEXPECTED_CONTINUATION");
         else

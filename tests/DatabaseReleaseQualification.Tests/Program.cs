@@ -211,7 +211,17 @@ var tests = new (string Name, Func<Task> Run)[]
     ("Evidence ID conserva semántica case-sensitive", CommitProtocolEvidenceIdIsCaseSensitive)
 };
 
-tests = args.Contains("--ef-bootstrap", StringComparer.Ordinal)
+tests = args.Contains("--ef-unified-classification", StringComparer.Ordinal)
+    ? EfUnifiedClassificationTests.Cases
+    : args.Contains("--ef-baseline-commit", StringComparer.Ordinal)
+    ? EfBaselineCommitTests.Cases
+    : args.Contains("--ef-protected-execution", StringComparer.Ordinal)
+    ? EfProtectedExecutionTests.Cases
+    : args.Contains("--ef-normalization", StringComparer.Ordinal)
+    ? EfNormalizationTests.Cases
+    : args.Contains("--ef-initial-recovery", StringComparer.Ordinal)
+    ? EfInitialRecoveryTests.Cases
+    : args.Contains("--ef-bootstrap", StringComparer.Ordinal)
     ? EfBootstrapTests.Cases
     : args.Contains("--ef-preparation-directed", StringComparer.Ordinal)
     ? EfPreparationTests.Cases.Where(x => !x.Name.Contains("successive release", StringComparison.Ordinal)).ToArray()
@@ -242,7 +252,9 @@ tests = args.Contains("--ef-bootstrap", StringComparer.Ordinal)
             : tests.Concat(RecoveryCoverageTests.Cases).Concat(LegacyArtifactTests.Cases)
                 .Concat(LegacySecurityReaderTests.Cases).Concat(LegacySafetyTests.Cases)
                 .Concat(LegacyReadinessTests.Cases).Concat(LegacyRuntimeResolverTests.Cases)
-                .Concat(LegacyRehearsalTests.Cases).Concat(EfTestMigrationTests.Cases).Concat(NewEfCreationFirstTests.Cases).Concat(EfReleasePlanTests.Cases).Concat(EfPreparationTests.Cases).Concat(EfOperationalTests.Cases).Concat(EfBootstrapTests.Cases).ToArray();
+                .Concat(LegacyRehearsalTests.Cases).Concat(EfTestMigrationTests.Cases).Concat(NewEfCreationFirstTests.Cases).Concat(EfReleasePlanTests.Cases).Concat(EfPreparationTests.Cases).Concat(EfOperationalTests.Cases).Concat(EfBootstrapTests.Cases)
+                .Concat(EfInitialRecoveryTests.Cases).Concat(EfNormalizationTests.Cases).Concat(EfUnifiedClassificationTests.Cases)
+                .Concat(EfProtectedExecutionTests.Cases).Concat(EfBaselineCommitTests.Cases).ToArray();
 var failed = 0;
 foreach (var test in tests)
 {

@@ -30,6 +30,7 @@ declare -A FLAG_VARIABLE=(
   [--schema-relation]=RAW_SCHEMA_RELATION
   [--registry-state]=RAW_REGISTRY_STATE
   [--onboarding-state]=RAW_ONBOARDING_STATE
+  [--ef-initial-history-policy]=RAW_EF_INITIAL_HISTORY_POLICY
 )
 REQUIRED_FLAGS=(
   --contract-version --database-lifecycle --change-management-mode
@@ -55,9 +56,16 @@ for flag in "${REQUIRED_FLAGS[@]}"; do
 done
 
 RULES_VERSION=1
+EF_INITIAL_HISTORY_POLICY=NOT_VERIFIED
+if [[ -n "${PROVIDED_FLAGS[--ef-initial-history-policy]-}" ]]; then
+  RULES_VERSION=2
+  EF_INITIAL_HISTORY_POLICY="$RAW_EF_INITIAL_HISTORY_POLICY"
+  [[ "$EF_INITIAL_HISTORY_POLICY" == NOT_VERIFIED || "$EF_INITIAL_HISTORY_POLICY" == HISTORY_ABSENT_V1 || "$EF_INITIAL_HISTORY_POLICY" == EMPTY_HISTORY_ATTESTED_V1 ]] || invocation_error 'invalid EF initial history policy'
+fi
 BLOCK_PRIORITY=(
   BLOCKED_UNSUPPORTED_CONTRACT_VERSION BLOCKED_INVALID_LIFECYCLE
   BLOCKED_CHANGE_MODE_REQUIRED BLOCKED_INVALID_CHANGE_MODE
+  INITIAL_HISTORY_STATE_UNVERIFIED
   BLOCKED_DECLARATION_CONFLICT BLOCKED_DATABASE_NOT_FOUND_NO_PROVISIONING
   BLOCKED_PHYSICAL_EXISTENCE_UNKNOWN BLOCKED_METADATA_VISIBILITY
   BLOCKED_PHYSICAL_STATE_UNKNOWN BLOCKED_NEW_NOT_EMPTY
@@ -166,7 +174,16 @@ if [[ "$DATABASE_LIFECYCLE" == NEW && "$CHANGE_MANAGEMENT_MODE" == EF_MIGRATIONS
     INVALID) add_block BLOCKED_EF_REPOSITORY_INVALID ;;
     AMBIGUOUS) add_block BLOCKED_AMBIGUOUS_MIGRATION_PROJECT ;;
   esac
-  [[ "$HISTORY_STATE" == ABSENT ]] || add_block BLOCKED_NEW_UNEXPECTED_HISTORY
+  if [[ "$RULES_VERSION" == 2 ]]; then
+    # A pure classifier grants no authority. A2.1 must independently acquire and
+    # validate the referenced bootstrap policy before consuming this result.
+    if ! [[ "$HISTORY_STATE" == ABSENT && "$EF_INITIAL_HISTORY_POLICY" == HISTORY_ABSENT_V1
+      || "$HISTORY_STATE" == EMPTY && "$EF_INITIAL_HISTORY_POLICY" == EMPTY_HISTORY_ATTESTED_V1 ]]; then
+      add_block INITIAL_HISTORY_STATE_UNVERIFIED
+    fi
+  else
+    [[ "$HISTORY_STATE" == ABSENT ]] || add_block BLOCKED_NEW_UNEXPECTED_HISTORY
+  fi
 fi
 if [[ "$DATABASE_LIFECYCLE" == EXISTING && "$CHANGE_MANAGEMENT_MODE" == EF_MIGRATIONS ]]; then
   case "$REPOSITORY_STATE" in
@@ -231,7 +248,7 @@ if [[ "$DATABASE_LIFECYCLE" == NEW
   && "$METADATA_VISIBILITY" == SUFFICIENT
   && "$PHYSICAL_STATE" == EMPTY
   && "$REPOSITORY_STATE" == PRESENT_VALID
-  && "$HISTORY_STATE" == ABSENT
+  && ( "$HISTORY_STATE" == ABSENT || ( "$RULES_VERSION" == 2 && "$HISTORY_STATE" == EMPTY && "$EF_INITIAL_HISTORY_POLICY" == EMPTY_HISTORY_ATTESTED_V1 ) )
   && "$REPO_HISTORY_RELATION" == NOT_APPLICABLE ]]; then
   SCENARIO=NEW_EF
   HAS_PENDING_MIGRATIONS=true
@@ -294,6 +311,23 @@ OUTPUT_JSON="$(
   printf '  "inferences": {"scenario": %s, "hasPendingMigrations": %s},\n' "$(json_string "$SCENARIO")" "$HAS_PENDING_MIGRATIONS"
   printf '  "decision": {"status": %s, "primaryBlock": %s, "blocks": %s},\n' "$(json_string "$STATUS")" "$PRIMARY_BLOCK_JSON" "$(json_array "${BLOCKS[@]}")"
   printf '  "warnings": [],\n'
+  if [[ "$RULES_VERSION" == 2 ]]; then
+    VARIANT=V6
+    REASON="${PRIMARY_BLOCK:-BLOCKED_EF_CLASSIFICATION}"
+    if [[ "$PHYSICAL_EXISTENCE" == NOT_FOUND ]]; then
+      VARIANT=V1; REASON=DATABASE_PROVISIONING_REQUIRED
+    elif [[ "$STATUS" == ELIGIBLE_FOR_NEXT_READ_ONLY_STAGE && "$SCENARIO" == NEW_EF ]]; then
+      if [[ "$HISTORY_STATE" == ABSENT ]]; then VARIANT=V2; REASON=INITIAL_MIGRATIONS_PENDING
+      else VARIANT=V3; REASON=EMPTY_HISTORY_INITIAL_STATE; fi
+    elif [[ "$STATUS" == ELIGIBLE_FOR_NEXT_READ_ONLY_STAGE && "$SCENARIO" == EXISTING_EF ]]; then
+      if [[ "$HAS_PENDING_MIGRATIONS" == true ]]; then VARIANT=V4; REASON=PENDING_MIGRATIONS
+      else VARIANT=V5; REASON=NO_CHANGES; fi
+    fi
+    ALLOWED_STAGES='[]'
+    if [[ "$VARIANT" == V2 || "$VARIANT" == V3 || "$VARIANT" == V4 ]]; then ALLOWED_STAGES='["PLAN","QUALIFICATION","REVALIDATE"]'
+    elif [[ "$VARIANT" == V5 ]]; then ALLOWED_STAGES='["NO_CHANGES"]'; fi
+    printf '  "ef": {"variant": %s, "reason": %s, "initialHistoryPolicy": %s, "executionAuthorized": false, "allowedStages": %s, "forbiddenStages": ["APPLY","CERTIFY","CREATE_DATABASE"]},\n' "$(json_string "$VARIANT")" "$(json_string "$REASON")" "$(json_string "$EF_INITIAL_HISTORY_POLICY")" "$ALLOWED_STAGES"
+  fi
   printf '  "unknownFields": %s\n' "$(json_array "${UNKNOWN_FIELDS[@]}")"
   printf '}\n'
 )"
