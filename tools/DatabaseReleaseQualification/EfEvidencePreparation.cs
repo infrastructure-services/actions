@@ -20,9 +20,10 @@ public interface IEfAuthorizedEvidenceProviderV1
 
 public sealed record EfPreparationSelectionV1(EfEvidenceScopeV1 Scope, string ReleaseId, string OperationId,
     EvidenceReference Governance, EvidenceReference Source, EvidenceReference Pre, EvidenceReference? Qualification,
-    EfObservationSourcesV1? PreSources = null);
+    EfObservationSourcesV1? PreSources = null, EfAdoptionSelectionV1? Adoption = null);
 public sealed record EfGovernedPreparationV1(EfPlanGovernanceV1 Authority, EfPlanPolicyV1 Policy,
-    EfSqlResolutionV1 SqlResolution, EvidenceReference ContentHashContract, int ClassificationRulesVersion = 1);
+    EfSqlResolutionV1 SqlResolution, EvidenceReference ContentHashContract, int ClassificationRulesVersion = 1,
+    EfAdoptionPolicyV1? AdoptionPolicy = null);
 public sealed record EfSourcePreparationV1(EfPlanSourceV1 Source, byte[] Forward, byte[] Rollback);
 public sealed record EfObservationEvidenceV1(string Phase, EfPlanObservationV1 Observation,
     SqlDiscoveryResult Discovery, EvidenceReference ContentHashContract);
@@ -154,6 +155,7 @@ public sealed partial class EfEvidencePreparationV1(IEfAuthorizedEvidenceProvide
         {
             Require(provider is not null, "AUTHORIZED_PROVIDER_REQUIRED");
             var s = Clone(selection); var scope = s.Scope; var used = new EvidenceLog();
+            Require(s.Adoption is null, "ADOPTION_REQUIRES_COMPLEMENTARY_OPERATION");
             Require(Repository(scope.SourceRepository) && Revision(scope.SourceRevision)
                 && !string.IsNullOrWhiteSpace(scope.TargetId) && !string.IsNullOrWhiteSpace(scope.SessionId)
                 && Guid.TryParseExact(s.OperationId, "D", out _), "PREPARATION_SELECTION_INVALID");

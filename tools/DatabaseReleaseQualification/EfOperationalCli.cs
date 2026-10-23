@@ -58,7 +58,9 @@ public static class EfOperationalCli
         catch { outcome = Failure("ERROR", "ARTIFACT_PUBLICATION_FAILED"); }
         Console.WriteLine(JsonSerializer.Serialize(outcome.Result, JsonDefaults.Compact));
         return outcome.Result.Status switch {
-            "PLAN_EVIDENCE_CONSISTENT_NOT_AUTHORIZED" or "NO_CHANGES" or "PRE_MATCH_NOT_AUTHORIZED" or "POST_MATCH_NOT_CERTIFIED" => 0,
+            "PLAN_EVIDENCE_CONSISTENT_NOT_AUTHORIZED" or "NO_CHANGES" or "PRE_MATCH_NOT_AUTHORIZED" or "POST_MATCH_NOT_CERTIFIED"
+                or "ADOPTION_REQUIRED" or "PENDING_APPROVAL" or "CERTIFICATION_COMMIT_REQUIRED"
+                or "GOVERNANCE_TRANSITION_REQUIRED" or "EXISTING_EF_MANAGED" => 0,
             "INVALID" => 65, "BLOCKED" => 66, "TIMEOUT" => 124, "CANCELLED" => 130, _ => 70
         };
     }

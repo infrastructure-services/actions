@@ -33,7 +33,8 @@ internal static class EfOperationalTests
         ("EF host: timeout and cancellation retain distinct exit semantics", Cancellation),
         ("EF host: authenticated Git subset never attests missing observation producers", GitSources),
         ("EF host: Git credential, content, target and revision failures block", GitNegatives),
-        ("EF host: integrated engine pins and corporate caller branch source remain separate", GitRevisionPolicy)
+        ("EF host: integrated engine pins and corporate caller branch source remain separate", GitRevisionPolicy),
+        ("EF host: only read-only ADOPTION reaches missing-producer gate before MANAGED", GitAdoption)
     ];
     private static async Task<EfOperationalOutcomeV1> Run(EfPreparationTests.Fixture f, EfOperationalRequestV1? r = null)
         => await EfOperationalHostV1.RunAsync(r ?? Request(f), new Factory(f.Provider), Now);
@@ -295,12 +296,12 @@ internal static class EfOperationalTests
         var files = new Dictionary<string, byte[]> {
             ["database-registry/governance-targets.json"] = Bytes(new { governanceFormatVersion = 1, targets = new[] { record } }),
             ["database-registry/onboarding-targets.json"] = Bytes(new { onboardingFormatVersion = 1, targets = new[] { new {
-                targetId = r.Selection.Scope.TargetId, status = "MANAGED", authorityReference = new { kind = "ONBOARDING_GIT_PR", policyPath = "docs/policy.md" } } } }),
+                targetId = r.Selection.Scope.TargetId, status = fault == "pending" ? "REQUIRED" : "MANAGED", authorityReference = new { kind = "ONBOARDING_GIT_PR", policyPath = "docs/policy.md" } } } }),
             ["database-registry/targets.json"] = Bytes(new { registryFormatVersion = 1, targets = Array.Empty<object>() })
         };
         // Unit fixture modules are only an HTTP/host-process test, not governance
         // authentication. A separate explicit mode runs the unchanged real resolver.
-        var response = new { status = "PRESENT", registryGovernance = new { targetId = record.targetId, governance = record }, onboarding = new { onboardingState = "MANAGED" } };
+        var response = new { status = "PRESENT", registryGovernance = new { targetId = record.targetId, governance = record }, onboarding = new { onboardingState = fault == "pending" ? "REQUIRED" : "MANAGED" } };
         foreach (var name in new[] { "resolve-governance-runtime.mjs", "validate-ef-source.mjs", "prepare-ef-source-runtime.mjs" })
             files["database-registry/" + name] = resolverRoot is null
                 ? Encoding.UTF8.GetBytes(name.StartsWith("resolve") ? "export function resolveGovernanceRuntime() { return {result:" + JsonSerializer.Serialize(response) + "}; }"
@@ -323,6 +324,23 @@ internal static class EfOperationalTests
         Assert(outcome.Provider is null && outcome.VerifiedGitSources.Length == 6 && test.Http.MainCalls == 6
             && outcome.BlockingReasons.Contains("A2_1_NORMALIZED_PRODUCER_ADAPTER_REQUIRED"), "Git bytes impersonated operational evidence");
         Assert(!JsonSerializer.Serialize(outcome, JsonDefaults.Compact).Contains("FAKE_READ_ONLY_CREDENTIAL"), "Credential leaked");
+    }
+    private static async Task GitAdoption()
+    {
+        var f = await EfAdoptionTests.Make(); var adoption = EfAdoptionTests.Request(f);
+        var test = GitHost(adoption, "pending"); var result = await test.Host.OpenAsync(adoption, CancellationToken.None);
+        Assert(result.Provider is null && result.BlockingReasons.Contains("EF_ADOPTION_PRODUCERS_REQUIRED")
+            && result.BlockingReasons.Contains("EXECUTED_HOST_ATTESTATION_REQUIRED"), "adoption gained runtime authority");
+        foreach (var operation in new[] { "PLAN", "REVALIDATE", "VERIFY_POST" })
+        {
+            var r = adoption with { Operation = operation, Selection = adoption.Selection with { Adoption = null },
+                Continuation = operation == "PLAN" ? null : operation == "REVALIDATE"
+                    ? new(f.Selection.Pre, FreshPre: f.Selection.Pre, CurrentSource: f.Selection.Source)
+                    : new(f.Selection.Pre, Execution: f.Selection.Pre, ActualPost: f.Selection.Pre) };
+            var host = GitHost(r, "pending"); var blocked = await host.Host.OpenAsync(r, CancellationToken.None);
+            Assert(blocked.Provider is null && blocked.BlockingReasons.SequenceEqual(new[] { "ONBOARDING_NOT_READY" }),
+                operation + " bypassed MANAGED");
+        }
     }
     private static async Task GitNegatives()
     {
