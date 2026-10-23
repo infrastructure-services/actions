@@ -68,7 +68,9 @@ internal static class EfReleasePlanTests
             pre, post, recovery), forward, rollback);
     }
     private static SchemaSnapshot Snapshot(string[] tables, string schema = "dbo") => new() {
-        Objects = tables.Prepend("__EFMigrationsHistory").Select(t => new SchemaObject { Kind = "table", Schema = schema, Name = t }).ToList(),
+        Objects = tables.Select(t => new SchemaObject { Kind = "table", Schema = schema, Name = t })
+            .Concat(EfInitialRecoveryTests.History().Objects.Select(x => new SchemaObject {
+                Kind = x.Kind, Schema = schema, Parent = x.Parent, Name = x.Name, Properties = x.Properties })).ToList(),
         ImpactMetrics = tables.Prepend("__EFMigrationsHistory").Select(t => new TableImpactMetric { Schema = schema, Table = t, RowCount = 4 }).ToList()
     };
     internal sealed class Lab(SchemaSnapshot pre, SchemaSnapshot post) : IRehearsalDatabase, IRecoverySecurityEvidenceProvider,

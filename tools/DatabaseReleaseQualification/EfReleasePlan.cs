@@ -262,7 +262,7 @@ public static class EfReleasePlannerV1
             if (f.Findings.Concat(b.Findings).Any(x => x.Severity == FindingSeverity.Blocking))
                 reasons.Add("BLOCKING_DEPENDENCY");
             var recovery = Recovery(r.Recovery, payload, qualificationPre, post, impact,
-                f.HasPotentialDataLoss || b.HasPotentialDataLoss, qualificationTarget, now, reasons);
+                f.HasPotentialDataLoss || b.HasPotentialDataLoss, qualificationTarget, now, reasons, acquisition?.InitialRecovery);
             var status = reasons.Count == 0 ? "PLAN_EVIDENCE_CONSISTENT_NOT_AUTHORIZED" : "BLOCKED";
             var codes = reasons.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
             var manifest = new EfPlanManifestV1(1, "EF_RELEASE_PLAN", status, r.OperationId,
@@ -298,7 +298,7 @@ public static class EfReleasePlannerV1
 
     private static EfPlanRecoverySummaryV1 Recovery(EfPlanRecoveryV1 r, ReleasePayloadMetadata payload,
         EfPlanStateV1 pre, EfPlanStateV1 post, RecoveryImpact impact, bool potentialDataLoss, EfPlanTargetV1 target,
-        DateTimeOffset now, List<string> reasons)
+        DateTimeOffset now, List<string> reasons, EfInitialRecoveryEvidenceV1? initial)
     {
         if (!Enum.IsDefined(r.Strategy) || r.Strategy == RollbackCapability.Unknown)
             reasons.Add("RECOVERY_STRATEGY_REQUIRED");
@@ -306,11 +306,19 @@ public static class EfReleasePlannerV1
         if (r.ExerciseEvidence is null) reasons.Add("RECOVERY_EXERCISE_REQUIRED"); else Reference(r.ExerciseEvidence);
         Require(r.TargetId == pre.TargetId && r.PayloadHash == payload.PayloadHash, "RECOVERY_PAYLOAD_BINDING_MISMATCH");
         var e = r.Exercise;
+        var initialValid = initial is not null && EfInitialRecoveryV1.Complete(initial)
+            && JsonSerializer.Serialize(initial, JsonDefaults.Compact) == JsonSerializer.Serialize(e?.RecoveryCoverage?.InitialRecovery, JsonDefaults.Compact)
+            && initial.Selection.Policy.PayloadHash == payload.PayloadHash
+            && initial.Selection.Policy.ForwardHash == payload.ForwardHash && initial.Selection.Policy.RollbackHash == payload.RollbackHash
+            && JsonSerializer.Serialize(State(initial.Phases[RecoveryPhase.Pre].Observation, target, now), JsonDefaults.Compact)
+                == JsonSerializer.Serialize(pre, JsonDefaults.Compact);
         var exerciseHash = e is null ? null : Hashing.Sha256(JsonSerializer.Serialize(e, JsonDefaults.Compact));
         var valid = e is not null && e.CanProceed && e.ForwardCertified
             && r.ExerciseEvidence?.EvidenceSha256 == exerciseHash
             && e.Pre?.Sha256 == pre.SchemaHash && e.Post1?.Sha256 == post.SchemaHash
-            && e.Pre2?.Sha256 == pre.SchemaHash && e.Post2?.Sha256 == post.SchemaHash
+            && (e.Pre2?.Sha256 == pre.SchemaHash || initialValid
+                && e.Pre2?.Sha256 == SchemaCanonicalizer.Canonicalize(initial!.Phases[RecoveryPhase.Pre2].Observation.Schema).Sha256)
+            && e.Post2?.Sha256 == post.SchemaHash
             && new[] { e.Pre, e.Post1, e.Pre2, e.Post2 }.All(x => x is not null
                 && Hashing.Sha256(x.Json) == x.Sha256 && JsonSerializer.Serialize(x.Document, JsonDefaults.Compact) == x.Json)
             && e.RecoveryCoverage is { } coverage && coverage.ForwardHash == payload.ForwardHash
@@ -324,7 +332,12 @@ public static class EfReleasePlannerV1
             var reapplied = State(r.ReappliedPost, target, now);
             Require(post.CapturedAtUtc <= recovered.CapturedAtUtc && recovered.CapturedAtUtc <= reapplied.CapturedAtUtc,
                 "QUALIFICATION_TIME_INVALID");
-            SameState(pre, recovered, "RECOVERY_PRE_MISMATCH");
+            if (initialValid)
+            {
+                SameState(State(initial!.Phases[RecoveryPhase.Pre].Observation, target, now), pre, "RECOVERY_PRE_MISMATCH");
+                SameState(State(initial.Phases[RecoveryPhase.Pre2].Observation, target, now), recovered, "RECOVERY_PRE_MISMATCH");
+            }
+            else SameState(pre, recovered, "RECOVERY_PRE_MISMATCH");
             SameState(post, reapplied, "RECOVERY_REAPPLY_MISMATCH");
             Require(new[] { pre.Evidence.EvidenceId, post.Evidence.EvidenceId,
                 recovered.Evidence.EvidenceId, reapplied.Evidence.EvidenceId }.Distinct(StringComparer.Ordinal).Count() == 4,

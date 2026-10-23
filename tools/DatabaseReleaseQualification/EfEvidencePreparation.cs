@@ -19,9 +19,10 @@ public interface IEfAuthorizedEvidenceProviderV1
 }
 
 public sealed record EfPreparationSelectionV1(EfEvidenceScopeV1 Scope, string ReleaseId, string OperationId,
-    EvidenceReference Governance, EvidenceReference Source, EvidenceReference Pre, EvidenceReference? Qualification);
+    EvidenceReference Governance, EvidenceReference Source, EvidenceReference Pre, EvidenceReference? Qualification,
+    EfObservationSourcesV1? PreSources = null);
 public sealed record EfGovernedPreparationV1(EfPlanGovernanceV1 Authority, EfPlanPolicyV1 Policy,
-    EfSqlResolutionV1 SqlResolution, EvidenceReference ContentHashContract);
+    EfSqlResolutionV1 SqlResolution, EvidenceReference ContentHashContract, int ClassificationRulesVersion = 1);
 public sealed record EfSourcePreparationV1(EfPlanSourceV1 Source, byte[] Forward, byte[] Rollback);
 public sealed record EfObservationEvidenceV1(string Phase, EfPlanObservationV1 Observation,
     SqlDiscoveryResult Discovery, EvidenceReference ContentHashContract);
@@ -36,7 +37,8 @@ public sealed record EfContentHashContractV1(int Version, string ScopeHash,
 public sealed record EfProducerReceiptV1(string Purpose, EvidenceReference Evidence, string Repository, string Revision);
 public sealed record EfPlanAcquisitionV1(EfSqlResolutionV1 SqlResolution, EfPlanTargetV1 RehearsalTarget,
     EfPlanStateV1 RehearsalPre, EvidenceReference QualificationEvidence,
-    EvidenceReference ContentHashContract, EvidenceReference[] Evidence, EfProducerReceiptV1[] Producers);
+    EvidenceReference ContentHashContract, EvidenceReference[] Evidence, EfProducerReceiptV1[] Producers,
+    EfInitialRecoveryEvidenceV1? InitialRecovery = null);
 public sealed record EfPreparationResultV1(string Status, EfPlanResultV1? PlanResult,
     EfSemanticResultV1? Forward, EfSemanticResultV1? Rollback, string[] Reasons, string? EvidenceSetHash)
 {
@@ -52,7 +54,8 @@ public sealed record EfBaselineTransitionResultV1(string Status, EvidenceReferen
     public bool Committed => false;
 }
 
-public sealed class EfEvidencePreparationV1(IEfAuthorizedEvidenceProviderV1? provider = null)
+public sealed partial class EfEvidencePreparationV1(IEfAuthorizedEvidenceProviderV1? provider = null,
+    IEfProtectedExecutionHostV1? executionHost = null, ICertificationCommitStore? certificationStore = null)
 {
     private sealed class Block(string code) : Exception(code);
     private sealed class EvidenceLog : List<EvidenceReference>
@@ -125,7 +128,7 @@ public sealed class EfEvidencePreparationV1(IEfAuthorizedEvidenceProviderV1? pro
         _ = await Read(scope, provenance.Document, purpose, used, token);
     }
     private async Task Observation(EfEvidenceScopeV1 scope, EfObservationEvidenceV1 evidence, string phase,
-        EvidenceReference hashContract, EvidenceLog used, CancellationToken token)
+        EvidenceReference hashContract, EvidenceLog used, CancellationToken token, bool normalized = false)
     {
         var o = evidence.Observation; var d = evidence.Discovery;
         Require(evidence.Phase == phase && evidence.ContentHashContract == hashContract, "OBSERVATION_PHASE_OR_HASH_CONTRACT_MISMATCH");
@@ -140,7 +143,7 @@ public sealed class EfEvidencePreparationV1(IEfAuthorizedEvidenceProviderV1? pro
         Require(o.MetadataCoverage == "COMPLETE" && o.ImpactCoverage == "COMPLETE", "OBSERVATION_COVERAGE_REQUIRED");
         if (o.Physical is not null)
             Require(JsonSerializer.Serialize(o.Physical, JsonDefaults.Compact) == JsonSerializer.Serialize(d.Physical, JsonDefaults.Compact), "PHYSICAL_EVIDENCE_MISMATCH");
-        _ = await Read(scope, o.Evidence, phase, used, token);
+        if (!normalized) _ = await Read(scope, o.Evidence, phase, used, token);
     }
 
     public async Task<EfPreparationResultV1> PrepareAsync(EfPreparationSelectionV1 selection,
@@ -155,8 +158,12 @@ public sealed class EfEvidencePreparationV1(IEfAuthorizedEvidenceProviderV1? pro
                 && !string.IsNullOrWhiteSpace(scope.TargetId) && !string.IsNullOrWhiteSpace(scope.SessionId)
                 && Guid.TryParseExact(s.OperationId, "D", out _), "PREPARATION_SELECTION_INVALID");
             var g = await Document<EfGovernedPreparationV1>(scope, s.Governance, "GOVERNANCE", used, token);
+            Require(g.ClassificationRulesVersion is 1 or 2, "CLASSIFICATION_RULES_UNSUPPORTED");
+            Require(s.PreSources is null || g.ClassificationRulesVersion == 2, "NORMALIZATION_REQUIRES_GOVERNED_CLASSIFICATION_V2");
             var source = await Document<EfSourcePreparationV1>(scope, s.Source, "SOURCE", used, token);
-            var pre = await Document<EfObservationEvidenceV1>(scope, s.Pre, "TARGET_PRE", used, token);
+            var pre = s.PreSources is null
+                ? await Document<EfObservationEvidenceV1>(scope, s.Pre, "TARGET_PRE", used, token)
+                : await NormalizeObservation(s, g, now, used, token);
             Require(g.Authority.Target.TargetId == scope.TargetId && source.Source.Repository == scope.SourceRepository
                 && source.Source.Revision == scope.SourceRevision, "SOURCE_OR_TARGET_CHANGED");
             await Provenance(scope, g.Authority.Governance, "GOVERNANCE_BYTES", used, token);
@@ -171,14 +178,21 @@ public sealed class EfEvidencePreparationV1(IEfAuthorizedEvidenceProviderV1? pro
             Require(hashContract.Version == 1 && Hash(hashContract.ScopeHash), "CONTENT_HASH_CONTRACT_INVALID");
             await Provenance(scope, hashContract.DataProjection, "DATA_PROJECTION", used, token);
             await Provenance(scope, hashContract.SecurityProjection, "SECURITY_PROJECTION", used, token);
-            await Observation(scope, pre, "TARGET_PRE", g.ContentHashContract, used, token);
+            await Observation(scope, pre, "TARGET_PRE", g.ContentHashContract, used, token, s.PreSources is not null);
+            EfPreprovisionedBootstrapV1? bootstrap = null;
             if (g.Authority.Scenario == "NEW_EF")
             {
                 Require(g.Authority.BootstrapEvidence is not null, "NEW_BOOTSTRAP_EVIDENCE_REQUIRED");
-                var bootstrap = await Document<EfPreprovisionedBootstrapV1>(scope, g.Authority.BootstrapEvidence!, "NEW_BOOTSTRAP", used, token);
+                bootstrap = await Document<EfPreprovisionedBootstrapV1>(scope, g.Authority.BootstrapEvidence!, "NEW_BOOTSTRAP", used, token);
                 EfPreprovisionedBootstrap.Validate(bootstrap, s, g, pre, now);
             }
             else Require(g.Authority.BootstrapEvidence is null, "UNEXPECTED_BOOTSTRAP_EVIDENCE");
+            if (g.ClassificationRulesVersion == 2)
+            {
+                var classification = await Document<EfUnifiedClassificationEvidenceV1>(scope, g.Authority.Classification,
+                    "CLASSIFICATION_V2", used, token);
+                ValidateUnifiedClassification(classification, s, g, pre, source.Source, bootstrap);
+            }
             Require(g.Policy.MaximumValiditySeconds > 0, "PLAN_VALIDITY_INVALID");
             var request = new EfPlanRequestV1(1, s.ReleaseId, s.OperationId, now, now.AddSeconds(g.Policy.MaximumValiditySeconds),
                 g.Policy, g.Authority, source.Source, pre.Observation, null!, null!);
@@ -226,10 +240,36 @@ public sealed class EfEvidencePreparationV1(IEfAuthorizedEvidenceProviderV1? pro
             }
             Require(Equal(q.Recovery.RecoveredPre, q.RecoveredPre.Observation)
                 && Equal(q.Recovery.ReappliedPost, q.ReappliedPost.Observation), "RECOVERY_OBSERVATION_MISMATCH");
+            var initial = q.Recovery.Exercise?.RecoveryCoverage?.InitialRecovery;
+            if (initial is not null)
+            {
+                var policy = await Document<EfInitialRecoveryPolicyV1>(scope, initial.Selection.Reference,
+                    "EF_INITIAL_RECOVERY_POLICY", used, token);
+                Require(Equal(policy, initial.Selection.Policy) && g.Authority.Scenario == "NEW_EF"
+                    && policy.Scope == scope && policy.ReleaseId == s.ReleaseId && policy.OperationId == s.OperationId
+                    && policy.Bootstrap == g.Authority.BootstrapEvidence && policy.ContentHashContract == g.ContentHashContract
+                    && Equal(policy.RehearsalTarget, q.RehearsalTarget) && policy.ExpiresAtUtc > now,
+                    "EF_INITIAL_POLICY_BINDING_MISMATCH");
+                EfInitialRecoveryV1.ValidatePolicy(initial.Selection, new() { ReleaseId = s.ReleaseId,
+                    Environment = "TEST", SourceKind = "EF", Scenario = g.Authority.Scenario,
+                    DatabaseLifecycle = g.Authority.Lifecycle }, forward, rollback);
+                Require(EfInitialRecoveryV1.Complete(initial), "EF_INITIAL_RECOVERY_UNVERIFIED");
+                foreach (var (phase, observation) in new[] { (RecoveryPhase.Pre, q.Pre), (RecoveryPhase.Post1, q.Post),
+                    (RecoveryPhase.Pre2, q.RecoveredPre), (RecoveryPhase.Post2, q.ReappliedPost) })
+                {
+                    var capture = initial.Phases[phase];
+                    Require(Equal(capture.Observation, observation.Observation), "EF_INITIAL_PHASE_BINDING_MISMATCH");
+                    // Obtain independently authorized phase content, not just the
+                    // embedded claim inside the qualification document.
+                    var observed = await Document<EfFullSecurityV1>(scope, capture.SecurityEvidence,
+                        "EF_INITIAL_" + phase.ToString().ToUpperInvariant(), used, token);
+                    Require(Equal(observed, capture.Security), "EF_INITIAL_PHASE_CONTENT_MISMATCH");
+                }
+            }
             var origin = new EfPlanAcquisitionV1(g.SqlResolution, q.RehearsalTarget,
                 EfReleasePlannerV1.Observe(q.Pre.Observation, q.RehearsalTarget, now), s.Qualification!, g.ContentHashContract,
                 used.Distinct().OrderBy(x => x.EvidenceId, StringComparer.Ordinal).ToArray(),
-                used.Producers.Distinct().OrderBy(x => x.Purpose, StringComparer.Ordinal).ThenBy(x => x.Evidence.EvidenceId, StringComparer.Ordinal).ToArray());
+                used.Producers.Distinct().OrderBy(x => x.Purpose, StringComparer.Ordinal).ThenBy(x => x.Evidence.EvidenceId, StringComparer.Ordinal).ToArray(), initial);
             request = request with { ExpectedPost = q.Post.Observation, Recovery = q.Recovery };
             var result = EfReleasePlannerV1.BuildAcquired(request, forward, rollback, now, origin);
             await provider!.VerifyCurrentAsync(Clone(scope), used.Select(Clone).ToArray(), token);

@@ -41,7 +41,9 @@ internal static class EfOperationalTests
     internal static async Task<int> Child(string[] args)
     {
         // This mode exists in the test executable only, never the shipped CLI.
-        var f = await EfPreparationTests.Make();
+        var unified = args[0].StartsWith("UNIFIED_", StringComparison.Ordinal);
+        var f = unified ? await EfNormalizationTests.Make(pending: args[0] == "UNIFIED_NO_CHANGES" ? 0 : 1)
+            : await EfPreparationTests.Make();
         var noChanges = args[0] == "NO_CHANGES";
         if (noChanges) f = f.Replace("SOURCE", new EfSourcePreparationV1(f.Original.Request.Source with {
             ManagedMigrationIds = f.Pre.Observation.AppliedMigrationIds }, [], []));

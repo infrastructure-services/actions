@@ -16,6 +16,28 @@ public sealed class RehearsalEngine
 {
     private static readonly HashSet<string> AllowedEnvironments = new(StringComparer.OrdinalIgnoreCase) { "TEST" };
 
+    // Host-only opt-in. The ordinary entry point retains strict recovery semantics.
+    public async Task<RehearsalResult> QualifyEfInitialAsync(
+        ReleaseDescriptor release, DiscoveryGate discovery, ReleaseScript forward, ReleaseScript rollback,
+        IRehearsalDatabase database, EfInitialRecoverySelectionV1 policy, IEfInitialRecoveryObserverV1 observer,
+        IDataRollbackValidationContract? dataValidation = null, CancellationToken cancellationToken = default)
+    {
+        EfInitialRecoverySessionV1 initial;
+        try
+        {
+            initial = new(policy, observer);
+            EfInitialRecoveryV1.ValidatePolicy(initial.Evidence.Selection, release, forward, rollback);
+        }
+        catch { return Blocked("BLOCKED_EF_INITIAL_POLICY", "EF_INITIAL_RECOVERY:UNVERIFIED"); }
+        var coverage = new RecoveryCoverageSession(database as IRecoverySecurityEvidenceProvider, dataValidation, initial);
+        try
+        {
+            var result = await QualifyCoreAsync(release, discovery, forward, rollback, database, dataValidation, coverage, cancellationToken);
+            return coverage.Attach(result);
+        }
+        catch { return coverage.Attach(Blocked("BLOCKED_EF_INITIAL_EVIDENCE", "EF_INITIAL_RECOVERY:UNVERIFIED")); }
+    }
+
     public async Task<RehearsalResult> QualifyAsync(
         ReleaseDescriptor release,
         DiscoveryGate discovery,
@@ -167,9 +189,10 @@ public sealed class RehearsalEngine
         var pre2 = SchemaCanonicalizer.Canonicalize(pre2Snapshot);
         audit.Add($"PRE2_SCHEMA_SHA256:{pre2.Sha256}");
         var rollbackDiff = SchemaComparer.Compare(pre, pre2);
-        coverage.StructureRecovery(rollbackDiff.IsEquivalent);
         coverageBlock = await coverage.ObserveAsync(RecoveryPhase.Pre2, pre2Snapshot, cancellationToken);
-        if (!rollbackDiff.IsEquivalent)
+        var recoveredEquivalent = rollbackDiff.IsEquivalent || coverage.InitialRecoveryEquivalent;
+        coverage.StructureRecovery(recoveredEquivalent);
+        if (!recoveredEquivalent)
         {
             return Result("BLOCKED_SCHEMA_ROLLBACK_MISMATCH", SchemaRollbackValidity.Invalid,
                 dataValidationRequired ? DataRollbackValidity.Unverified : DataRollbackValidity.NotApplicable,

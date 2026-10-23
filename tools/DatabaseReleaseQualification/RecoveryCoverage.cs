@@ -27,18 +27,23 @@ public sealed record RecoveryCoverageEvidence(
     RecoveryDimensionEvidence Security,
     IReadOnlyDictionary<RecoveryPhase, string> SecurityHashes,
     string? SecurityScopeHash,
-    IReadOnlyDictionary<RecoveryPhase, CanonicalRecoverySecurity> SecurityEvidence)
+    IReadOnlyDictionary<RecoveryPhase, CanonicalRecoverySecurity> SecurityEvidence,
+    EfInitialRecoveryEvidenceV1? InitialRecovery = null)
 {
     public int ContractVersion => 1;
     public bool Complete => ImpactComplete && Structure.Required && Structure.Sufficient && Data.Sufficient && Security.Sufficient
         && Hash(ForwardHash) && Hash(RollbackHash)
+        && (InitialRecovery is null || InitialComplete)
         && (!Security.Required || Hash(SecurityScopeHash) && SecurityHashes.Count == 4 && SecurityEvidence.Count == 4
             && Enum.GetValues<RecoveryPhase>().All(p => SecurityHashes.TryGetValue(p, out var hash)
                 && SecurityEvidence.TryGetValue(p, out var evidence) && Hash(hash)
                 && evidence.Sha256 == hash && Hashing.Sha256(evidence.Json) == hash)
-            && SecurityHashes[RecoveryPhase.Pre] == SecurityHashes[RecoveryPhase.Pre2]
+            && (SecurityHashes[RecoveryPhase.Pre] == SecurityHashes[RecoveryPhase.Pre2] || InitialComplete)
             && SecurityHashes[RecoveryPhase.Post1] == SecurityHashes[RecoveryPhase.Post2]);
     private static bool Hash(string? value) => value is not null && System.Text.RegularExpressions.Regex.IsMatch(value, @"\A[0-9a-f]{64}\z");
+    private bool InitialComplete => InitialRecovery is { } initial && EfInitialRecoveryV1.Complete(initial)
+        && initial.Selection.Policy.ForwardHash == ForwardHash && initial.Selection.Policy.RollbackHash == RollbackHash
+        && SecurityEvidence.All(x => EfInitialRecoveryV1.CoversSecurity(initial, x.Key, x.Value));
 }
 
 // The original DATA rollback interface retains its meaning. This optional companion
@@ -94,8 +99,23 @@ public sealed record RecoveryImpact(bool Complete, bool DataRequired, RecoverySe
     }
 }
 
-internal sealed class RecoveryCoverageSession(IRecoverySecurityEvidenceProvider? securityProvider, IDataRollbackValidationContract? dataProvider)
+internal sealed class RecoveryCoverageSession(IRecoverySecurityEvidenceProvider? securityProvider, IDataRollbackValidationContract? dataProvider,
+    EfInitialRecoverySessionV1? initial = null)
 {
+    public bool InitialRecoveryEquivalent => initial is not null && EfInitialRecoveryV1.EquivalentPre(initial.Evidence)
+        && securityEvidence.All(x => EfInitialRecoveryV1.CoversSecurity(initial.Evidence, x.Key, x.Value));
+    private async Task<string?> CaptureInitial(RecoveryPhase phase, SchemaSnapshot schema, CancellationToken token)
+    {
+        if (initial is null) return null;
+        try
+        {
+            await initial.Capture(phase, schema, token);
+            if (phase == RecoveryPhase.Post2 && !EfInitialRecoveryV1.Complete(initial.Evidence))
+                return "BLOCKED_EF_INITIAL_RECOVERY";
+            return null;
+        }
+        catch { return "BLOCKED_EF_INITIAL_EVIDENCE"; }
+    }
     private RecoveryImpact? impact;
     private string forwardHash = "", rollbackHash = "";
     private RecoveryDimensionEvidence structure = new(true, RecoveryEvidenceCoverage.Insufficient);
@@ -116,6 +136,8 @@ internal sealed class RecoveryCoverageSession(IRecoverySecurityEvidenceProvider?
         security = new(impact.SecurityRequired, impact.SecurityRequired ? RecoveryEvidenceCoverage.Insufficient : RecoveryEvidenceCoverage.NotRequired);
         if (!impact.Complete) return "BLOCKED_RECOVERY_IMPACT_INCOMPLETE";
         if (structure.Coverage != RecoveryEvidenceCoverage.Complete) return "BLOCKED_STRUCTURE_COVERAGE";
+        var initialError = await CaptureInitial(RecoveryPhase.Pre, pre, token);
+        if (initialError is not null) return initialError;
         return await CaptureAsync(RecoveryPhase.Pre, token);
     }
 
@@ -134,7 +156,8 @@ internal sealed class RecoveryCoverageSession(IRecoverySecurityEvidenceProvider?
             structure = structure with { Coverage = RecoveryEvidenceCoverage.Partial };
             return "BLOCKED_STRUCTURE_COVERAGE";
         }
-        var error = await CaptureAsync(phase, token);
+        var error = await CaptureInitial(phase, snapshot, token);
+        error ??= await CaptureAsync(phase, token);
         if (error is not null) return error;
         if (phase == RecoveryPhase.Post1 && impact?.DataRequired == true && dataProvider is IDataReapplyValidationContract reapply)
         {
@@ -163,8 +186,10 @@ internal sealed class RecoveryCoverageSession(IRecoverySecurityEvidenceProvider?
             databaseIdentity = canonical.DatabaseIdentity;
             hashes.Add(phase, canonical.Sha256);
             securityEvidence.Add(phase, canonical);
+            if (initial is not null && !EfInitialRecoveryV1.CoversSecurity(initial.Evidence, phase, canonical))
+                return "BLOCKED_EF_INITIAL_SECURITY_BINDING";
             if (phase == RecoveryPhase.Pre2)
-                security = security with { Recovery = hashes[RecoveryPhase.Pre] == canonical.Sha256 ? RecoveryComparison.Match : RecoveryComparison.Mismatch };
+                security = security with { Recovery = hashes[RecoveryPhase.Pre] == canonical.Sha256 || InitialRecoveryEquivalent ? RecoveryComparison.Match : RecoveryComparison.Mismatch };
             if (phase == RecoveryPhase.Post2)
                 security = security with { Reapply = hashes[RecoveryPhase.Post1] == canonical.Sha256 ? RecoveryComparison.Match : RecoveryComparison.Mismatch };
             if (security.Recovery == RecoveryComparison.Mismatch || security.Reapply == RecoveryComparison.Mismatch) return "BLOCKED_SECURITY_MISMATCH";
@@ -213,6 +238,6 @@ internal sealed class RecoveryCoverageSession(IRecoverySecurityEvidenceProvider?
         RollbackDiff = result.RollbackDiff, ReapplyDiff = result.ReapplyDiff, AnalysisEvidence = result.AnalysisEvidence, ExecutionAudit = result.ExecutionAudit,
         RecoveryCoverage = new(forwardHash, rollbackHash, impact?.Complete == true, structure, data, security,
             new Dictionary<RecoveryPhase, string>(hashes), impact?.SecurityScope.Sha256,
-            new Dictionary<RecoveryPhase, CanonicalRecoverySecurity>(securityEvidence))
+            new Dictionary<RecoveryPhase, CanonicalRecoverySecurity>(securityEvidence), initial?.Evidence)
     };
 }

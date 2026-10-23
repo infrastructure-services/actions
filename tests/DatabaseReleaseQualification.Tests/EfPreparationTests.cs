@@ -74,7 +74,7 @@ internal static class EfPreparationTests
         }
     }
     internal static async Task<Fixture> Make(string name = "Inventory", int applied = 2, int pending = 1,
-        string schema = "dbo", bool initial = false, EfReleasePlanTests.Fixture? original = null)
+        string schema = "dbo", bool initial = false, EfReleasePlanTests.Fixture? original = null, CertifiedStateRecord? previous = null)
     {
         var f = original ?? await EfReleasePlanTests.Make(name, applied, pending, initial, schema); var r = f.Request;
         var scope = new EfEvidenceScopeV1(r.Authority.Target.TargetId, r.Source.Repository, r.Source.Revision, "test-session");
@@ -83,7 +83,8 @@ internal static class EfPreparationTests
         Provenance(r.Authority.Governance, "GOVERNANCE_BYTES"); Provenance(r.Authority.Onboarding, "ONBOARDING_BYTES");
         Provenance(r.Policy.Provenance, "POLICY"); p.Admit(r.Authority.Classification, "CLASSIFICATION_V2");
         p.Admit(r.Source.RepositoryEvidence, "REPOSITORY_DISCOVERY_V2");
-        if (r.Authority.CertifiedBaseline is { } baseline) Provenance(baseline.Provenance, "CERTIFIED_BASELINE");
+        if (r.Authority.CertifiedBaseline is { } baseline)
+            p.Admit(baseline.Provenance.Document, "CERTIFIED_BASELINE", previous is null ? null : Bytes(previous));
         if (r.Source.AdoptionProvenance is { } adoption) Provenance(adoption, "ADOPTION");
         EfPlanProvenanceV1 Projection(string id, string purpose) => new("platform/projections", new string('e', 40), p.Raw(id, purpose, Encoding.UTF8.GetBytes(id)));
         var hashContract = p.Publish("hash-contract", "CONTENT_HASH_CONTRACT", new EfContentHashContractV1(1, Hash("fixture-full-content"),

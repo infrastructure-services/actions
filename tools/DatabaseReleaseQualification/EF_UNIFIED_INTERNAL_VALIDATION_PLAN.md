@@ -1,103 +1,92 @@
-# EF unificado — validación por etapas
+# EF unificado — validación dirigida y siguiente etapa
 
-Fecha: 2026-10-22. Este documento distingue checks disponibles de casos futuros.
-No acredita recuperación física, identidad corporativa ni certificación durable.
+Fecha: 2026-10-22. Se ejecutaron pruebas offline dirigidas; **no** se ejecutó la suite interna integral ni SQL físico. Todos los resultados simulan productores/hosts donde no existe autoridad corporativa acreditada.
 
-## UNIT_CONTRACT_OFFLINE
+## Resultados .NET del incremento
 
-PowerShell, desde `C:\Repos\actions`. Dependencias ya restauradas; ningún restore
-ni red está incluido. No ejecutar la suite completa sin selector en esta etapa.
+Compilación Release, sin restore: cero errores y cero advertencias.
+
+| Selector del runner | Casos/grupos | Resultado |
+| --- | ---: | --- |
+| --ef-bootstrap | 13 | PASS |
+| --ef-release-plan | 14 | PASS |
+| --ef-preparation | 13 | PASS |
+| --ef-operational-host | 11 | PASS |
+| --ef-initial-recovery | 5 | PASS |
+| --ef-normalization | 2 | PASS |
+| --ef-unified-classification | 2 | PASS |
+| --ef-protected-execution | 5 | PASS |
+| --ef-baseline-commit | 3 | PASS |
+| --recovery-coverage | 42 | PASS |
+| --legacy-rehearsal | 45 | PASS |
+| --ef-test-boundary | 55 | PASS |
+| Total sin duplicar reruns | 210 | 0 fallos |
+
+Cada grupo nuevo puede contener varias mutaciones adversariales. El total cuenta las entradas reportadas por el runner, no cada mutación interna. El número previo de 228 fue un error de suma: las ocho suites de aquel corte sumaban 188. No se suman nuevamente los reruns.
+
+## Node, Bash y Workflow
+
+- test-ef-unified-classification.mjs: 12 casos dirigidos V1–V6, errores técnicos y duplicados.
+- test-classification-adapter-v2.mjs: 90 casos del comportamiento previo del adapter.
+- test-ef-release-plan-adapter.mjs: 13 casos de artifacts/CLI, PASS. El primer intento tuvo EPERM al crear un hard link temporal; el rerun fuera del sandbox pasó completo.
+- test-classification-v2.sh: 62 casos de regresión del clasificador anterior, PASS.
+- Workflow test-ef-plan-route.mjs: 33 tests de rutas, autoridad, CLI y artifacts.
+- Workflow test-ef-plan-dag.py: 152.064 combinaciones DAG, 22 contextos reales del guard de source y 32 casos de publicación.
+- Workflow test-ef-test-migration-controlled-static.sh: PASS; ejecutores históricos y separación PLAN/TRADITIONAL preservados.
+- git diff --check: verificación en ambos repositorios. Advertencias de conversión LF/CRLF no son errores de whitespace.
+
+Git Bash requirió ejecución fuera del sandbox porque MSYS no pudo crear su objeto de proceso; los comandos siguieron siendo exclusivamente locales, sin red, dispatch ni SQL.
+
+## Comandos reproducibles
+
+Desde C:\Repos\actions, PowerShell:
 
 ```powershell
 dotnet build tests/DatabaseReleaseQualification.Tests/DatabaseReleaseQualification.Tests.csproj -c Release --no-restore
-dotnet tests/DatabaseReleaseQualification.Tests/bin/Release/net10.0/DatabaseReleaseQualification.Tests.dll --ef-bootstrap
-dotnet tests/DatabaseReleaseQualification.Tests/bin/Release/net10.0/DatabaseReleaseQualification.Tests.dll --ef-preparation-directed
-dotnet tests/DatabaseReleaseQualification.Tests/bin/Release/net10.0/DatabaseReleaseQualification.Tests.dll --ef-release-plan
-dotnet tests/DatabaseReleaseQualification.Tests/bin/Release/net10.0/DatabaseReleaseQualification.Tests.dll --ef-operational-host
-& 'C:\Program Files\Git\bin\bash.exe' tests/test-ef-release-plan-static.sh
-& 'C:\Program Files\Git\bin\bash.exe' tests/test-ef-operational-host-static.sh
+$runner = 'tests/DatabaseReleaseQualification.Tests/bin/Release/net10.0/DatabaseReleaseQualification.Tests.dll'
+$groups = '--ef-bootstrap','--ef-release-plan','--ef-preparation','--ef-operational-host','--ef-initial-recovery','--ef-normalization','--ef-unified-classification','--ef-protected-execution','--ef-baseline-commit','--recovery-coverage','--legacy-rehearsal','--ef-test-boundary'
+foreach ($group in $groups) { dotnet $runner $group; if ($LASTEXITCODE -ne 0) { throw $group } }
+$env:PATH = 'C:\Program Files\Git\bin;' + $env:PATH
+node tests/test-ef-unified-classification.mjs
+node tests/test-classification-adapter-v2.mjs
+node tests/test-ef-release-plan-adapter.mjs
+& 'C:\Program Files\Git\bin\bash.exe' tests/test-classification-v2.sh
 git diff --check
 ```
 
-Desde `C:\Repos\workflow\.github\workflows`:
+Desde C:\Repos\workflow\.github\workflows:
 
 ```powershell
-& 'C:\Program Files\Git\bin\bash.exe' tests/test-database-discovery-v2-static.sh
+$env:PATH = 'C:\Program Files\Git\bin;' + $env:PATH
+node tests/test-ef-plan-route.mjs C:\Repos\actions
 python tests/test-ef-plan-dag.py
-git diff --check
+& 'C:\Program Files\Git\bin\bash.exe' tests/test-ef-test-migration-controlled-static.sh
+git -C C:\Repos\workflow diff --check
 ```
 
-El test del DAG requiere Python/PyYAML y Node. Git Bash/MSYS y lectura de la raíz Git
-de Workflow fallaron dentro del sandbox de Windows; los guards pasaron con ejecución
-local autorizada fuera del sandbox. No se cambió código para eludir restricciones.
+El argumento del test de Workflow apunta al checkout local bajo prueba; no demuestra que el SHA publicado contenga los contratos locales nuevos. El workflow real continúa fijado al merge #41. No se ejecuta dotnet ef database update ni se obtiene conexión SQL.
 
-| Check ejecutado | Resultado |
-| --- | --- |
-| Build Release `--no-restore` | PASS, 0 warnings, 0 errores |
-| `--ef-bootstrap` | 12 grupos PASS, incluyendo múltiples negativas por grupo |
-| `--ef-preparation-directed` | 12 grupos PASS; excluye `successive release` |
-| `--ef-release-plan` | 14 grupos PASS |
-| `--ef-operational-host` | 11 grupos PASS |
-| Guards estáticos de PLAN y host | PASS |
-| Guard estático Discovery | PASS |
-| YAML/DAG | 152.064 casos PASS, 22 contextos reales de source-gate |
-| Publicación de artifacts | 32 casos PASS |
-| `git diff --check` Actions / Workflow | PASS |
+## Suite interna integral preparada, pendiente de autorización
 
-Total: 49 grupos dirigidos .NET, sin contar ejecuciones repetidas por iteración.
-La matriz DAG/publicación es estática, no una ejecución de workflows ni una
-simulación integral multi-release.
+Las nuevas clases de casos se agregaron al agregador general del runner, pero no se ejecutó esa suite completa. Después de revisión e integración:
 
-## Fixtures y aceptación del incremento
+1. Ejecutar la matriz completa del circuito con productores de prueba independientes: V1–V6, ABSENT/EMPTY, una/múltiples iniciales y pendientes.
+2. Recorrer FIRST RELEASE→POSTCHECK→commit de baseline→transición gobernada→SECOND RELEASE→NO_CHANGES. Mantener explícita la diferencia entre un store de prueba y uno corporativo.
+3. Inyectar capturas parciales/malformadas, timestamps, hashes, source revision, target/incarnation, replay y contexto de producer distintos.
+4. Inyectar GRANT, DENY, schema/database owner, principal SID, role membership, objeto inesperado y POST2 divergente. Comprobar ausencia de relajación en LEGACY/TRADITIONAL/EXISTING_EF.
+5. Simular carreras, claim duplicado, cancelación antes/después de claim, timeout del write, recibo incierto y fallo de persistencia; comprobar que ningún camino reintenta UP ni aplica DOWN automático.
+6. Validar CAS/idempotencia/reconciliación del backend elegido cuando exista contrato aprobado; no inferir durabilidad a partir del fake in-memory.
+7. Validar artifacts reales de Actions contra Workflow tras repin al SHA integrado, incluyendo BLOCKED, NO_CHANGES, PLAN y salidas fallidas sin conversión a éxito.
+8. Confirmar que APPLY/CERTIFY siguen inaccesibles por CLI/workflow y que el caller no puede registrar providers ni elevar autoridad con flags.
 
-`EfBootstrapTests.cs` usa el provider falso de `EfPreparationTests`, llama el
-servicio A2.1 real y conserva A1/análisis/recovery existentes. Los datos de ensayo
-son genéricos (Catalog/Delivery/BootstrapApp); no tienen conexión SQL. El fake de
-rehearsal sólo alterna snapshots en memoria.
+## Gates antes de SQL
 
-Aceptar únicamente si:
+Se necesita aprobación específica, target TEST aislado/preprovisionado, políticas de identidad y productores, evidencia de metadata completa, proyecciones acreditadas y journal/store corporativos. El ensayo UP/DOWN/UP físico, pruebas de autenticación, concurrencia distribuida y fallos reales siguen pendientes. No usar fixtures como certificación ni ejecutar la suite interna/SQL por el solo hecho de existir estos comandos.
 
-- EMPTY con bootstrap tipado puede preparar un PLAN de revisión sin autoridad.
-- ABSENT admite el contrato de bootstrap, pero sin qualification queda bloqueado.
-- Se rechazan bytes opacos, creation receipt, versiones desconocidas y campos duplicados.
-- Se rechazan scope, sesión, SHA, gobierno, política, source, PRE o proyección sustituidos.
-- Se rechazan cambios en incarnation, schema, datos, seguridad, servidor, base y captura.
-- Se rechazan vencimiento, vigencia excesiva, datos no vacíos o no medidos y objetos inesperados.
-- ABSENT y EMPTY no se intercambian automáticamente ni en bootstrap ni en recuperación.
-- Rol denegado, hash alterado, provider ausente, cambio concurrente y cancelación bloquean.
-- EXISTING no usa bootstrap como reemplazo de baseline.
+## Ejecución de revisión final (distinta de los resultados anteriores)
 
-Los reason codes `BOOTSTRAP_*`, `INITIAL_HISTORY_STATE_UNVERIFIED`,
-`NEW_BOOTSTRAP_EVIDENCE_REQUIRED` y `UNEXPECTED_BOOTSTRAP_EVIDENCE` identifican
-fallos de contrato. JSON no interpretable o errores no clasificables conservan
-`EVIDENCE_NOT_VERIFIABLE`; no se publica el mensaje crudo de la excepción.
+Build Release --no-restore: 0 warnings/errors. Suites .NET ejecutadas en esta revisión: bootstrap 13, initial-recovery 5, normalization 2, unified-classification 3, protected-execution 6, baseline-commit 4, release-plan 14, preparation 13, operational-host 11, recovery-coverage 42, legacy-rehearsal 45: 158 casos/grupos únicos, sin sumar reruns. EF test boundary 55 no se reejecutó; su resultado previo es histórico.
 
-## INTEGRATION_OFFLINE — preparar/completar, NO ejecutar ahora
+Node clasificación V1–V6: 12 PASS. Workflow local: 36 Node PASS (incluye CLI UNIFIED_PLAN y UNIFIED_NO_CHANGES con provider explícito de prueba), DAG 152064 + 8 estados unificados, 22 source contexts, 32 publicaciones y Bash static PASS. El primer intento de Node Workflow sin Git Bash en PATH falló al lanzar el classifier; con PATH explícito pasó. El nuevo test cruzado Node/.NET requirió corregir el harness de importación y usar los hechos físicos reales del fixture; no se relajó el consumidor.
 
-Existe `--ef-preparation` con una simulación limitada de release sucesiva. No fue
-ejecutada en esta tarea; el selector dirigido la excluye. **No equivale a la
-matriz integral NEW→EXISTING→NO_CHANGES**, que todavía requiere fixtures ejecutables.
-
-| Caso futuro | Evidencia esperada | Preparación actual |
-| --- | --- | --- |
-| V1 ausencia confirmada / visibilidad insuficiente | Reason distinto, cero SQL y cero PLAN | Matriz especificada; falta recorrido unificado |
-| V2 initial ABSENT con 1/N migraciones | SQL exacto, Expected POST, recovery válida | Admisión unit/contract disponible; recovery integral pendiente |
-| V3 EMPTY acreditada / no acreditada | PLAN o INITIAL_HISTORY_STATE_UNVERIFIED según autoridad | Contratos A2.1 disponibles; classifier/consumer integral pendiente |
-| V4 una/N pendientes, prefijo válido | Sólo delta pendiente y rollback ligado a hashes | A1/A2.1 unit/contract disponibles |
-| V5 historia/source completos y PRE fresco | NO_CHANGES, ningún SQL ni PLAN | A2.1 unit/contract disponible |
-| V6 duplicados, drift, baseline vencido, mismatch, timeout/cancelación | BLOCKED con razón estable | Cobertura parcial dirigida; matriz integral pendiente |
-| Approval ausente/vencida, host no acreditado, replay y artifact sustituido | Ninguna ejecución autorizada | Host/contratos parciales; APPLY protegido pendiente |
-| PRE→UP→POST1→DOWN→PRE2→UP→POST2 | Todas las dimensiones y hashes verificados | Fake estricto existente; equivalencia inicial pendiente |
-| Commit incierto y concurrencia de baseline | EXECUTION_UNCERTAIN, sin retry; CAS sin falsa certificación | Motores existentes a integrar; fixture integral pendiente |
-| NEW→FIRST_POST→BASELINE→EXISTING_PENDING→SECOND_POST→NO_CHANGES | Transición gobernada y continuidad exacta | No implementada como suite integral |
-
-Antes de autorizar esta etapa: completar implementaciones anteriores, publicar la
-matriz runnable con sus comandos reales y revisar sus runners. No inventar comandos
-de suites inexistentes ni marcar estas filas como ejecutadas.
-
-## SQL_LAB_VALIDATION — pendiente y no autorizada
-
-No ejecutar SQL Server, Docker SQL, `dotnet ef database update`, dispatch ni ensayos
-físicos. Los requisitos externos están en `EF_UNIFIED_TEST_INFRA_REQUIREMENTS.md`.
-La etapa posterior debe demostrar datos/seguridad reales, aislamiento, equivalencia
-de recuperación y POST independiente antes de cualquier aprobación operativa.
+Los tres defectos de cancelación, índice History y CAS incierto se reprodujeron con tests dirigidos fallidos antes de corregir. No se ejecutó validación integral, SQL, Docker, localhost ni dispatch. La siguiente matriz integral debe incluir esos tres adversariales, PreSources/rules2→host→PLAN/NO_CHANGES y los gates externos, además de las variantes y continuidad ya enumeradas.
