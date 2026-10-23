@@ -73,8 +73,19 @@ internal static class EfPreprovisionedBootstrap
                     && x.Properties.GetValueOrDefault("nullable") == "false") == 1)
             && objects.Count(x => x.Kind == "key-constraint-column") == 1
             && objects.Any(x => x.Kind == "key-constraint-column" && x.Parent == "__EFMigrationsHistory"
+                && !string.IsNullOrWhiteSpace(x.Properties.GetValueOrDefault("constraint"))
                 && x.Properties.GetValueOrDefault("constraintType") == "PK"
                 && x.Properties.GetValueOrDefault("column") == "MigrationId"
-                && x.Properties.GetValueOrDefault("ordinal") == "1");
+                && x.Properties.GetValueOrDefault("ordinal") == "1")
+            && objects.Count(x => x.Kind == "index-column") == 1
+            && objects.Any(x => x.Kind == "index-column" && x.Parent == "__EFMigrationsHistory"
+                && x.Properties.GetValueOrDefault("primaryKey") == "true"
+                && x.Properties.GetValueOrDefault("unique") == "true"
+                && x.Properties.GetValueOrDefault("disabled") == "false"
+                && x.Properties.GetValueOrDefault("filter") == ""
+                && x.Properties.GetValueOrDefault("role") == "KEY"
+                && x.Properties.GetValueOrDefault("column") == "MigrationId"
+                && x.Properties.GetValueOrDefault("ordinal") == "1"
+                && x.Properties.GetValueOrDefault("index") == objects.Single(k => k.Kind == "key-constraint-column").Properties.GetValueOrDefault("constraint"));
     }
 }

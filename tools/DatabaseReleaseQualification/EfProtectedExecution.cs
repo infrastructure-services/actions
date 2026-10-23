@@ -76,6 +76,10 @@ public sealed partial class EfEvidencePreparationV1
             // no retry loop, and no automatic DOWN on failure.
             deadline.Token.ThrowIfCancellationRequested();
             await database.ExecuteSqlAsync(up, p.Payload.ForwardHash, deadline.Token);
+            // An adapter can return normally after cancellation. A late return
+            // cannot establish a successful outcome under the authorization.
+            deadline.Token.ThrowIfCancellationRequested();
+            Require(CurrentTime() < consent.ExpiresAtUtc, "EF_APPLY_AUTHORIZATION_EXPIRED");
             var receipt = await executionHost.RecordAsync(Clone(start), "SUCCEEDED", CurrentTime());
             Require(receipt.StorageLocator is null && Hash(receipt.EvidenceSha256)
                 && !string.IsNullOrWhiteSpace(receipt.EvidenceId), "EXECUTION_RECEIPT_INVALID");

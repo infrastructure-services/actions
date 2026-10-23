@@ -1,6 +1,6 @@
 # EF unificado — implementación y límites reales
 
-Fecha: 2026-10-22. Estado del incremento local: **CODE_INCREMENT_READY**, sujeto a revisión humana. Estado del circuito corporativo completo: **EXTERNAL_CONTRACT_BLOCKED** y dependiente de integración entre repositorios. No se declara `EF_UNIFIED_READY_FOR_INTERNAL_VALIDATION`.
+Fecha: 2026-10-22. Estado del desarrollo: **EF_UNIFIED_CODE_COMPLETE_PENDING_EXTERNAL_GATES**, con consumer preparado sólo en la rama local de Workflow codex/ef-unified-consumer-local. Estado operativo: **EXTERNAL_CONTRACT_BLOCKED**. No se declara `EF_UNIFIED_READY_FOR_INTERNAL_VALIDATION`.
 
 ## Checkpoint y Git
 
@@ -59,7 +59,7 @@ Hay una sola invocación de UP, sin retry ni DOWN automático. Timeout, cancelac
 
 Actions: clasificación/normalización/recuperación están conectadas con A2.1/A1; ejecución y commit son APIs host-only consumidas por pruebas de contrato. El host operacional sigue sin provider, executionHost ni certificationStore productivos. No se añadieron comandos APPLY o CERTIFY.
 
-Workflow: el código ejecutable sigue PLAN-only para la ruta nueva, con Actions #41 integrado. Falta, después del merge de este incremento, reemplazar el pin por el SHA realmente integrado y conectar selectores PreSources y artifacts rulesVersion 2 en las rutas de adquisición corporativas. No debe publicarse un consumer con pin a una rama sin merge. La acreditación de los productores de esos artifacts es una dependencia externa adicional, no algo que resuelva un repin.
+Workflow: el código ejecutable sigue PLAN-only para la ruta nueva, con Actions #41 integrado. La adaptación de selectores PreSources, gate gobernado rulesVersion 2 y DAG ya está preparada offline en codex/ef-unified-consumer-local. Después del merge resta colocar el SHA integrado en los lugares documentados y validar el checkout integrado. No debe publicarse un consumer con pin a una rama sin merge. La acreditación de los productores de esos artifacts es una dependencia externa adicional, no algo que resuelva un repin.
 
 No quedan habilitaciones operativas implícitas. No se declara adapter SQL, journal durable, autenticación corporativa, Registry write ni qualification física implementados o acreditados. La validación interna integral está preparada, no ejecutada. Las pruebas SQL siguen prohibidas hasta autorización específica.
 
@@ -73,7 +73,7 @@ La lista exacta de archivos y los resultados reproducibles se mantienen en el ci
 
 ## Inventario exacto de cambios locales
 
-Actions: 26 archivos (15 tracked modificados y 11 nuevos), relativos a C:\Repos\actions.
+Actions: 27 archivos respecto de la base del PR (incluye EfOperationalTests.cs en la revisión final), relativos a C:\Repos\actions.
 
 | Archivo | Justificación |
 | --- | --- |
@@ -87,6 +87,7 @@ Actions: 26 archivos (15 tracked modificados y 11 nuevos), relativos a C:\Repos\
 | `tests/DatabaseReleaseQualification.Tests/EfProtectedExecutionTests.cs` | Bytes, aprobación, concurrencia, incertidumbre y POSTCHECK |
 | `tests/DatabaseReleaseQualification.Tests/EfReleasePlanTests.cs` | Fixture de History con columnas/PK completos |
 | `tests/DatabaseReleaseQualification.Tests/EfUnifiedClassificationTests.cs` | Consumidor A2.1 con bindings de clasificación |
+| `tests/DatabaseReleaseQualification.Tests/EfOperationalTests.cs` | Host de prueba para requests PreSources/rules2 consumidos por Workflow |
 | `tests/DatabaseReleaseQualification.Tests/Program.cs` | Selección dirigida y preparación del agregador integral |
 | `tests/test-ef-unified-classification.mjs` | Matriz V1–V6 contra el clasificador real |
 | `tools/DatabaseReleaseQualification/EF_UNIFIED_IMPLEMENTATION.md` | Estado, matrices, compatibilidad y alcance |
@@ -113,3 +114,17 @@ Workflow: 3 archivos, relativos a C:\Repos\workflow.
 | `.github/workflows/tests/test-ef-plan-dag.py` | Pin esperado por la regresión |
 
 Control final: OUT_OF_SCOPE_MODIFICATIONS = 0. Luana y piloto conservan working trees limpios. No se modificaron Models.cs, RecoverySecurityEvidence.cs ni ejecutores LEGACY/TRADITIONAL. La revisión de contenido y el scan de patrones comunes de credenciales no detectaron secretos en los cambios; no se leyeron secrets del entorno.
+
+## Revisión final y consumer local (2026-10-22)
+
+Se revisaron clasificación, bootstrap, A1/A2.1, recuperación semántica, ejecución, POSTCHECK y baseline. Correcciones reproducidas antes del fix:
+- Adapter que ignora cancelación después del write: ahora EXECUTION_UNCERTAIN/UNKNOWN, sin receipt SUCCEEDED ni retry.
+- Índice adicional de History no rechazado en bootstrap: ahora exige único índice PK activo, KEY MigrationId y constraint coincidente; también bloquea índice ausente/deshabilitado. El reader real incluye estos metadatos; capturas antiguas incompletas deben actualizarse.
+- Confirmación CAS perdida: el wrapper conserva BASELINE_COMMIT_UNCERTAIN cuando el protocolo informa outcome Unknown; no afirma ausencia de persistencia.
+- PreSources requiere ClassificationRulesVersion=2 obtenido de GOVERNANCE; no hay override de caller. Rules1 sin PreSources conserva compatibilidad.
+
+La salida real Node/Bash se consume en A2.1 para V3/V4/V5. V2 atraviesa las cuatro fases y A1/A2.1; V1/V6 tienen negativos. El consumer Workflow local transporta las cuatro referencias originales hasta el host, consume PLAN/NO_CHANGES sanitizados y preserva las APIs de continuación REVALIDATE/VERIFY_POST. No expone APPLY ni CERTIFY. UNIFIED_ACTIONS_REVISION=null bloquea su activación antes del merge humano; los pins existentes no cambiaron.
+
+Workflow #46 está MERGEABLE pero REVIEW_REQUIRED; no conflicto Git ni checks reportados. Su HEAD permanece 1932b3451096dbd4ba8c80062e8d98bd5bdf0505 y no contiene la adaptación dependiente. Guía local: C:/Repos/workflow/.github/workflows/EF_UNIFIED_LOCAL_INTEGRATION.md. La rama local no se publica en esta tarea.
+
+Los gates externos son reales: identidad/roles de productores (Seguridad/Gobierno), capturas físicas independientes y proyecciones completas (DBA), host SQL y journal durable/fencing (Plataforma), store CAS y transición Registry (Persistencia/Gobierno). El contrato exacto está en EF_UNIFIED_TEST_INFRA_REQUIREMENTS.md y la guía del consumer. No se afirma runtime corporativo habilitado.

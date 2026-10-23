@@ -9,7 +9,7 @@ internal static class EfNormalizationTests
         ("EF normalization: transport absence partial identity hashes and roles fail closed", Negative)
     ];
     private static void Assert(bool ok, string why) { if (!ok) throw new Exception(why); }
-    private static async Task<EfPreparationTests.Fixture> Make(string mutation = "", int pending = 1)
+    internal static async Task<EfPreparationTests.Fixture> Make(string mutation = "", int pending = 1)
     {
         var f = await EfPreparationTests.Make();
         if (pending == 0) f = f.Replace("SOURCE", new EfSourcePreparationV1(
@@ -32,7 +32,8 @@ internal static class EfNormalizationTests
         var expected = new EvidenceReference { EvidenceId = "normalized-pre", EvidenceSha256 = Hashing.Sha256(JsonSerializer.Serialize(normalized, JsonDefaults.Compact)) };
         if (mutation == "hash") expected = expected with { EvidenceSha256 = new string('0', 64) };
         if (mutation == "role") f.Provider.Allowed.Remove((security.EvidenceId, "SECURITY_PROJECTION_RESULT"));
-        return f with { Selection = f.Selection with { Pre = expected, PreSources = new(discovery, schema, data, security) } };
+        f = f with { Selection = f.Selection with { Pre = expected, PreSources = new(discovery, schema, data, security) } };
+        return mutation == "rules1" ? f : EfUnifiedClassificationTests.Admit(f);
     }
     private static async Task Positive()
     {
@@ -45,7 +46,7 @@ internal static class EfNormalizationTests
     }
     private static async Task Negative()
     {
-        foreach (var mutation in new[] { "connection", "absent", "partial", "session", "data", "hash", "role" })
+        foreach (var mutation in new[] { "connection", "absent", "partial", "session", "data", "hash", "role", "rules1" })
         {
             var f = await Make(mutation); var r = await f.Run();
             Assert(r.Status == "BLOCKED", mutation + " admitted");

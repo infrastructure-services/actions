@@ -82,3 +82,11 @@ Las nuevas clases de casos se agregaron al agregador general del runner, pero no
 ## Gates antes de SQL
 
 Se necesita aprobación específica, target TEST aislado/preprovisionado, políticas de identidad y productores, evidencia de metadata completa, proyecciones acreditadas y journal/store corporativos. El ensayo UP/DOWN/UP físico, pruebas de autenticación, concurrencia distribuida y fallos reales siguen pendientes. No usar fixtures como certificación ni ejecutar la suite interna/SQL por el solo hecho de existir estos comandos.
+
+## Ejecución de revisión final (distinta de los resultados anteriores)
+
+Build Release --no-restore: 0 warnings/errors. Suites .NET ejecutadas en esta revisión: bootstrap 13, initial-recovery 5, normalization 2, unified-classification 3, protected-execution 6, baseline-commit 4, release-plan 14, preparation 13, operational-host 11, recovery-coverage 42, legacy-rehearsal 45: 158 casos/grupos únicos, sin sumar reruns. EF test boundary 55 no se reejecutó; su resultado previo es histórico.
+
+Node clasificación V1–V6: 12 PASS. Workflow local: 36 Node PASS (incluye CLI UNIFIED_PLAN y UNIFIED_NO_CHANGES con provider explícito de prueba), DAG 152064 + 8 estados unificados, 22 source contexts, 32 publicaciones y Bash static PASS. El primer intento de Node Workflow sin Git Bash en PATH falló al lanzar el classifier; con PATH explícito pasó. El nuevo test cruzado Node/.NET requirió corregir el harness de importación y usar los hechos físicos reales del fixture; no se relajó el consumidor.
+
+Los tres defectos de cancelación, índice History y CAS incierto se reprodujeron con tests dirigidos fallidos antes de corregir. No se ejecutó validación integral, SQL, Docker, localhost ni dispatch. La siguiente matriz integral debe incluir esos tres adversariales, PreSources/rules2→host→PLAN/NO_CHANGES y los gates externos, además de las variantes y continuidad ya enumeradas.

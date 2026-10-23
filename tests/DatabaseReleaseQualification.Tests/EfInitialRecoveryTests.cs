@@ -23,7 +23,10 @@ internal static class EfInitialRecoveryTests
         new() { Kind = "column", Schema = "dbo", Parent = "__EFMigrationsHistory", Name = "ProductVersion",
             Properties = new() { ["dataType"] = "nvarchar", ["maxLength"] = "64", ["nullable"] = "false" } },
         new() { Kind = "key-constraint-column", Schema = "dbo", Parent = "__EFMigrationsHistory", Name = "PK_History",
-            Properties = new() { ["constraintType"] = "PK", ["column"] = "MigrationId", ["ordinal"] = "1" } }
+            Properties = new() { ["constraint"] = "PK_History", ["constraintType"] = "PK", ["column"] = "MigrationId", ["ordinal"] = "1" } },
+        new() { Kind = "index-column", Schema = "dbo", Parent = "__EFMigrationsHistory", Name = "PK_History:0001",
+            Properties = new() { ["index"] = "PK_History", ["primaryKey"] = "true", ["unique"] = "true",
+                ["disabled"] = "false", ["filter"] = "", ["role"] = "KEY", ["column"] = "MigrationId", ["ordinal"] = "1" } }
     ], ImpactMetrics = [new() { Schema = "dbo", Table = "__EFMigrationsHistory", RowCount = 0 }] };
 
     private sealed class Lab : IRehearsalDatabase, IRecoverySecurityEvidenceProvider,

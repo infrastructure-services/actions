@@ -5,7 +5,8 @@ internal static class EfBaselineCommitTests
     public static (string Name, Func<Task> Run)[] Cases => [
         ("EF baseline: POST candidate connects existing commit protocol and store", Positive),
         ("EF baseline: first commit then governed pending release then no changes", Successor),
-        ("EF baseline: missing host consent lineage and changed POST block", Negative)
+        ("EF baseline: missing host consent lineage and changed POST block", Negative),
+        ("EF baseline: lost CAS acknowledgement remains uncertain", LostAcknowledgement)
     ];
     private static void Assert(bool b, string why) { if (!b) throw new Exception(why); }
     private sealed record Fixture(EfPreparationTests.Fixture F, EfReleasePlanV1 Plan, EvidenceReference Execution,
@@ -59,6 +60,32 @@ internal static class EfBaselineCommitTests
             var f = await Make(mutation); var r = await f.Run(mutation != "host");
             Assert(r.Status == "BLOCKED" && f.Store.PreparedRecordCount == 0, mutation + " committed");
         }
+    }
+    private sealed class LostCas(InMemoryCertificationCommitStore inner) : ICertificationCommitStore
+    {
+        public CertificationCommitReceipt? GetReceipt(string id) => inner.GetReceipt(id);
+        public bool HasEvidenceConflict(IReadOnlyList<EvidenceReference> refs) => inner.HasEvidenceConflict(refs);
+        public CertifiedStateRecord? GetPrepared(string id) => inner.GetPrepared(id);
+        public CertificationPointer? GetCurrentPointer(DatabaseIdentity id) => inner.GetCurrentPointer(id);
+        public PrepareRecordResult CreatePreparedIfAbsent(string op, string fingerprint, CertifiedStateRecord record, IReadOnlyList<EvidenceReference> refs)
+            => inner.CreatePreparedIfAbsent(op, fingerprint, record, refs);
+        public PointerCasResult CompareAndSwapCurrent(DatabaseIdentity id, ExpectedCertificationPointer? expected, string op, string certification)
+        { _ = inner.CompareAndSwapCurrent(id, expected, op, certification); throw new IOException("offline lost acknowledgement"); }
+        public bool CompleteReceipt(string op, string fingerprint) => inner.CompleteReceipt(op, fingerprint);
+        public CertifiedStateRecord? GetCertifiedById(string id) => inner.GetCertifiedById(id);
+        public IReadOnlyList<CertifiedStateRecord> ListCertifiedHistory(DatabaseIdentity id) => inner.ListCertifiedHistory(id);
+        public int PreparedRecordCount => inner.PreparedRecordCount;
+        public int ReceiptCount => inner.ReceiptCount;
+    }
+    private static async Task LostAcknowledgement()
+    {
+        var f = await Make();
+        var r = await new EfEvidencePreparationV1(f.F.Provider, certificationStore: new LostCas(f.Store))
+            .CommitBaselineAsync(f.Plan, f.Plan.Sha256, f.F.Selection.Scope, f.Execution, f.Post,
+                f.Transition, f.Commit, EfPreparationTests.Now.AddSeconds(3));
+        Assert(r.Commit?.PointerAdvance == CommitOutcomeState.Unknown && r.Status == "BASELINE_COMMIT_UNCERTAIN",
+            "lost CAS acknowledgement reported as not committed");
+        Assert(f.Store.GetCurrentPointer(r.Commit!.DatabaseIdentity) is not null, "fixture did not advance pointer");
     }
     private static async Task Successor()
     {

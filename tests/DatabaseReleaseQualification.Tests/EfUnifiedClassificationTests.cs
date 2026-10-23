@@ -5,7 +5,8 @@ internal static class EfUnifiedClassificationTests
 {
     public static (string Name, Func<Task> Run)[] Cases => [
         ("EF unified classification: versioned consumer binds V3 V4 V5 to evidence", Positive),
-        ("EF unified classification: variant input and authority substitutions block", Negative)
+        ("EF unified classification: variant input and authority substitutions block", Negative),
+        ("EF unified classification: actual Node/Bash output consumed by A2.1", ActualProducer)
     ];
     private static void Assert(bool b, string why) { if (!b) throw new Exception(why); }
     internal static EfPreparationTests.Fixture Admit(EfPreparationTests.Fixture f, string mutation = "")
@@ -53,6 +54,47 @@ internal static class EfUnifiedClassificationTests
         {
             var f = Admit(await EfPreparationTests.Make(), mutation); var r = await f.Run();
             Assert(r.Status == "BLOCKED", mutation + " admitted");
+        }
+    }
+    private static async Task ActualProducer()
+    {
+        foreach (var variant in new[] { "V3", "V4", "V5" })
+        {
+            var f = variant == "V3" ? await EfPreparationTests.Make("Initial", 0, 1, initial: true) : await EfPreparationTests.Make();
+            if (variant == "V5") f = f.Replace("SOURCE", new EfSourcePreparationV1(
+                f.Original.Request.Source with { ManagedMigrationIds = f.Pre.Observation.AppliedMigrationIds }, [], []));
+            var source = JsonSerializer.Deserialize<EfSourcePreparationV1>(f.Provider.Content[f.Selection.Source.EvidenceId], JsonDefaults.Compact)!;
+            var initial = variant == "V3"; var o = f.Pre.Observation;
+            // Use the producer's taxonomy, not a second list of SQL categories.
+            var adapter = Path.GetFullPath("../../../../../scripts/adapt-classification-evidence-v2.mjs", AppContext.BaseDirectory);
+            var taxonomy = Path.Combine(Path.GetDirectoryName(adapter)!, "empty-for-new-ef-v1.mjs");
+            var psi = new System.Diagnostics.ProcessStartInfo("node") { RedirectStandardInput = true,
+                RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+            psi.ArgumentList.Add("--input-type=module"); psi.ArgumentList.Add("-e");
+            psi.ArgumentList.Add("import fs from 'node:fs'; import {pathToFileURL} from 'node:url'; const adapterPath=process.argv[1]; process.argv[1]='offline-driver'; const {adaptEvidence}=await import(pathToFileURL(adapterPath)); const {TECHNICAL_CATEGORIES}=await import(pathToFileURL(process.argv[2])); const r=JSON.parse(fs.readFileSync(0,'utf8')); r.physical.taxonomy={version:1,coverage:'COMPLETE',counts:Object.fromEntries(TECHNICAL_CATEGORIES.map(k=>[k,0]))}; const v=adaptEvidence(r); process.stdout.write(JSON.stringify(v));");
+            psi.ArgumentList.Add(adapter); psi.ArgumentList.Add(taxonomy);
+            var raw = new { contractVersion = 2, efInitialHistoryPolicy = initial ? "EMPTY_HISTORY_ATTESTED_V1" : "NOT_VERIFIED",
+                declarations = new { databaseLifecycle = f.Governance.Authority.Lifecycle, changeManagementMode = "EF_MIGRATIONS" },
+                connection = new { status = "SUCCEEDED" }, databaseLookup = new { status = "FOUND" }, targetConnection = new { status = "SUCCEEDED" },
+                metadata = new { status = "SUFFICIENT" }, physical = new { status = "OBSERVED", businessObjectCount = f.Pre.Discovery.Physical.BusinessObjectCount, technicalObjectCount = f.Pre.Discovery.Physical.TechnicalObjectCount },
+                history = new { status = "PRESENT", migrationCount = o.AppliedMigrationIds.Length, migrationIds = o.AppliedMigrationIds },
+                repository = new { status = "PRESENT_VALID", migrations = new { count = source.Source.ManagedMigrationIds.Length, ids = source.Source.ManagedMigrationIds } },
+                registry = new { status = initial ? "NOT_EVALUATED" : "CERTIFIED" }, schema = new { status = initial ? "NOT_EVALUATED" : "CONSISTENT" },
+                onboarding = new { status = initial ? "NOT_REQUIRED" : "MANAGED" } };
+            using var child = System.Diagnostics.Process.Start(psi)!;
+            var output = child.StandardOutput.ReadToEndAsync(); var error = child.StandardError.ReadToEndAsync();
+            await child.StandardInput.WriteAsync(JsonSerializer.Serialize(raw)); child.StandardInput.Close();
+            await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+            using var parsed = JsonDocument.Parse(await output);
+            Assert(child.ExitCode == 0 && parsed.RootElement.GetProperty("exitCode").GetInt32() == 0, await error);
+            var result = parsed.RootElement.GetProperty("result").GetProperty("classificationResult");
+            var reference = f.Provider.Publish("actual-classifier", "CLASSIFICATION_V2", new EfUnifiedClassificationEvidenceV1(
+                f.Selection.Scope, f.Selection.Pre, f.Selection.Source, f.Governance.Authority.BootstrapEvidence, result));
+            f = f.Replace("GOVERNANCE", f.Governance with { ClassificationRulesVersion = 2,
+                Authority = f.Governance.Authority with { Classification = reference } });
+            var prepared = await f.Run();
+            Assert(prepared.Status == (variant == "V5" ? "NO_CHANGES" : "PLAN_EVIDENCE_CONSISTENT_NOT_AUTHORIZED"),
+                variant + ": " + string.Join(",", prepared.Reasons));
         }
     }
 }

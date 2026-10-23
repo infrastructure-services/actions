@@ -7,7 +7,8 @@ internal static class EfProtectedExecutionTests
         ("EF protected execution: concurrent requests claim one simulated write", Concurrent),
         ("EF protected execution: produced receipt is consumed by POSTCHECK", Postcheck),
         ("EF protected execution: no authority, drift and payload substitutions block", Negative),
-        ("EF protected execution: timeout cancellation and receipt failure never retry", Uncertain)
+        ("EF protected execution: timeout cancellation and receipt failure never retry", Uncertain),
+        ("EF protected execution: cancellation ignored by adapter remains uncertain", IgnoredCancellation)
     ];
     private static void Assert(bool b, string why) { if (!b) throw new Exception(why); }
     private sealed class Host : IEfProtectedExecutionHostV1, IRehearsalDatabase
@@ -16,6 +17,7 @@ internal static class EfProtectedExecutionTests
         public EfPreparationTests.Provider? Provider;
         public TaskCompletionSource? WriteEntered;
         public TaskCompletionSource? ReleaseWrite;
+        public Action? AfterWrite;
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> started = new();
         public Task<IRehearsalDatabase?> BeginOnceAsync(EfExecutionStartV1 start, CancellationToken token)
             => Task.FromResult<IRehearsalDatabase?>(started.TryAdd(start.OperationId, 0) ? this : null);
@@ -40,6 +42,7 @@ internal static class EfProtectedExecutionTests
             if (ReleaseWrite is not null) await ReleaseWrite.Task.WaitAsync(token);
             if (Fault == "timeout") throw new TimeoutException("fixture write uncertain");
             if (Fault == "cancel") throw new OperationCanceledException();
+            AfterWrite?.Invoke();
         }
     }
     private sealed record Fixture(EfPreparationTests.Fixture F, EfReleasePlanV1 Plan, EvidenceReference Pre,
@@ -107,6 +110,16 @@ internal static class EfProtectedExecutionTests
         Assert(second.Status == "BLOCKED" && f.Host.Writes == 1, "concurrent operation wrote twice");
         f.Host.ReleaseWrite.TrySetResult();
         Assert((await first).Status == "EXECUTED_POSTCHECK_REQUIRED", "original operation lost claim");
+    }
+    private static async Task IgnoredCancellation()
+    {
+        var f = await Make(); using var cancel = new CancellationTokenSource();
+        f.Host.AfterWrite = cancel.Cancel;
+        var r = await new EfEvidencePreparationV1(f.F.Provider, f.Host).ApplyProtectedAsync(
+            f.Plan, f.Plan.Sha256, f.F.Selection.Scope, f.Pre, f.F.Selection.Source,
+            f.Approval, EfPreparationTests.Now, cancel.Token);
+        Assert(r.Status == "EXECUTION_UNCERTAIN" && r.Outcome == "UNKNOWN"
+            && f.Host.Writes == 1 && !f.Host.Outcomes.Contains("SUCCEEDED"), "cancelled write reported success");
     }
     private static async Task Postcheck()
     {

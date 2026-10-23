@@ -45,12 +45,17 @@ internal static class EfBootstrapTests
     private static Task<EfPreparationTests.Fixture> Make() => EfPreparationTests.Make("BootstrapApp", 0, 2, initial: true);
     private static async Task HistoryStructure()
     {
-        foreach (var change in new[] { "missing-pk", "nullable", "length", "missing-column" })
+        foreach (var change in new[] { "missing-pk", "nullable", "length", "missing-column", "unexpected-index", "missing-index", "disabled-index" })
         {
             var f = await Make();
             var schema = JsonSerializer.Deserialize<SchemaSnapshot>(JsonSerializer.Serialize(f.Pre.Observation.Schema, JsonDefaults.Compact), JsonDefaults.Compact)!;
             if (change == "missing-pk") schema.Objects.RemoveAll(x => x.Kind == "key-constraint-column");
             else if (change == "missing-column") schema.Objects.RemoveAll(x => x.Kind == "column" && x.Name == "ProductVersion");
+            else if (change == "missing-index") schema.Objects.RemoveAll(x => x.Kind == "index-column");
+            else if (change == "disabled-index") schema.Objects.Single(x => x.Kind == "index-column").Properties["disabled"] = "true";
+            else if (change == "unexpected-index") schema.Objects.Add(new() { Kind = "index-column", Schema = "dbo",
+                Parent = "__EFMigrationsHistory", Name = "Unexpected:0001", Properties = new() {
+                    ["index"] = "Unexpected", ["primaryKey"] = "false", ["column"] = "ProductVersion", ["ordinal"] = "1" } });
             else schema.Objects.Single(x => x.Kind == "column" && x.Name == "MigrationId").Properties[change == "nullable" ? "nullable" : "maxLength"] = change == "nullable" ? "true" : "200";
             var pre = EfPreparationTests.Observe(f.Provider, f.Pre.Observation with { Schema = schema }, "TARGET_PRE", f.Governance.ContentHashContract);
             f = f.Replace("TARGET_PRE", pre) with { Pre = pre };

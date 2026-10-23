@@ -70,6 +70,8 @@ public sealed partial class EfEvidencePreparationV1
                 ReleaseOrCorrelationId = p.Payload.ReleaseId, Authorization = c.Authorization,
                 Certification = certification, RequestedAtUtc = now });
             return new(committed.PointerAdvance == CommitOutcomeState.ConfirmedYes ? "BASELINE_COMMITTED_GOVERNANCE_TRANSITION_REQUIRED"
+                : committed.PointerAdvance == CommitOutcomeState.Unknown || committed.RecordPersistence == CommitOutcomeState.Unknown
+                    ? "BASELINE_COMMIT_UNCERTAIN"
                 : "BASELINE_NOT_COMMITTED", committed, committed.Reasons.ToArray());
         }
         catch (Block e) { return new("BLOCKED", null, [e.Message]); }

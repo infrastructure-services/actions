@@ -159,6 +159,7 @@ public sealed partial class EfEvidencePreparationV1(IEfAuthorizedEvidenceProvide
                 && Guid.TryParseExact(s.OperationId, "D", out _), "PREPARATION_SELECTION_INVALID");
             var g = await Document<EfGovernedPreparationV1>(scope, s.Governance, "GOVERNANCE", used, token);
             Require(g.ClassificationRulesVersion is 1 or 2, "CLASSIFICATION_RULES_UNSUPPORTED");
+            Require(s.PreSources is null || g.ClassificationRulesVersion == 2, "NORMALIZATION_REQUIRES_GOVERNED_CLASSIFICATION_V2");
             var source = await Document<EfSourcePreparationV1>(scope, s.Source, "SOURCE", used, token);
             var pre = s.PreSources is null
                 ? await Document<EfObservationEvidenceV1>(scope, s.Pre, "TARGET_PRE", used, token)
