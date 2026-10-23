@@ -13,6 +13,8 @@ const exact = (value, keys) => value !== null && typeof value === 'object' && !A
 const fields = (value, required, optional) => exact(value, [...required, ...optional.filter(key => Object.hasOwn(value ?? {}, key))]);
 const requireValue = (ok, code) => { if (!ok) throw new Error(code); };
 const codes = { PLAN_EVIDENCE_CONSISTENT_NOT_AUTHORIZED: 0, NO_CHANGES: 0, INVALID: 65, BLOCKED: 66, ERROR: 70, TIMEOUT: 124, CANCELLED: 130 };
+const adoptionStates = ['ADOPTION_REQUIRED', 'PENDING_APPROVAL', 'CERTIFICATION_COMMIT_REQUIRED', 'GOVERNANCE_TRANSITION_REQUIRED', 'EXISTING_EF_MANAGED'];
+for (const status of adoptionStates) codes[status] = 0;
 const adapterReasons = new Set(['EF_PLAN_RESULT_INVALID', 'EF_PLAN_REVIEW_REQUIRED', 'EF_PLAN_REVIEW_INVALID',
   'EF_PLAN_PATH_INVALID', 'EF_PLAN_FILE_INVALID', 'EF_PLAN_ARTIFACTS_INVALID', 'EF_PLAN_OUTPUT_MISMATCH',
   'EF_PLAN_REQUEST_INVALID', 'EF_PLAN_TIMEOUT_INVALID', 'EF_PLAN_CHECKOUT_MISMATCH', 'EF_PLAN_ENGINE_REQUIRED',
@@ -29,18 +31,24 @@ function compactJson(text) {
 
 export function validatePlanResult(text, exitCode, reviewText = null) {
   const r = compactJson(text);
-  requireValue(fields(r, ['contractVersion', 'operation', 'status', 'reasons', 'verifiedGitSources', 'executionAuthorized', 'certified'], ['planHash', 'evidenceSetHash'])
-    && r.contractVersion === 1 && (r.operation === 'PLAN' || r.operation === 'UNKNOWN' && ['INVALID', 'ERROR', 'TIMEOUT', 'CANCELLED'].includes(r.status))
+  requireValue(fields(r, ['contractVersion', 'operation', 'status', 'reasons', 'verifiedGitSources', 'executionAuthorized', 'certified'], ['planHash', 'evidenceSetHash', 'adoptionCandidateHash', 'managedVariant'])
+    && r.contractVersion === 1 && (['PLAN', 'ADOPTION'].includes(r.operation) || r.operation === 'UNKNOWN' && ['INVALID', 'ERROR', 'TIMEOUT', 'CANCELLED'].includes(r.status))
     && Object.hasOwn(codes, r.status) && codes[r.status] === exitCode
     && r.executionAuthorized === false && r.certified === false
     && Array.isArray(r.reasons) && r.reasons.every(x => typeof x === 'string' && /^[A-Z][A-Z0-9_]{0,95}$/u.test(x))
-    && new Set(r.reasons).size === r.reasons.length && (exitCode === 0 ? r.reasons.length === 0 : r.reasons.length > 0)
+    && new Set(r.reasons).size === r.reasons.length && (exitCode === 0 ? r.operation === 'ADOPTION' || r.reasons.length === 0 : r.reasons.length > 0)
     && (r.planHash == null || hash(r.planHash)) && (r.evidenceSetHash == null || hash(r.evidenceSetHash))
     && Array.isArray(r.verifiedGitSources) && r.verifiedGitSources.length <= 6
     && r.verifiedGitSources.every(x => exact(x, ['repository', 'revision', 'path', 'sha256'])
       && x.repository === 'infrastructure-services/workflow' && sha(x.revision) && hash(x.sha256)
       && ['resolve-governance-runtime.mjs', 'validate-ef-source.mjs', 'prepare-ef-source-runtime.mjs', 'governance-targets.json', 'onboarding-targets.json', 'targets.json'].some(name => x.path === `database-registry/${name}`)), 'EF_PLAN_RESULT_INVALID');
   requireValue(new Set(r.verifiedGitSources.map(x => x.path)).size === r.verifiedGitSources.length, 'EF_PLAN_RESULT_INVALID');
+  if (r.operation === 'ADOPTION') {
+    requireValue(r.planHash == null && reviewText === null
+      && (exitCode !== 0 || adoptionStates.includes(r.status) && hash(r.adoptionCandidateHash) && hash(r.evidenceSetHash))
+      && (r.adoptionCandidateHash == null || hash(r.adoptionCandidateHash))
+      && (r.status === 'EXISTING_EF_MANAGED' ? ['V4', 'V5'].includes(r.managedVariant) : r.managedVariant == null), 'EF_PLAN_RESULT_INVALID');
+  } else requireValue(!adoptionStates.includes(r.status) && r.adoptionCandidateHash == null && r.managedVariant == null, 'EF_PLAN_RESULT_INVALID');
   if (r.status === 'NO_CHANGES') requireValue(r.planHash == null && hash(r.evidenceSetHash) && reviewText === null, 'EF_PLAN_RESULT_INVALID');
   if (r.status === 'PLAN_EVIDENCE_CONSISTENT_NOT_AUTHORIZED') requireValue(hash(r.planHash) && hash(r.evidenceSetHash), 'EF_PLAN_RESULT_INVALID');
   requireValue((r.planHash != null) === (reviewText !== null), 'EF_PLAN_REVIEW_REQUIRED');
@@ -99,7 +107,7 @@ export function runPlan(env = process.env) {
     if (env.GITHUB_OUTPUT) fs.appendFileSync(env.GITHUB_OUTPUT, 'artifacts-ready=false\n');
     const requestPath = path.resolve(env.EF_PLAN_REQUEST);
     const request = JSON.parse(readBounded(requestPath, 65536));
-    requireValue(request.operation === 'PLAN' && request.environment === 'TEST' && !Object.hasOwn(request, 'apply')
+    requireValue(['PLAN', 'ADOPTION'].includes(request.operation) && request.environment === 'TEST' && !Object.hasOwn(request, 'apply')
       && sha(request.actionsRevision) && repository(request.selection?.scope?.sourceRepository), 'EF_PLAN_REQUEST_INVALID');
     const seconds = env.EF_PLAN_TIMEOUT ?? '120';
     requireValue(/^[1-9][0-9]{0,2}$/u.test(seconds) && Number(seconds) <= 900, 'EF_PLAN_TIMEOUT_INVALID');
@@ -123,6 +131,8 @@ export function runPlan(env = process.env) {
     else if (Number.isInteger(child.status) && Object.values(codes).includes(child.status)) exitCode = child.status;
     requireValue(!child.error && child.signal === null && child.stderr === '', 'EF_PLAN_PROCESS_INCOMPLETE');
     const result = readPlanArtifacts(directory, child.status, child.stdout);
+    requireValue(result.operation === request.operation || result.operation === 'UNKNOWN'
+      && ['INVALID', 'ERROR', 'TIMEOUT', 'CANCELLED'].includes(result.status), 'EF_PLAN_OUTPUT_MISMATCH');
     if (env.GITHUB_OUTPUT) fs.appendFileSync(env.GITHUB_OUTPUT,
       `status=${result.status}\nreasons-json=${JSON.stringify(result.reasons)}\nexit-code=${child.status}\nexecution-authorized=false\ncertified=false\nartifact-directory=${directory}\nartifacts-ready=true\n`);
     process.stdout.write(`${JSON.stringify(result)}\n`);

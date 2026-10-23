@@ -20,7 +20,8 @@ public interface IEfOperationalSessionFactoryV1
     Task<EfOperationalSessionV1> OpenAsync(EfOperationalRequestV1 request, CancellationToken token);
 }
 public sealed record EfOperationalResultV1(int ContractVersion, string Operation, string Status,
-    string[] Reasons, string? PlanHash, string? EvidenceSetHash, EfVerifiedGitSourceV1[] VerifiedGitSources)
+    string[] Reasons, string? PlanHash, string? EvidenceSetHash, EfVerifiedGitSourceV1[] VerifiedGitSources,
+    string? AdoptionCandidateHash = null, string? ManagedVariant = null)
 {
     public bool ExecutionAuthorized => false;
     public bool Certified => false;
@@ -34,7 +35,8 @@ public sealed record EfPlanReviewV1(int ContractVersion, string PlanHash, string
 public sealed record EfPlanRecoveryReviewV1(RollbackCapability Strategy, bool ScriptAvailable,
     bool PotentialDataLoss, bool ExerciseVerified);
 public sealed record EfOperationalOutcomeV1(EfOperationalResultV1 Result, EfPlanReviewV1? Review,
-    [property: JsonIgnore] EfReleasePlanV1? PreparedPlan = null);
+    [property: JsonIgnore] EfReleasePlanV1? PreparedPlan = null,
+    [property: JsonIgnore] EfAdoptionCandidateV1? AdoptionCandidate = null);
 internal sealed class EfHostException(string code) : Exception(code);
 
 internal static class EfHostContract
@@ -72,7 +74,7 @@ internal static class EfHostContract
             && reference.StorageLocator is null, "EVIDENCE_REFERENCE_INVALID");
     internal static void Validate(EfOperationalRequestV1 r)
     {
-        Require(r.ContractVersion == 1 && r.Operation is "PLAN" or "REVALIDATE" or "VERIFY_POST", "REQUEST_VERSION_OR_OPERATION_INVALID");
+        Require(r.ContractVersion == 1 && r.Operation is "PLAN" or "REVALIDATE" or "VERIFY_POST" or "ADOPTION", "REQUEST_VERSION_OR_OPERATION_INVALID");
         Require(r.Environment == "TEST", "ENVIRONMENT_NOT_ALLOWED");
         Require(Token(r.ApplicationId) && Sha(r.GovernanceRevision) && Sha(r.ActionsRevision), "CONTEXT_INVALID");
         Require(r.Selection is not null && r.Selection.Scope is not null, "SELECTION_INVALID");
@@ -86,8 +88,16 @@ internal static class EfHostContract
             Reference(sources.Discovery); Reference(sources.Schema);
             Reference(sources.Data); Reference(sources.Security);
         }
+        if (r.Operation == "ADOPTION")
+        {
+            Require(s.Adoption is not null && s.PreSources is not null && s.Qualification is null, "ADOPTION_SELECTION_REQUIRED");
+            var a = s.Adoption!; Reference(a.Lineage);
+            foreach (var optional in new[] { a.Review, a.Approval, a.Persisted, a.Transition })
+                if (optional is not null) Reference(optional);
+        }
+        else Require(s.Adoption is null, "UNEXPECTED_ADOPTION_SELECTION");
         var c = r.Continuation;
-        if (r.Operation == "PLAN") Require(c is null, "UNEXPECTED_CONTINUATION");
+        if (r.Operation is "PLAN" or "ADOPTION") Require(c is null, "UNEXPECTED_CONTINUATION");
         else
         {
             Require(c is not null, "CONTINUATION_REQUIRED"); Reference(c!.Plan);
@@ -128,6 +138,15 @@ public static class EfOperationalHostV1
             var provider = new ContextProvider(session.Provider, r);
             var service = new EfEvidencePreparationV1(provider);
             EfPlanResultV1 result;
+            if (operation == "ADOPTION")
+            {
+                var adoption = await service.PrepareAdoptionAsync(r.Selection, now, token);
+                token.ThrowIfCancellationRequested();
+                return new(new(1, operation, adoption.Status,
+                    SafeReasons(provider.Failure is null ? adoption.Reasons : [provider.Failure]), null,
+                    adoption.EvidenceSetHash, sources, adoption.Candidate?.Sha256, adoption.ManagedVariant), null,
+                    AdoptionCandidate: adoption.Candidate);
+            }
             if (operation == "PLAN")
             {
                 var prepared = await service.PrepareAsync(r.Selection, now, token);

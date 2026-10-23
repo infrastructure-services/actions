@@ -113,10 +113,16 @@ public sealed class EfGitHubSourceHostV1 : IEfOperationalSessionFactoryV1
                 && governance.GetProperty("environment").GetString() == request.Environment
                 && governance.GetProperty("changeManagementMode").GetString() == "EF_MIGRATIONS", "GOVERNED_CONTEXT_MISMATCH");
             var lifecycle = governance.GetProperty("databaseLifecycle").GetString();
-            EfHostContract.Require(lifecycle == "EXISTING" && onboarding.GetProperty("onboardingState").GetString() == "MANAGED"
+            EfHostContract.Require(lifecycle == "EXISTING" && (onboarding.GetProperty("onboardingState").GetString() == "MANAGED"
+                    || request.Operation == "ADOPTION")
                 || lifecycle == "NEW" && onboarding.GetProperty("onboardingState").GetString() == "NOT_REQUIRED", "ONBOARDING_NOT_READY");
             if (governance.TryGetProperty("efSource", out var adoption))
                 EfHostContract.Require(adoption.GetProperty("sourceRepository").GetString() == scope.SourceRepository, "ADOPTION_REPOSITORY_MISMATCH");
+            if (request.Operation == "ADOPTION")
+            {
+                await CheckCurrent();
+                return Block("EF_ADOPTION_PRODUCERS_REQUIRED", "EXECUTED_HOST_ATTESTATION_REQUIRED");
+            }
             var source = resolved.GetProperty("source");
             EfHostContract.Require(source.GetProperty("exitCode").GetInt32() == 0
                 && source.GetProperty("result").GetProperty("status").GetString() == "CALLER_SOURCE",

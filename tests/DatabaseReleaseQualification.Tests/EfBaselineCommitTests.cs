@@ -9,14 +9,14 @@ internal static class EfBaselineCommitTests
         ("EF baseline: lost CAS acknowledgement remains uncertain", LostAcknowledgement)
     ];
     private static void Assert(bool b, string why) { if (!b) throw new Exception(why); }
-    private sealed record Fixture(EfPreparationTests.Fixture F, EfReleasePlanV1 Plan, EvidenceReference Execution,
+    internal sealed record Fixture(EfPreparationTests.Fixture F, EfReleasePlanV1 Plan, EvidenceReference Execution,
         EvidenceReference Post, EvidenceReference Transition, EvidenceReference Commit, InMemoryCertificationCommitStore Store)
     {
         public Task<EfBaselineCommitResultV1> Run(bool store = true) => new EfEvidencePreparationV1(F.Provider,
             certificationStore: store ? Store : null).CommitBaselineAsync(Plan, Plan.Sha256, F.Selection.Scope,
                 Execution, Post, Transition, Commit, EfPreparationTests.Now.AddSeconds(3));
     }
-    private static async Task<Fixture> Make(string mutation = "", EfPreparationTests.Fixture? existing = null,
+    internal static async Task<Fixture> Make(string mutation = "", EfPreparationTests.Fixture? existing = null,
         InMemoryCertificationCommitStore? store = null, ExpectedCertificationPointer? predecessor = null)
     {
         var f = existing ?? await EfPreparationTests.Make("First", 0, 1, initial: true);
@@ -61,7 +61,7 @@ internal static class EfBaselineCommitTests
             Assert(r.Status == "BLOCKED" && f.Store.PreparedRecordCount == 0, mutation + " committed");
         }
     }
-    private sealed class LostCas(InMemoryCertificationCommitStore inner) : ICertificationCommitStore
+    internal sealed class LostCas(InMemoryCertificationCommitStore inner) : ICertificationCommitStore
     {
         public CertificationCommitReceipt? GetReceipt(string id) => inner.GetReceipt(id);
         public bool HasEvidenceConflict(IReadOnlyList<EvidenceReference> refs) => inner.HasEvidenceConflict(refs);

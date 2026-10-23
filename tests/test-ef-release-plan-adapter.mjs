@@ -58,6 +58,25 @@ test('requires completion marker and stdout parity; denies extra files and hard 
 });
 
 const testDll = path.join(root, 'tests/DatabaseReleaseQualification.Tests/bin/Release/net10.0/DatabaseReleaseQualification.Tests.dll');
+for (const mode of ['ADOPTION_REQUIRED', 'PENDING_APPROVAL', 'CERTIFICATION_COMMIT_REQUIRED', 'GOVERNANCE_TRANSITION_REQUIRED', 'EXISTING_EF_MANAGED', 'BLOCKED', 'TIMEOUT']) {
+  test(`adoption ${mode}: real test CLI preserves diagnostic state and grants no writes`, () => {
+    const directory = path.join(tmp, `adoption-${mode}`), request = path.join(tmp, `adoption-${mode}.json`);
+    const result = run('dotnet', [testDll, '--ef-adoption-child', mode, request, directory], childEnvironment(process.env));
+    const code = mode === 'BLOCKED' ? 66 : mode === 'TIMEOUT' ? 124 : 0;
+    assert.equal(result.status, code, result.stderr + result.stdout);
+    const checked = readPlanArtifacts(directory, code, result.stdout);
+    assert.equal(checked.operation, 'ADOPTION'); assert.equal(checked.status, mode);
+    assert.deepEqual(fs.readdirSync(directory), ['ef-result.json']);
+    assert.equal(checked.executionAuthorized, false); assert.equal(checked.certified, false);
+    for (const change of [{ executionAuthorized: true }, { certified: true },
+      { status: 'NO_CHANGES' }, { planHash: hash }, { secret: 'PRIVATE_SENTINEL' },
+      ...(code === 0 ? [{ operation: 'PLAN' }, { adoptionCandidateHash: null }, { evidenceSetHash: null }] : [])])
+      assert.throws(() => validatePlanResult(stringify({ ...checked, ...change }), code));
+    assert.throws(() => validatePlanResult(result.stdout, code, '{}'));
+    if (mode === 'EXISTING_EF_MANAGED') assert.equal(checked.managedVariant, 'V4');
+    else assert.throws(() => validatePlanResult(stringify({ ...checked, managedVariant: 'V4' }), code));
+  });
+}
 for (const mode of ['PLAN', 'NO_CHANGES']) {
   test(`consumes real CLI ${mode} output from test-only authorized provider (offline)`, () => {
     const directory = path.join(tmp, mode); const request = path.join(tmp, `${mode}-request.json`);
