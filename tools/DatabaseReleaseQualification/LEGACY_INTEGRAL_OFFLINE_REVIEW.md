@@ -1,6 +1,6 @@
 # EXISTING_LEGACY — revisión integral offline
 
-Fecha: 2026-10-25. Veredicto: **EXISTING_LEGACY_CODE_READY_FOR_MERGE** para el alcance offline autorizado. Este incremento no acredita ejecución física ni cierre integrado. Los bindings productivos explícitamente ausentes son dependencias de autoridad/infraestructura, no habilitaciones implícitas por este veredicto.
+Actualización de integración: 2026-10-26. Veredicto: **EXISTING_LEGACY_CODE_READY_FOR_MERGE** para el alcance offline autorizado. Este incremento no acredita ejecución física ni cierre integrado. Los bindings productivos explícitamente ausentes son dependencias de autoridad/infraestructura, no habilitaciones implícitas por este veredicto.
 
 ## Baseline y alcance
 
@@ -8,7 +8,7 @@ Fecha: 2026-10-25. Veredicto: **EXISTING_LEGACY_CODE_READY_FOR_MERGE** para el a
 - Workflow: main remoto/local `origin/main` de referencia `98a85359ee73cfaa4c246fd09145a4d5f7982d84`. Checkout existente `codex/ef-existing-adoption`, HEAD `049f5fcc4444b62246847b06532b8d16f6e8531b`, preservado. Main local `31ca4412cf663473aef2f83f1b0078238b0e9139` no se usó como baseline de integración.
 - No se modificaron EF, piloto, Luana, Registry real, secrets, environments, permisos ni infraestructura. No se conectó a SQL Server; tampoco a LocalDB o contenedores.
 - Únicas superficies compartidas modificadas: `SqlScriptAnalyzer.cs` y `SqlServerSchemaReader.cs`, autorizadas expresamente para procedimientos/funciones mediante perfil LEGACY opt-in. Se conservan constructores sin argumentos y comportamiento predeterminado EF. El enriquecimiento de vistas vive en `LegacySchemaCapture.cs`.
-- `OUT_OF_SCOPE_MODIFICATIONS = 0` se verifica contra el baseline antes de publicar. Los cambios de formatos nuevos pertenecen a LEGACY; los hashes EF no se migran ni recalculan.
+- `OUT_OF_SCOPE_MODIFICATIONS = 0` verificado contra el baseline antes de publicar. Los cambios de formatos nuevos pertenecen a LEGACY; los hashes EF no se migran ni recalculan.
 
 ## Cambios implementados y consumidores
 
@@ -157,7 +157,7 @@ python tests/validate-legacy-closure-static.py
 | G3 análisis/recovery | Subconjunto positivo de módulos/vistas/DATA/SECURITY implementado |
 | G4 continuidad | E2E/CAS/fencing offline; bindings reales bloqueados |
 | G5 tests | 609/609 final, 0 warnings/errores, seis guards Actions, tres Workflow y parser/sintaxis PASS |
-| G6 publicación | PR Actions pendiente; Workflow depende de merge humano y SHA real |
+| G6 publicación | [PR Actions #45](https://github.com/infrastructure-services/actions/pull/45) OPEN, sin merge; Workflow conservado en commit local, sin push ni repin |
 | G7 cierre | No alcanzado: sin merges ni verificación de pins/main integrado |
 
 CI de Actions inspeccionado antes de publicación: 0 workflows registrados y ningún archivo `.github` en el baseline. Ruleset Enterprise `main` exige PR, aprobación y code owner, impide borrado/non-fast-forward; no contiene required workflows. No se altera esa política.
@@ -169,13 +169,25 @@ CI de Actions inspeccionado antes de publicación: 0 workflows registrados y nin
 | Fence durable | Contrato, lease, consumidores, reconciliación y modelo offline completos. Falta binding de proveedor corporativo aprobado, su almacenamiento y fuente autenticada de reconciliación. | Decisión de servicio/infraestructura/autoridad; luego adapter específico y configuración autorizados. Bloquea las tres fases mutantes reales. No se puede elegir almacenamiento ni privilegios silenciosamente. | Crash/partición, pérdida de respuesta, runner pausado que intenta continuar, alias entre repositorios, atomicidad e historial durable; nunca liberar UNKNOWN por TTL. |
 | Certificación corporativa | Se reutilizan decision engine, record y commit/CAS. Contrato de evidencia fresca y consumidor offline implementados. Falta fuente auténtica de review, ejecución independiente y store productivo aprobado. | Autoridad/credenciales/configuración y binding específico del proveedor elegido. Bloquea certificación corporativa y transición operativa a MANAGED; no bloquea las pruebas offline. | Persistencia parcial, CAS, replay, scopes reales, identidad del aprobador, continuidad y no duplicación bajo fallos. |
 | Incarnation/identidad canónica | Contratos de observación y fence exigen prueba independiente; negativas por cambio/inconsistencia probadas. Candidato read-only declara NOT_VERIFIED. | Fuente corporativa de identidad y política de recreación/mapeo de endpoints aún no aprobadas. Bloquea binding real y reconciliación de base recreada. | Restore/recreate/rebind, alias, identidad efectiva de conexión y correlación con baseline. |
-| Integración Git | Actions listo para PR tras validación; cinco archivos Workflow preparados aisladamente. No hay nuevo job físico APPLY/CERTIFY. | Merge humano Actions → verificar SHA real → pin LEGACY y regresiones → PR Workflow → merge humano → verificar ambos main. | No es ejecución SQL; verificar pins, provenance y conservación de superficies EF. |
+| Integración Git | Actions publicado en PR #45; cinco archivos Workflow conservados en commit local aislado. No hay nuevo job físico APPLY/CERTIFY. | Merge humano Actions → verificar SHA real → pin LEGACY y regresiones → PR Workflow → merge humano → verificar ambos main. | No es ejecución SQL; verificar pins, provenance y conservación de superficies EF. |
 | Compatibilidad SQL física | Queries read-only, análisis AST y escenarios sintéticos probados. | Ejecución física expresamente no autorizada. No se afirma soporte operacional validado en un servidor real. | Catálogos/versiones, permisos mínimos, propiedades de módulos/vistas, tipos/límites DATA, transacciones y recovery multidimensional. |
 
 El adapter específico de proveedor no es un motor nuevo ni una segunda implementación del CAS: se completará contra el servicio y autoridad que se aprueben. No existe en los repositorios un proveedor durable concreto que pueda conectarse sin esa decisión. Las APIs internas no admiten registrar implementaciones desde un request, environment o assembly path del caller.
 
 Bloqueo anterior de `validate_adoption.py`: el registro de la evaluación terminó por `usage_limit_exceeded`; el archivo no se creó y no hay una denegación de política concluida. En esta sesión el validator equivalente vive como guard LEGACY del worktree autorizado y pasó. La revisión automática sí rechazó quitar `unset GOVERNANCE_TOKEN`; se aplicó su alternativa de alcance por comando, conservando unset y sin cambiar secrets, permisos ni infraestructura.
 
-La preparación Workflow se conserva en `C:/Users/fgalvan/.codex/worktrees/legacy-workflow-integration/workflow`, inicialmente detached en el main correcto; el checkout `C:/Repos/workflow` permanece en la rama EF sin cambios. Los SHAs de integración y PR se registrarán al completar la publicación de Actions. No se ejecutaron workflows ni SQL, ni se escribieron Registry/Certified State reales.
+## Publicación y estado final preservado
+
+| Repositorio | Baseline | Resultado |
+|---|---|---|
+| Actions | `4f4d853c53b87dd7cd47b4529d3d0bf0d256c1b2` | Código validado en `d84db009907c42650524aaa0af5718dc6fbc7af7`, publicado en rama `codex/legacy-integral-closure` y PR #45. Los commits posteriores de este informe sólo actualizan metadatos de integración; el HEAD vigente es el del PR. |
+| Workflow aislado | `98a85359ee73cfaa4c246fd09145a4d5f7982d84`, revalidado contra main remoto | Commit local `e365725cdc56a48c79013735133a238374bd993a` en `codex/legacy-integral-closure`; cinco archivos, working tree limpio, sin push ni PR. |
+| Workflow original | `049f5fcc4444b62246847b06532b8d16f6e8531b` | Rama `codex/ef-existing-adoption` intacta y limpia; `origin/main` conserva `98a85359ee73cfaa4c246fd09145a4d5f7982d84`. |
+
+Worktree: `C:/Users/fgalvan/.codex/worktrees/legacy-workflow-integration/workflow`. La creación/cambio de rama se realizó después de autorización específica del usuario; se verificó identidad del índice y status antes/después. Árbol preparado: `9480dd75801980c3c0e94ef49b118fee86cb9b30`.
+
+Respaldo autorizado: `%TEMP%/legacy-workflow-integral-prepared-20261026.patch`, SHA256 `72c49b6d55f587025618e50df1daff77f943ff247b76ee3b01048296401f205a`. Se exportó sin alterar el worktree. El intento anterior quedó sin ejecutar por límite de uso del revisor; no se eludió el control.
+
+PR #45 verificado OPEN con `mergedAt=null`, `mergeCommit=null` y ningún check remoto registrado. No se repinó Workflow a un SHA sin merge. Las últimas operaciones sólo preservaron Git y actualizaron este informe: no invalidan el resultado 609/609 ni justifican repetir las suites. No se ejecutaron workflows ni SQL, ni se escribieron Registry/Certified State reales.
 
 No hay declaración de cierre funcional integrado: `EXISTING_LEGACY_FUNCTIONAL_CODE_CLOSED` requiere los dos merges humanos y la verificación final. La siguiente acción humana es revisar/mergear Actions; sólo después se verificará el SHA integrado y se fijarán los pins LEGACY de Workflow. La habilitación operativa requiere además proveedores autorizados y acreditación TEST física.
