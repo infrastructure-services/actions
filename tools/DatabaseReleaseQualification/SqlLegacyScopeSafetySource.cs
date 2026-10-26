@@ -126,7 +126,14 @@ public sealed class SqlLegacyScopeSafetySource(ISecurityCatalogTransport transpo
                     x.TryGetValue("definition", out var value) ? value as string : null, false))
                 || predicates.Any(x => x["predicate_definition"] is null);
             objects.Add(new(item.Schema, item.Name,
-                String(row, "type") == "U" ? "TABLE" : String(row, "type") == "V" ? "VIEW" : "UNSUPPORTED",
+                String(row, "type").Trim() switch
+                {
+                    "U" => "TABLE",
+                    "V" => "VIEW",
+                    "P" => "PROCEDURE",
+                    "FN" or "IF" or "TF" => "FUNCTION",
+                    _ => "UNSUPPORTED"
+                },
                 Integer(row, "is_ms_shipped") != 0, special, synonym,
                 triggers.Any(x => Integer(x, "is_disabled") == 0), triggers.Count != 0,
                 foreignKeys.Any(x => Integer(x, "delete_referential_action") != 0
@@ -142,10 +149,15 @@ public sealed class SqlLegacyScopeSafetySource(ISecurityCatalogTransport transpo
             .ThenBy(x => x.Name, StringComparer.Ordinal).ToArray();
         var result = new LegacyScopeSafetySnapshotV1(1, true, server, database,
             true, serverComplete, hasDdl, ordered, "");
-        var hash = Hashing.Sha256(JsonSerializer.Serialize(new {
-            result.ContractVersion, result.Complete, result.ServerInstance,
-            result.DatabaseName, result.DatabaseDdlTriggersComplete,
-            result.ServerDdlTriggersComplete, result.HasEnabledDdlTrigger,
+        var hash = Hashing.Sha256(JsonSerializer.Serialize(new
+        {
+            result.ContractVersion,
+            result.Complete,
+            result.ServerInstance,
+            result.DatabaseName,
+            result.DatabaseDdlTriggersComplete,
+            result.ServerDdlTriggersComplete,
+            result.HasEnabledDdlTrigger,
             result.Objects
         }, JsonDefaults.Compact));
         return result with { Sha256 = hash };

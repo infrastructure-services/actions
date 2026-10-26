@@ -57,7 +57,8 @@ public sealed record LegacyDataValidationDescriptorV1(string ContractId, int Ver
 
 public static class LegacyReadinessHash
 {
-    private static readonly JsonSerializerOptions RequiredNulls = new(JsonDefaults.Compact) {
+    private static readonly JsonSerializerOptions RequiredNulls = new(JsonDefaults.Compact)
+    {
         DefaultIgnoreCondition = JsonIgnoreCondition.Never
     };
 
@@ -66,11 +67,19 @@ public static class LegacyReadinessHash
 
     public static LegacyReadinessV1 Bind(LegacyReadinessV1 readiness)
     {
-        var body = new {
-            readiness.ContractVersion, readiness.Scenario, readiness.Status,
-            readiness.TargetId, readiness.PackageIdentity, readiness.ReasonCodes,
-            readiness.Checks, readiness.EvidenceReferences, readiness.QualificationStatus,
-            readiness.CanProceedToPromotion, readiness.Handoff
+        var body = new
+        {
+            readiness.ContractVersion,
+            readiness.Scenario,
+            readiness.Status,
+            readiness.TargetId,
+            readiness.PackageIdentity,
+            readiness.ReasonCodes,
+            readiness.Checks,
+            readiness.EvidenceReferences,
+            readiness.QualificationStatus,
+            readiness.CanProceedToPromotion,
+            readiness.Handoff
         };
         return readiness with { EvidenceHash = Hashing.Sha256(JsonSerializer.Serialize(body, RequiredNulls)) };
     }
@@ -96,10 +105,10 @@ public static class LegacyReadinessHash
             .OrderBy(x => x.Key.Schema, StringComparer.Ordinal)
             .ThenBy(x => x.Key.Object, StringComparer.Ordinal);
         var targets = groups.Select(group => new LegacyDataScopeTargetV1(
-            group.Key.Schema, group.Key.Object,
-            group.Any(x => x.Column is null)
-                ? null : group.Select(x => x.Column!).Distinct(StringComparer.Ordinal)
-                    .Order(StringComparer.Ordinal).ToArray())).ToArray();
+            // A projection can miss lost values or changed associations between
+            // columns. Compare complete row multisets for every affected table.
+            // The governed definition must match this scope exactly.
+            group.Key.Schema, group.Key.Object, null)).ToArray();
         var scope = new LegacyDataScopeV1(targets);
         return (scope, Hashing.Sha256(JsonSerializer.Serialize(scope, RequiredNulls)));
     }

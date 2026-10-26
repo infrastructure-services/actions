@@ -4,8 +4,8 @@ using DatabaseReleaseQualification;
 
 public static class LegacyArtifactTests
 {
-    public static ILegacyGitTransport Transport(byte[] forward, byte[] rollback) =>
-        new FakeGit(forward, rollback);
+    public static ILegacyGitTransport Transport(byte[] forward, byte[] rollback, string releaseId = "r1") =>
+        new FakeGit(forward, rollback, releaseId);
     public static (string Name, Func<Task> Run)[] Cases = [
         ("legacy manifest acepta forma exacta", ManifestValid),
         ("legacy manifest rechaza propiedades desconocidas y duplicadas", ManifestClosed),
@@ -147,10 +147,14 @@ public static class LegacyArtifactTests
 
     private static async Task<string> Git(string directory, string[] arguments, byte[]? input = null)
     {
-        var start = new ProcessStartInfo("git") {
-            WorkingDirectory = directory, UseShellExecute = false,
-            RedirectStandardInput = true, RedirectStandardOutput = true,
-            RedirectStandardError = true, CreateNoWindow = true
+        var start = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = directory,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
         };
         start.Environment["GIT_AUTHOR_NAME"] = "Fixture";
         start.Environment["GIT_AUTHOR_EMAIL"] = "fixture@example.invalid";
@@ -208,8 +212,10 @@ public static class LegacyArtifactTests
         if (expected != actual) throw new Exception($"Expected {expected}, got {actual}");
     }
 
-    private sealed class FakeGit(byte[] forward, byte[] rollback) : ILegacyGitTransport
+    private sealed class FakeGit(byte[] forward, byte[] rollback, string releaseId = "r1") : ILegacyGitTransport
     {
+        private byte[] SelectedManifest => Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(ManifestBytes)
+            .Replace("\"releaseId\":\"r1\"", "\"releaseId\":" + System.Text.Json.JsonSerializer.Serialize(releaseId)));
         public Task<LegacyGitResult> RunAsync(IReadOnlyList<string> args, int maximumOutputBytes, CancellationToken token)
         {
             var key = string.Join(" ", args);
@@ -226,12 +232,12 @@ public static class LegacyArtifactTests
                         .Concat(Row("100644", "blob", ForwardOid, "f.sql"))
                         .Concat(Row("100644", "blob", RollbackOid, "r.sql")).ToArray(),
                 var value when value == "cat-file -s " + ManifestOid =>
-                    Encoding.ASCII.GetBytes(ManifestBytes.Length + "\n"),
+                    Encoding.ASCII.GetBytes(SelectedManifest.Length + "\n"),
                 var value when value == "cat-file -s " + ForwardOid =>
                     Encoding.ASCII.GetBytes(forward.Length + "\n"),
                 var value when value == "cat-file -s " + RollbackOid =>
                     Encoding.ASCII.GetBytes(rollback.Length + "\n"),
-                var value when value == "cat-file blob " + ManifestOid => ManifestBytes,
+                var value when value == "cat-file blob " + ManifestOid => SelectedManifest,
                 var value when value == "cat-file blob " + ForwardOid => forward,
                 var value when value == "cat-file blob " + RollbackOid => rollback,
                 _ => throw new Exception("Unexpected Git call: " + key)

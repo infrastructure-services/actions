@@ -31,7 +31,7 @@ public static class LegacyProductionCompositionRoot
     {
         public Task<RecoverySecuritySnapshot> ReadAsync(RecoverySecurityScope scope,
             RecoveryPhase phase, CancellationToken cancellationToken = default) =>
-            new SqlRecoverySecurityCatalogReader(session.SecurityTransport(),
+            LegacyRecoverySecurityReader.Create(session.SecurityTransport(),
                 session.Binding()).ReadAsync(scope, phase, cancellationToken);
     }
 }
@@ -95,25 +95,37 @@ public sealed class LegacyProductionRuntimeAcquisition : ILegacyRuntimeAcquisiti
 
     public async Task<LegacyAcquiredRuntimeV1> AcquireAsync(
         LegacyResolverRequestV1 request, CancellationToken token)
-        => await AcquireCoreAsync(request, token, phaseContinuation: false);
+        => await AcquireCoreAsync(Selection(request), token, phaseContinuation: false);
 
     // The continuation's current SQL state is expected to differ from the
     // certified baseline. Reacquire governance, source and SQL identity without
     // treating that intentional phase state as a new Macro 1 classification.
     internal async Task<LegacyAcquiredRuntimeV1> AcquireForPhaseAsync(
         LegacyResolverRequestV1 request, CancellationToken token)
-        => await AcquireCoreAsync(request, token, phaseContinuation: true);
+        => await AcquireCoreAsync(Selection(request), token, phaseContinuation: true);
+
+    internal Task<LegacyAcquiredRuntimeV1> AcquireForAdoptionAsync(
+        LegacyAdoptionRequestV1 request, CancellationToken token) =>
+        AcquireCoreAsync(request, token, phaseContinuation: false, adoption: true);
+
+    private static LegacyAdoptionRequestV1 Selection(LegacyResolverRequestV1 request)
+    {
+        if (request.ArtifactSelection.ContractVersion != 1)
+            throw new LegacyContractException("TECHNICAL_ERROR");
+        return new(request.ContractVersion, request.TargetId,
+            request.ArtifactSelection.ExpectedRepository, request.ArtifactSelection.ExpectedCommit);
+    }
 
     private async Task<LegacyAcquiredRuntimeV1> AcquireCoreAsync(
-        LegacyResolverRequestV1 request, CancellationToken token, bool phaseContinuation)
+        LegacyAdoptionRequestV1 request, CancellationToken token, bool phaseContinuation, bool adoption = false)
     {
-        if (request.ContractVersion != 1 || request.ArtifactSelection.ContractVersion != 1)
+        if (request.ContractVersion != 1)
             throw new LegacyContractException("TECHNICAL_ERROR");
         var appRepository = new LegacyRepositoryV1("github.com",
             Required("GITHUB_REPOSITORY_ID"), Required("GITHUB_REPOSITORY"));
         appRepository.Validate();
-        if (appRepository != request.ArtifactSelection.ExpectedRepository
-            || Required("GITHUB_SHA") != request.ArtifactSelection.ExpectedCommit)
+        if (appRepository != request.Repository
+            || Required("GITHUB_SHA") != request.Commit)
             throw new LegacyContractException("SOURCE_AUTHORITY_UNVERIFIED");
         var appGit = new ProcessLegacyGitTransport(ApplicationRoot);
         var governanceGit = new ProcessLegacyGitTransport(governanceRoot);
@@ -121,7 +133,7 @@ public sealed class LegacyProductionRuntimeAcquisition : ILegacyRuntimeAcquisiti
         var appCommit = await GitText(appGit, ["rev-parse", "HEAD"], token);
         governanceRevision = await GitText(governanceGit, ["rev-parse", "HEAD"], token);
         actionsRevision = await GitText(actionsGit, ["rev-parse", "HEAD"], token);
-        if (appCommit != request.ArtifactSelection.ExpectedCommit
+        if (appCommit != request.Commit
             || governanceRevision != executedWorkflowRevision
             || !Sha.IsMatch(governanceRevision) || !Sha.IsMatch(actionsRevision))
             throw new LegacyContractException("SOURCE_REVISION_NOT_IMMUTABLE");
@@ -131,7 +143,7 @@ public sealed class LegacyProductionRuntimeAcquisition : ILegacyRuntimeAcquisiti
         await RequireClean(appGit, token);
         await RequireClean(governanceGit, token);
         await RequireClean(actionsGit, token);
-        await VerifyFreshnessAsync(request, token);
+        await VerifySourceFreshnessAsync(request.Commit, token);
         var governanceRepo = new LegacyRepositoryV1("github.com",
             governanceRepositoryId, "infrastructure-services/workflow");
         var actionsRepo = new LegacyRepositoryV1("github.com",
@@ -191,17 +203,25 @@ public sealed class LegacyProductionRuntimeAcquisition : ILegacyRuntimeAcquisiti
             actionsRevision, "tools/DatabaseReleaseQualification/SqlServerSchemaReader.cs", true, token);
         var artifactProducer = await Document(actionsGit, actionsRoot, actionsRepo,
             actionsRevision, "tools/DatabaseReleaseQualification/LegacyArtifactDiscovery.cs", true, token);
-        var hg5Request = new {
+        var hg5Request = new
+        {
             runtimeContractVersion = 1,
             target = new { targetId = request.TargetId },
-            provenance = new {
+            provenance = new
+            {
                 sourceRepository = governanceRepo.FullName,
                 requestedRevision = governanceRevision,
                 sourceRevision = governanceRevision,
-                governance = new { sourcePath = governance.Document.Path,
-                    sourceSha256 = governance.Document.RawSha256 },
-                onboarding = new { sourcePath = onboarding.Document.Path,
-                    sourceSha256 = onboarding.Document.RawSha256 }
+                governance = new
+                {
+                    sourcePath = governance.Document.Path,
+                    sourceSha256 = governance.Document.RawSha256
+                },
+                onboarding = new
+                {
+                    sourcePath = onboarding.Document.Path,
+                    sourceSha256 = onboarding.Document.RawSha256
+                }
             }
         };
         var authority = await RunNode(governanceRoot,
@@ -218,16 +238,21 @@ public sealed class LegacyProductionRuntimeAcquisition : ILegacyRuntimeAcquisiti
         var governed = ParseGovernance(selected);
         var onboarded = ParseOnboarding(selectedOnboarding);
         if (governed.Binding.EndpointReference != endpointReference
-            || governed.TargetId != request.TargetId || onboarded.Status != "MANAGED")
+            || governed.TargetId != request.TargetId
+            || (!adoption && onboarded.Status != "MANAGED")
+            || (adoption && onboarded.Status is not ("MANAGED" or "PENDING" or "REQUIRED")))
             throw new LegacyContractException("EVIDENCE_CORRELATION_MISMATCH");
         binding = new(governed.Binding.DatabaseName,
             governed.Binding.ServerMatchPolicy, governed.Binding.AllowedServerInstances);
         var repositoryOutput = await RunDiscoveryProducer("repository-discovery-v2",
-            "scripts/run-repository-discovery-v2-public.mjs", new Dictionary<string, string> {
-                ["INSPECTION_STATUS"] = "READY", ["WORKSPACE"] = ApplicationRoot
+            "scripts/run-repository-discovery-v2-public.mjs", new Dictionary<string, string>
+            {
+                ["INSPECTION_STATUS"] = "READY",
+                ["WORKSPACE"] = ApplicationRoot
             }, token);
         var sqlOutput = await RunDiscoveryProducer("sql-discovery-v2",
-            "scripts/run-sql-discovery-v2-public.mjs", new Dictionary<string, string> {
+            "scripts/run-sql-discovery-v2-public.mjs", new Dictionary<string, string>
+            {
                 ["SQL_SERVER_CONNECTION"] = connection,
                 ["SQL_DATABASE_NAME"] = governed.Binding.DatabaseName
             }, token);
@@ -239,7 +264,8 @@ public sealed class LegacyProductionRuntimeAcquisition : ILegacyRuntimeAcquisiti
             "observed-database-identity-json", "SQL_DISCOVERY_V2_EOF"));
         var repositoryEnvelopeBytes = Encoding.UTF8.GetBytes(repositoryOutput);
         var sqlEnvelopeBytes = Encoding.UTF8.GetBytes(sqlOutput);
-        var registryProvenance = new RegistryProvenance {
+        var registryProvenance = new RegistryProvenance
+        {
             RegistryRepository = governanceRepo.FullName,
             RegistryRef = governanceRevision,
             RegistryCommitSha = governanceRevision,
@@ -248,9 +274,9 @@ public sealed class LegacyProductionRuntimeAcquisition : ILegacyRuntimeAcquisiti
         };
         var targetConnection = SqlClientSecurityCatalogTransport.BuildConnectionOptions(
             connection, binding).ConnectionString;
-        var first = await new SqlServerSchemaReader().CaptureWithMetadataAsync(
+        var first = await new LegacySchemaCapture().CaptureWithMetadataAsync(
             targetConnection, token);
-        var second = await new SqlServerSchemaReader().CaptureWithMetadataAsync(
+        var second = await new LegacySchemaCapture().CaptureWithMetadataAsync(
             targetConnection, token);
         var capturedAt = DateTimeOffset.UtcNow;
         if (first.DatabaseName != governed.Binding.DatabaseName
@@ -262,22 +288,27 @@ public sealed class LegacyProductionRuntimeAcquisition : ILegacyRuntimeAcquisiti
                         StringComparer.OrdinalIgnoreCase)))
             throw new LegacyContractException("TARGET_IDENTITY_MISMATCH");
         var contract = new StructuralHashContractV1(1,
-            StructuralHashContractV1.SupportedProfile, 1, 1, "SHA-256",
+            StructuralHashContractV1.ModulesProfile, 1, 1, "SHA-256",
             new(canonicalizer.Document, "SCHEMA_CANONICALIZER_V1", 1),
             new(compatibility.Document, "REGISTRY_V1_COMPATIBILITY_V1", 1));
         var observed = LegacyStructuralEvidence.FromCurrentCaptures(request.TargetId,
             governed.Binding.EndpointReference, first, second, contract, capturedAt);
         DatabaseRegistryDocument? registryDocument;
-        try { registryDocument = JsonSerializer.Deserialize<DatabaseRegistryDocument>(
-            registry.Bytes, DatabaseStateJson.Compact); }
+        try
+        {
+            registryDocument = JsonSerializer.Deserialize<DatabaseRegistryDocument>(
+            registry.Bytes, DatabaseStateJson.Compact);
+        }
         catch (JsonException) { throw new LegacyContractException("REGISTRY_SOURCE_INVALID"); }
         var registryValidation = DatabaseRegistryLoader.Validate(registryDocument,
             registryProvenance);
         if (!registryValidation.IsValid)
             throw new LegacyContractException("REGISTRY_VALIDATION_FAILED");
         var preClassificationState = new DatabaseStateEvaluator().Evaluate(registryValidation,
-            new DatabaseStateObservation {
-                ApplicationId = governed.ApplicationId, Environment = governed.Environment,
+            new DatabaseStateObservation
+            {
+                ApplicationId = governed.ApplicationId,
+                Environment = governed.Environment,
                 DatabaseName = governed.Binding.DatabaseName,
                 ObservedSchemaHash = observed.ObservedSchemaHash,
                 SchemaCoverage = observed.Metadata.SchemaCoverage,
@@ -292,30 +323,37 @@ public sealed class LegacyProductionRuntimeAcquisition : ILegacyRuntimeAcquisiti
         if (sqlIdentity.GetProperty("serverInstance").GetString() != first.ServerInstance
             || sqlIdentity.GetProperty("databaseName").GetString() != first.DatabaseName)
             throw new LegacyContractException("TARGET_IDENTITY_MISMATCH");
-        var observedIdentity = new { serverInstance = first.ServerInstance,
-            databaseName = first.DatabaseName };
-        var composedInput = new {
+        var observedIdentity = new
+        {
+            serverInstance = first.ServerInstance,
+            databaseName = first.DatabaseName
+        };
+        var composedInput = new
+        {
             environment = "TEST",
             authority,
             stepOutcomes = new { repository = "success", sql = "success", schema = "success" },
             sql = sqlResult,
             sqlIdentity = observedIdentity,
             repository = repositoryResult,
-            schema = new {
-                status = "SUCCESS", reason = "SCHEMA_CAPTURE_SUCCESS",
+            schema = new
+            {
+                status = "SUCCESS",
+                reason = "SCHEMA_CAPTURE_SUCCESS",
                 deterministic = observed.CaptureComparison.StructuralMatch ? "true" : "false",
                 driftStatus = preClassificationState.DriftStatus,
                 registryStatus = preClassificationState.RegistryStatus
             },
             schemaIdentity = observedIdentity,
-            provenance = new {
+            provenance = new
+            {
                 sql = SourceProvenance(sqlProducer.Document),
                 repository = SourceProvenance(repoProducer.Document),
                 schema = SourceProvenance(observedProducer.Document)
             }
         };
         JsonElement classification;
-        if (phaseContinuation)
+        if (phaseContinuation || adoption)
             classification = JsonDocument.Parse("{}").RootElement.Clone();
         else
         {
@@ -355,6 +393,9 @@ public sealed class LegacyProductionRuntimeAcquisition : ILegacyRuntimeAcquisiti
 
     public async Task VerifyFreshnessAsync(LegacyResolverRequestV1 request,
         CancellationToken token)
+        => await VerifySourceFreshnessAsync(request.ArtifactSelection.ExpectedCommit, token);
+
+    internal async Task VerifySourceFreshnessAsync(string applicationCommit, CancellationToken token)
     {
         if (governanceRevision is null || actionsRevision is null)
             throw new LegacyContractException("SOURCE_FRESHNESS_UNVERIFIED");
@@ -365,7 +406,7 @@ public sealed class LegacyProductionRuntimeAcquisition : ILegacyRuntimeAcquisiti
             || await GitText(actionsGit, ["rev-parse", "HEAD"], token) != actionsRevision
             || await GitText(new ProcessLegacyGitTransport(ApplicationRoot),
                 ["rev-parse", "HEAD"], token)
-                != request.ArtifactSelection.ExpectedCommit)
+                != applicationCommit)
             throw new LegacyContractException("SOURCE_FRESHNESS_UNVERIFIED");
         await RequireClean(governanceGit, token);
         await RequireClean(actionsGit, token);
@@ -421,7 +462,8 @@ public sealed class LegacyProductionRuntimeAcquisition : ILegacyRuntimeAcquisiti
         {
             if (Environment.GetEnvironmentVariable("GITHUB_API_URL") != "https://api.github.com")
                 throw new LegacyContractException("SOURCE_FRESHNESS_UNVERIFIED");
-            using var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) {
+            using var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false })
+            {
                 Timeout = TimeSpan.FromSeconds(15)
             };
             using var request = new HttpRequestMessage(HttpMethod.Get,
@@ -488,9 +530,12 @@ public sealed class LegacyProductionRuntimeAcquisition : ILegacyRuntimeAcquisiti
         var outputPath = Path.GetTempFileName();
         try
         {
-            var start = new ProcessStartInfo("node") {
-                WorkingDirectory = actionsRoot, UseShellExecute = false,
-                RedirectStandardOutput = true, RedirectStandardError = true,
+            var start = new ProcessStartInfo("node")
+            {
+                WorkingDirectory = actionsRoot,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
                 CreateNoWindow = true
             };
             start.ArgumentList.Add(Path.Combine(actionsRoot,
@@ -558,10 +603,14 @@ public sealed class LegacyProductionRuntimeAcquisition : ILegacyRuntimeAcquisiti
     private static async Task<JsonElement> RunNode(string root, string script,
         string input, CancellationToken token)
     {
-        var start = new ProcessStartInfo("node") {
-            WorkingDirectory = root, UseShellExecute = false,
-            RedirectStandardInput = true, RedirectStandardOutput = true,
-            RedirectStandardError = true, CreateNoWindow = true
+        var start = new ProcessStartInfo("node")
+        {
+            WorkingDirectory = root,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
         };
         start.ArgumentList.Add(script);
         ClearChildSecrets(start);
@@ -628,7 +677,8 @@ public sealed class LegacyProductionRuntimeAcquisition : ILegacyRuntimeAcquisiti
             value.GetProperty("sourceRevision").GetString()!,
             value.GetProperty("sourceSha256").GetString()!);
 
-    private static object SourceProvenance(LegacyGitDocumentV1 document) => new {
+    private static object SourceProvenance(LegacyGitDocumentV1 document) => new
+    {
         sourceRepository = document.Repository.FullName,
         sourcePath = document.Path,
         sourceRevision = document.Revision,

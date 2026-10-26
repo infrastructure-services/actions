@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "legacy-adoption-request-v1.schema.json",
+  "title": "LEGACY read-only adoption selectors V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "targetId", "repository", "commit"],
+  "properties": {
+    "contractVersion": { "const": 1 },
+    "targetId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "repositoryId", "fullName"],
+      "properties": {
+        "host": { "const": "github.com" },
+        "repositoryId": { "type": "string", "pattern": "^[0-9]+$" },
+        "fullName": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" }
+      }
+    }
+  }
+}

@@ -29,8 +29,11 @@ public static class LegacyRuntimeResolverTests
     {
         var (adapter, acquisition) = await Setup();
         var outcome = await adapter.EvaluateAsync(new(1, Selection, "target1", null));
-        if (outcome.Readiness is not { Status: "READY_FOR_TEST_REHEARSAL",
-                Handoff: not null, CanProceedToPromotion: false }
+        if (outcome.Readiness is not
+            {
+                Status: "READY_FOR_TEST_REHEARSAL",
+                Handoff: not null, CanProceedToPromotion: false
+            }
             || outcome.Readiness.Handoff.ExecutionAuthorized
             || outcome.TrustedRuntime?.EvidenceSetHash
                 != outcome.Readiness.Handoff.EvidenceSetHash
@@ -57,8 +60,11 @@ public static class LegacyRuntimeResolverTests
         var outcome = await adapter.EvaluateAsync(new(1, missing, "target1", null));
         if (outcome.Readiness is not { Scenario: "EXISTING_LEGACY", Status: "BLOCKED" }
             || outcome.Readiness.ReasonCodes.Count == 0
-            || outcome.TrustedRuntime is not { Status: "BLOCKED", Evidence: null,
-                EvidenceSetHash: null })
+            || outcome.TrustedRuntime is not
+            {
+                Status: "BLOCKED", Evidence: null,
+                EvidenceSetHash: null
+            })
             throw new Exception("Invalid package lost governed Legacy classification");
     }
 
@@ -176,7 +182,7 @@ public static class LegacyRuntimeResolverTests
             new EmptySafety(), new NoSecurity()), acquisition));
     }
 
-    private sealed class FakeAcquisition : ILegacyRuntimeAcquisition
+    internal sealed class FakeAcquisition : ILegacyRuntimeAcquisition
     {
         public int FreshnessChecks { get; private set; }
         public bool FailSecondFreshness { get; set; }
@@ -197,15 +203,22 @@ public static class LegacyRuntimeResolverTests
         {
             var snapshot = new SchemaSnapshot();
             var hash = SchemaCanonicalizer.Canonicalize(snapshot).Sha256;
-            var target = new DatabaseTarget {
-                ApplicationId = "app1", Environment = "TEST", DatabaseName = "TestDb",
-                Lifecycle = "EXISTING", CertificationStatus = Mutate == "uncertified"
+            var target = new DatabaseTarget
+            {
+                ApplicationId = "app1",
+                Environment = "TEST",
+                DatabaseName = "TestDb",
+                Lifecycle = "EXISTING",
+                CertificationStatus = Mutate == "uncertified"
                     ? "BASELINE_REQUIRED" : "CERTIFIED",
                 CertifiedSchemaHash = Mutate == "uncertified" ? null : hash
             };
             var registryBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(
-                new DatabaseRegistryDocument { RegistryFormatVersion = 1,
-                    Targets = [target] }, DatabaseStateJson.Compact));
+                new DatabaseRegistryDocument
+                {
+                    RegistryFormatVersion = 1,
+                    Targets = [target]
+                }, DatabaseStateJson.Compact));
             var governanceBytes = Encoding.UTF8.GetBytes("governance");
             var onboardingBytes = Encoding.UTF8.GetBytes("onboarding");
             var source = new LegacySourceProvenanceV1("infrastructure-services/workflow", "governance.json",
@@ -214,17 +227,26 @@ public static class LegacyRuntimeResolverTests
                 new("REGISTRY_GIT_PR", "policy.json"),
                 new("endpoint1", "TestDb", "ALLOW_LIST", ["SQL1"]),
                 "app1", "TEST", "target1", "EXISTING", "LEGACY_UNMANAGED");
-            var onboarding = new LegacyOnboardingV1(source with {
-                SourcePath = "onboarding.json", SourceSha256 = Hashing.Sha256(onboardingBytes)
+            var onboarding = new LegacyOnboardingV1(source with
+            {
+                SourcePath = "onboarding.json",
+                SourceSha256 = Hashing.Sha256(onboardingBytes)
             }, new("ONBOARDING_GIT_PR", "policy.json"), "MANAGED");
-            var provenance = new RegistryProvenance {
-                RegistryRepository = "infrastructure-services/workflow", RegistryRef = new string('b', 40),
-                RegistryCommitSha = new string('b', 40), RegistryFilePath = "targets.json",
+            var provenance = new RegistryProvenance
+            {
+                RegistryRepository = "infrastructure-services/workflow",
+                RegistryRef = new string('b', 40),
+                RegistryCommitSha = new string('b', 40),
+                RegistryFilePath = "targets.json",
                 RegistryFileSha256 = Hashing.Sha256(registryBytes)
             };
-            var capture = new SchemaCaptureSourceResult {
-                Snapshot = snapshot, ServerInstance = "SQL1", DatabaseName = "TestDb",
-                ServerVersion = "16", ServerMajorVersion = 16,
+            var capture = new SchemaCaptureSourceResult
+            {
+                Snapshot = snapshot,
+                ServerInstance = "SQL1",
+                DatabaseName = "TestDb",
+                ServerVersion = "16",
+                ServerMajorVersion = 16,
                 MetricsAvailability = MetricsAvailability.Complete
             };
             var now = DateTimeOffset.Parse("2026-09-29T12:00:00Z");
@@ -252,7 +274,8 @@ public static class LegacyRuntimeResolverTests
             var classification = JsonDocument.Parse("{\"status\":\"CLASSIFIED\",\"classificationInvoked\":true,\"targetId\":\"target1\",\"classification\":{\"classificationResult\":{\"inferences\":{\"scenario\":\"EXISTING_LEGACY\"}}}}").RootElement.Clone();
             var repoBytes = Encoding.UTF8.GetBytes("repository discovery");
             var sqlBytes = Encoding.UTF8.GetBytes("sql discovery");
-            var hashes = new Dictionary<string, string>(StringComparer.Ordinal) {
+            var hashes = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
                 ["governance"] = Hashing.Sha256(governanceBytes),
                 ["onboarding"] = Hashing.Sha256(onboardingBytes),
                 ["registry"] = AlterRegistryHash ? new string('0', 64) : Hashing.Sha256(registryBytes),
@@ -260,7 +283,8 @@ public static class LegacyRuntimeResolverTests
                 ["sqlDiscovery"] = Hashing.Sha256(sqlBytes),
                 ["observedSnapshot"] = LegacyRuntimeEvidenceHash.Hash(observed)
             };
-            var producerPaths = new Dictionary<string, LegacyGitDocumentV1> {
+            var producerPaths = new Dictionary<string, LegacyGitDocumentV1>
+            {
                 ["governance"] = GovernanceDoc("database-registry/resolve-governance-runtime.mjs"),
                 ["onboarding"] = GovernanceDoc("database-registry/resolve-governance-runtime.mjs"),
                 ["registry"] = resolverDoc,
@@ -277,7 +301,8 @@ public static class LegacyRuntimeResolverTests
             {
                 var sourceEntry = sources.Single(x => x.Key == "sqlDiscovery");
                 var sourceDoc = sourceEntry.Producer.Source;
-                sourceDoc = Mutate switch {
+                sourceDoc = Mutate switch
+                {
                     "producerPath" => sourceDoc with { Path = "scripts/other.mjs" },
                     "producerRevision" => sourceDoc with { Revision = new string('e', 40) },
                     _ => sourceDoc with { Repository = governanceRepo }
@@ -290,7 +315,8 @@ public static class LegacyRuntimeResolverTests
             var runtime = new LegacyRuntimeContextV1(Selection.ExpectedRepository,
                 ".github/workflows/legacy-package-qualification-v1-test.yml",
                 governanceRevision, "1", "1", "job");
-            if (Mutate == "runtimeRepository") runtime = runtime with {
+            if (Mutate == "runtimeRepository") runtime = runtime with
+            {
                 Repository = governanceRepo
             };
             return Task.FromResult(new LegacyAcquiredRuntimeV1(runtime, producer, sources,
@@ -310,10 +336,15 @@ public static class LegacyRuntimeResolverTests
             if (scope.Count != 0) throw new Exception("Unexpected scope");
             var result = new LegacyScopeSafetySnapshotV1(1, true, "SQL1", "TestDb",
                 true, true, false, [], "");
-            var hash = Hashing.Sha256(JsonSerializer.Serialize(new {
-                result.ContractVersion, result.Complete, result.ServerInstance,
-                result.DatabaseName, result.DatabaseDdlTriggersComplete,
-                result.ServerDdlTriggersComplete, result.HasEnabledDdlTrigger,
+            var hash = Hashing.Sha256(JsonSerializer.Serialize(new
+            {
+                result.ContractVersion,
+                result.Complete,
+                result.ServerInstance,
+                result.DatabaseName,
+                result.DatabaseDdlTriggersComplete,
+                result.ServerDdlTriggersComplete,
+                result.HasEnabledDdlTrigger,
                 result.Objects
             }, JsonDefaults.Compact));
             return Task.FromResult(result with { Sha256 = hash });

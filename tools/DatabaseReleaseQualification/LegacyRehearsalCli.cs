@@ -11,13 +11,23 @@ public sealed record LegacyRehearsalRequestV1(int ContractVersion,
 
 public static class LegacyRehearsalCli
 {
-    internal static readonly JsonSerializerOptions Strict = new(JsonDefaults.Compact) {
-        PropertyNameCaseInsensitive = false, UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+    internal static readonly JsonSerializerOptions Strict = new(JsonDefaults.Compact)
+    {
+        PropertyNameCaseInsensitive = false,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
         RespectRequiredConstructorParameters = true
     };
 
     public static async Task<int> RunAsync(string[] args, bool rehearse = true)
     {
+        // Real execution belongs exclusively to the separately protected phase
+        // jobs. Synthetic regressions call the harness with explicit doubles.
+        // Reject before reading paths, environment, credentials or request bytes.
+        if (rehearse)
+        {
+            Console.Error.WriteLine("LEGACY_REHEARSAL_BLOCKED:LEGACY_PHASED_EXECUTION_REQUIRED");
+            return 66;
+        }
         if (args.Length != 4 || args[0] != "--request" || args[2] != "--output") return 65;
         var output = Path.GetFullPath(args[3]);
         using var cancelled = new CancellationTokenSource(TimeSpan.FromMinutes(25));
@@ -60,7 +70,8 @@ public static class LegacyRehearsalCli
                     definition.ProviderKind, definition.Equality, source.Document, scope, definition.MaximumRowsPerTable);
                 var binding = qualification.TrustedRuntime!.Evidence!.Governance.Binding;
                 var dataResolver = new LegacyDataContractResolverV1([governed],
-                    new Dictionary<string, Func<LegacyDataContractDefinitionV1, ILegacyDataEvidenceReaderV1>> {
+                    new Dictionary<string, Func<LegacyDataContractDefinitionV1, ILegacyDataEvidenceReaderV1>>
+                    {
                         ["SCOPED_ROWSET_SHA256_V1"] = _ => new SqlLegacyDataEvidenceReaderV1(session.InspectionConnection, binding)
                     });
                 data = dataResolver.Resolve(request.DataContractSelector, request.TargetId, hash,
@@ -79,12 +90,18 @@ public static class LegacyRehearsalCli
                     await preflightData.CapturePreDataAsync(token);
                 Directory.CreateDirectory(output);
                 var h = qualification.Readiness!.Handoff!;
-                WriteNew(output,"legacy-rehearsal-preflight.json",new {
-                    contractVersion=1, status="READY_FOR_AUTHORIZATION", executionAuthorized=false,
-                    targetId=h.TargetId, packageIdentity=h.PackageIdentity, engineCommit=h.EngineCommit,
-                    preconditionIdentity=GovernedLegacyRehearsalAuthorityV1.PreconditionIdentity(h),
-                    dataContractIdentity=(data?.Provider as LegacyDataValidationProviderV1)?.ApprovalIdentity,
-                    qualification=qualification.Readiness, trustedRuntime=qualification.TrustedRuntime
+                WriteNew(output, "legacy-rehearsal-preflight.json", new
+                {
+                    contractVersion = 1,
+                    status = "READY_FOR_AUTHORIZATION",
+                    executionAuthorized = false,
+                    targetId = h.TargetId,
+                    packageIdentity = h.PackageIdentity,
+                    engineCommit = h.EngineCommit,
+                    preconditionIdentity = GovernedLegacyRehearsalAuthorityV1.PreconditionIdentity(h),
+                    dataContractIdentity = (data?.Provider as LegacyDataValidationProviderV1)?.ApprovalIdentity,
+                    qualification = qualification.Readiness,
+                    trustedRuntime = qualification.TrustedRuntime
                 });
                 return 0;
             }
@@ -180,6 +197,6 @@ public static class LegacyRehearsalCli
     private sealed class Security(LegacyProductionRuntimeAcquisition session) : IRecoverySecurityCatalogReader
     {
         public Task<RecoverySecuritySnapshot> ReadAsync(RecoverySecurityScope scope, RecoveryPhase phase, CancellationToken cancellationToken = default) =>
-            new SqlRecoverySecurityCatalogReader(session.SecurityTransport(), session.Binding()).ReadAsync(scope, phase, cancellationToken);
+            LegacyRecoverySecurityReader.Create(session.SecurityTransport(), session.Binding()).ReadAsync(scope, phase, cancellationToken);
     }
 }

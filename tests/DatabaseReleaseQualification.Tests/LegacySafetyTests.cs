@@ -37,7 +37,9 @@ public static class LegacySafetyTests
         ("legacy safety permite GO simple y no expande comentario", SimpleGo),
         ("legacy analyzer incluye OUTPUT INTO como segundo target DATA", OutputInto),
         ("legacy catalog expressions rechazan UDF y aceptan built-in", CatalogExpressions),
-        ("legacy recovery DATA incluye pérdida rollback-only", RollbackOnlyLoss)
+        ("legacy recovery DATA incluye pérdida rollback-only", RollbackOnlyLoss),
+        ("legacy DATA structural changes require complete rowsets", FullRowsetScope),
+        .. LegacyModuleTests.Cases
     ];
 
     private static readonly SchemaSnapshot Snapshot = new();
@@ -296,13 +298,33 @@ public static class LegacySafetyTests
         return Task.CompletedTask;
     }
 
+    private static Task FullRowsetScope()
+    {
+        var analyzer = new SqlScriptAnalyzer();
+        foreach (var pair in new[] {
+            ("ALTER TABLE dbo.Widget ALTER COLUMN C1 bigint;", "ALTER TABLE dbo.Widget ALTER COLUMN C1 int;"),
+            ("ALTER TABLE dbo.Widget DROP COLUMN C1;", "ALTER TABLE dbo.Widget ADD C1 int;") })
+        {
+            var (scope, _) = LegacyReadinessHash.DataScope(
+                analyzer.Analyze("forward", pair.Item1, Snapshot),
+                analyzer.Analyze("rollback", pair.Item2, Snapshot));
+            if (scope.Targets.Count != 1 || scope.Targets[0].Columns is not null)
+                throw new Exception("Column projection cannot prove complete row recovery");
+        }
+        return Task.CompletedTask;
+    }
+
     private static Task RollbackOnlyLoss()
     {
         var forward = new ScriptAnalysis { ScriptRole = "forward" };
         var rollback = new ScriptAnalysis { ScriptRole = "rollback" };
-        rollback.Operations.Add(new ScriptOperation {
-            Operation = "DROP_COLUMN", AstNodeType = "AlterTableDropTableElementStatement",
-            Schema = "dbo", Object = "Widget", HasPotentialDataLoss = true,
+        rollback.Operations.Add(new ScriptOperation
+        {
+            Operation = "DROP_COLUMN",
+            AstNodeType = "AlterTableDropTableElementStatement",
+            Schema = "dbo",
+            Object = "Widget",
+            HasPotentialDataLoss = true,
             IsSchemaMutation = true
         });
         if (!RecoveryImpact.Derive(forward, rollback).DataRequired)
@@ -347,10 +369,15 @@ public static class LegacySafetyTests
                 false, false, synonym, trigger, trigger, cascade, rls, dependency, false)).ToArray();
             var snapshot = new LegacyScopeSafetySnapshotV1(1, true, "SQL1", "TestDb",
                 true, true, false, objects, "");
-            var hash = Hashing.Sha256(JsonSerializer.Serialize(new {
-                snapshot.ContractVersion, snapshot.Complete, snapshot.ServerInstance,
-                snapshot.DatabaseName, snapshot.DatabaseDdlTriggersComplete,
-                snapshot.ServerDdlTriggersComplete, snapshot.HasEnabledDdlTrigger,
+            var hash = Hashing.Sha256(JsonSerializer.Serialize(new
+            {
+                snapshot.ContractVersion,
+                snapshot.Complete,
+                snapshot.ServerInstance,
+                snapshot.DatabaseName,
+                snapshot.DatabaseDdlTriggersComplete,
+                snapshot.ServerDdlTriggersComplete,
+                snapshot.HasEnabledDdlTrigger,
                 snapshot.Objects
             }, JsonDefaults.Compact));
             return Task.FromResult(snapshot with { Sha256 = hash });

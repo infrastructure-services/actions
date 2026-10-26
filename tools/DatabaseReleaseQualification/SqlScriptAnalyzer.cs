@@ -4,6 +4,9 @@ namespace DatabaseReleaseQualification;
 
 public sealed class SqlScriptAnalyzer
 {
+    private readonly LegacySqlProfile profile;
+    public SqlScriptAnalyzer() : this(LegacySqlProfile.Default) { }
+    public SqlScriptAnalyzer(LegacySqlProfile profile) => this.profile = profile;
     public ScriptAnalysis Analyze(string scriptRole, string sql, SchemaSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(sql);
@@ -54,9 +57,11 @@ public sealed class SqlScriptAnalyzer
         return result;
     }
 
-    private static void ProcessStatement(TSqlStatement statement, ScriptAnalysis result)
+    private void ProcessStatement(TSqlStatement statement, ScriptAnalysis result)
     {
         result.StatementCount++;
+        if (profile == LegacySqlProfile.ModulesV1 && LegacyModuleAnalysis.TryAnalyze(statement, result))
+            return;
         switch (statement)
         {
             case SecurityStatement security:
@@ -246,7 +251,7 @@ public sealed class SqlScriptAnalyzer
         }
     }
 
-    private static void ProcessStatements(IEnumerable<TSqlStatement>? statements, ScriptAnalysis result)
+    private void ProcessStatements(IEnumerable<TSqlStatement>? statements, ScriptAnalysis result)
     {
         if (statements is null) return;
         foreach (var statement in statements) ProcessStatement(statement, result);
