@@ -65,14 +65,20 @@ public sealed class LegacyPackageQualificationAdapter(
             return new(readiness, null, null, null, null, null, null,
                 TrustedRuntime: exception.Runtime);
         }
-        catch (LegacyContractException exception) { return new(null,
+        catch (LegacyContractException exception)
+        {
+            return new(null,
             new(1, "BLOCKED", [exception.Code]), null, null, null, null, null,
             TrustedRuntime: LegacyRuntimeEvidenceHash.Blocked(new(1, request.TargetId,
-                request.ArtifactSelection), exception.Code)); }
-        catch { return new(null, new(1, "BLOCKED", ["TECHNICAL_ERROR"]),
+                request.ArtifactSelection), exception.Code));
+        }
+        catch
+        {
+            return new(null, new(1, "BLOCKED", ["TECHNICAL_ERROR"]),
             null, null, null, null, null,
             TrustedRuntime: LegacyRuntimeEvidenceHash.Blocked(new(1, request.TargetId,
-                request.ArtifactSelection), "TECHNICAL_ERROR", "TECHNICAL_ERROR")); }
+                request.ArtifactSelection), "TECHNICAL_ERROR", "TECHNICAL_ERROR"));
+        }
         if (!LegacyRuntimeEvidenceHash.Verify(verified.TrustedRuntime)
             || verified.TrustedRuntime.Request != new LegacyResolverRequestV1(1,
                 request.TargetId, request.ArtifactSelection)
@@ -142,11 +148,14 @@ public sealed class LegacyPackageQualificationAdapter(
             }
             else
             {
-                var onboarding = new DatabaseOnboardingEvaluator().Evaluate(new DatabaseOnboardingRequest {
+                var onboarding = new DatabaseOnboardingEvaluator().Evaluate(new DatabaseOnboardingRequest
+                {
                     DatabaseLifecycle = "EXISTING",
-                    LineageAssessment = new DatabaseLineageAssessment {
+                    LineageAssessment = new DatabaseLineageAssessment
+                    {
                         Discovery = new DiscoveryGate { ConsistencyStatus = "CONSISTENT", ConsistencyReason = "NONE" },
-                        Scenario = "EXISTING_LEGACY", SourceKind = "SQL"
+                        Scenario = "EXISTING_LEGACY",
+                        SourceKind = "SQL"
                     },
                     DatabaseState = verified.DatabaseState
                 });
@@ -178,7 +187,8 @@ public sealed class LegacyPackageQualificationAdapter(
                 if (!registryValidation.IsValid)
                     throw new LegacyContractException("REGISTRY_SOURCE_INVALID");
                 var recomputed = new DatabaseStateEvaluator().Evaluate(registryValidation,
-                    new DatabaseStateObservation {
+                    new DatabaseStateObservation
+                    {
                         ApplicationId = governance.ApplicationId,
                         Environment = governance.Environment,
                         DatabaseName = governance.Binding.DatabaseName,
@@ -186,7 +196,8 @@ public sealed class LegacyPackageQualificationAdapter(
                         SchemaCoverage = verified.ObservedSnapshot.Metadata.SchemaCoverage,
                         UnsupportedSchemaFeatures = verified.ObservedSnapshot.Snapshot.UnsupportedSchemaFeatures,
                         CaptureTimestampUtc = verified.ObservedSnapshot.CapturedAtUtc,
-                        RunId = "legacy-qualification-v1", RunAttempt = "1"
+                        RunId = "legacy-qualification-v1",
+                        RunAttempt = "1"
                     });
                 if (recomputed.RegistryStatus != verified.DatabaseState.RegistryStatus
                     || recomputed.DriftStatus != verified.DatabaseState.DriftStatus
@@ -286,6 +297,12 @@ public sealed class LegacyPackageQualificationAdapter(
             LegacyDataValidatorLinkV1? dataLink = null;
             if (impact.DataRequired)
             {
+                // Current DATA contracts capture a rowset at every phase. A
+                // missing table cannot be substituted with an empty rowset.
+                if (safety.ForwardAnalysis.Operations.Concat(safety.RollbackAnalysis.Operations)
+                    .Any(x => x.Operation is "DROP_TABLE" or "CREATE_TABLE" or "SELECT_INTO"
+                        && dataScope.Targets.Any(t => t.Schema == x.Schema && t.Object == x.Object)))
+                    reasons.Add("DATA_OBJECT_LIFECYCLE_UNSUPPORTED");
                 var descriptor = request.DataValidationDescriptor;
                 if (descriptor is null || descriptor.ScopeHash != dataScopeHash
                     || descriptor.Provider is not IDataReapplyValidationContract
@@ -316,8 +333,10 @@ public sealed class LegacyPackageQualificationAdapter(
                 catch (LegacyContractException exception) { reasons.Add(exception.Code); }
                 catch { reasons.Add("SECURITY_ADAPTER_FAILURE"); }
             }
-            var risk = new RiskEngine().Evaluate(new DependencyAnalysisReport {
-                Forward = safety.ForwardAnalysis, Rollback = safety.RollbackAnalysis
+            var risk = new RiskEngine().Evaluate(new DependencyAnalysisReport
+            {
+                Forward = safety.ForwardAnalysis,
+                Rollback = safety.RollbackAnalysis
             }, verified.ObservedSnapshot.Snapshot);
             if (risk.SensitiveOperationBlockedByConfidence || risk.AnalysisConfidence != AnalysisConfidence.Complete)
                 reasons.Add("RECOVERY_IMPACT_INCOMPLETE");
@@ -325,9 +344,12 @@ public sealed class LegacyPackageQualificationAdapter(
             {
                 var scriptForward = new ReleaseScript("forward", package.ForwardBytes);
                 var scriptRollback = new ReleaseScript("rollback", package.RollbackBytes);
-                payload = ReleasePayloadBuilder.Build(new ReleaseDescriptor {
-                    ReleaseId = package.ParsedManifest.ReleaseId, Environment = "TEST",
-                    SourceKind = "SQL", Scenario = "EXISTING_LEGACY",
+                payload = ReleasePayloadBuilder.Build(new ReleaseDescriptor
+                {
+                    ReleaseId = package.ParsedManifest.ReleaseId,
+                    Environment = "TEST",
+                    SourceKind = "SQL",
+                    Scenario = "EXISTING_LEGACY",
                     DatabaseLifecycle = "EXISTING",
                     ChangeOrigin = package.ParsedManifest.ChangeOrigin,
                     ChangeReference = package.ParsedManifest.ChangeReference,
@@ -337,10 +359,12 @@ public sealed class LegacyPackageQualificationAdapter(
                     registry.RegistryRepository, registry.RegistryFilePath,
                     registry.RegistryCommitSha, registry.RegistryFileSha256,
                     verified.CertifiedBaseline.CertifiedSchemaHash);
-                var impactHash = Hashing.Sha256(JsonSerializer.Serialize(new {
+                var impactHash = Hashing.Sha256(JsonSerializer.Serialize(new
+                {
                     forwardAnalysis = safety.ForwardAnalysis,
                     rollbackAnalysis = safety.RollbackAnalysis,
-                    impact, scopeSafetyHash = safety.ScopeSafetyHash
+                    impact,
+                    scopeSafetyHash = safety.ScopeSafetyHash
                 }, JsonDefaults.Compact));
                 var approvalReasons = new SortedSet<string>(StringComparer.Ordinal);
                 if (risk.RequiresDbaApproval) approvalReasons.Add("RISK_POLICY_APPROVAL");

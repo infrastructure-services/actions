@@ -6,6 +6,9 @@ namespace DatabaseReleaseQualification;
 
 public sealed class SqlServerSchemaReader
 {
+    private readonly LegacySqlProfile profile;
+    public SqlServerSchemaReader() : this(LegacySqlProfile.Default) { }
+    public SqlServerSchemaReader(LegacySqlProfile profile) => this.profile = profile;
     private const int CommandTimeoutSeconds = 60;
 
     public async Task<SchemaSnapshot> CaptureAsync(string connectionString, CancellationToken cancellationToken = default) =>
@@ -74,6 +77,8 @@ public sealed class SqlServerSchemaReader
 
         var server = await ReadServerMetadataAsync(connection, cancellationToken);
         var snapshot = new SchemaSnapshot();
+        if (profile is not (LegacySqlProfile.Default or LegacySqlProfile.ModulesV1))
+            throw new InvalidOperationException("SCHEMA_PROFILE_UNSUPPORTED");
 
         await ReadSchemaAsync(connection, SchemasSql, reader => snapshot.Objects.Add(new SchemaObject
         {
@@ -259,7 +264,19 @@ public sealed class SqlServerSchemaReader
                 ("callerDependent", Boolean(reader, 10)))
         }), cancellationToken);
 
-        await ReadSchemaAsync(connection, UnsupportedSql, reader =>
+        if (profile == LegacySqlProfile.ModulesV1)
+        {
+            // The legacy profile has a separate structural contract. Default
+            // capture queries, shapes and EF canonical hashes remain unchanged.
+            await ReadSchemaAsync(connection, LegacyModulesSql, reader =>
+                LegacyModuleSchema.Add(snapshot, new(
+                    Text(reader, 0), Text(reader, 1), Text(reader, 2), Text(reader, 3),
+                    ModuleFlag(reader, 4), ModuleFlag(reader, 5), ModuleFlag(reader, 6),
+                    ModuleFlag(reader, 7), ModuleFlag(reader, 8), ModuleFlag(reader, 9),
+                    Text(reader, 10), ModuleFlag(reader, 11), ModuleFlag(reader, 12), ModuleFlag(reader, 13))), cancellationToken);
+        }
+
+        await ReadSchemaAsync(connection, UnsupportedForProfile(profile), reader =>
         {
             var category = Text(reader, 2);
             snapshot.UnsupportedSchemaFeatures.Add(category);
@@ -599,6 +616,32 @@ public sealed class SqlServerSchemaReader
         WHERE o.is_ms_shipped = 0 AND {UserSchemaFilter}
           AND o.type NOT IN (N'U', N'V', N'PK', N'UQ', N'C', N'F', N'D', N'TR')
         ORDER BY s.name, o.type_desc, o.name;
+        """;
+
+    internal static string UnsupportedForProfile(LegacySqlProfile selected) =>
+        selected == LegacySqlProfile.ModulesV1
+            ? UnsupportedSql.Replace("N'D', N'TR')", "N'D', N'TR', N'P', N'FN', N'IF', N'TF')", StringComparison.Ordinal)
+            : UnsupportedSql;
+
+    private static string ModuleFlag(SqlDataReader reader, int ordinal) =>
+        reader.IsDBNull(ordinal) ? "" : Boolean(reader, ordinal);
+
+    internal static readonly string LegacyModulesSql = $"""
+        SELECT s.name, o.name, o.type, sm.definition,
+               sm.uses_ansi_nulls, sm.uses_quoted_identifier, sm.is_schema_bound,
+               sm.uses_database_collation, sm.is_recompiled, sm.null_on_null_input,
+                 CASE WHEN sm.execute_as_principal_id IS NULL THEN N'CALLER'
+                      WHEN sm.execute_as_principal_id = -2 THEN N'OWNER'
+                      ELSE COALESCE(USER_NAME(sm.execute_as_principal_id), N'UNRESOLVED') END,
+               CONVERT(bit, CASE WHEN sm.uses_native_compilation = 1 OR EXISTS
+                 (SELECT 1 FROM sys.crypt_properties cp WHERE cp.class = 1 AND cp.major_id = o.object_id)
+                   THEN 1 ELSE 0 END), sm.inline_type, sm.is_inlineable
+        FROM sys.objects o
+        JOIN sys.schemas s ON s.schema_id = o.schema_id
+        LEFT JOIN sys.sql_modules sm ON sm.object_id = o.object_id
+        WHERE o.is_ms_shipped = 0 AND {UserSchemaFilter}
+          AND o.type IN (N'P', N'FN', N'IF', N'TF')
+        ORDER BY s.name, o.type, o.name;
         """;
 
     private static readonly string ImpactSql = $"""

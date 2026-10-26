@@ -9,7 +9,7 @@ internal sealed class SqlLegacyRehearsalRuntimeV1(
     LegacyQualificationOutcomeV1 qualification, string inspectionConnection,
     Func<string> mutationConnection, Func<CancellationToken, Task> revalidate,
     LegacyRuntimeContextV1 context, ILegacyRehearsalAuthorityV1 authority,
-    string? singlePhase = null) : ILegacyRehearsalRuntimeV1
+    string? singlePhase = null, LegacyExecutionLeaseV1? executionLease = null) : ILegacyRehearsalRuntimeV1
 {
     private int executions;
     private int activeOrFailed;
@@ -31,7 +31,7 @@ internal sealed class SqlLegacyRehearsalRuntimeV1(
     public async Task<ObservedCurrentSnapshotV1> CaptureAsync(CancellationToken token)
     {
         var connection = SqlClientSecurityCatalogTransport.BuildConnectionOptions(inspectionConnection, Binding).ConnectionString;
-        var reader = new SqlServerSchemaReader();
+        var reader = new LegacySchemaCapture();
         var first = await reader.CaptureWithMetadataAsync(connection, token);
         var second = await reader.CaptureWithMetadataAsync(connection, token);
         return LegacyStructuralEvidence.FromCurrentCaptures(handoff.TargetId,
@@ -41,7 +41,7 @@ internal sealed class SqlLegacyRehearsalRuntimeV1(
 
     public Task<RecoverySecuritySnapshot> CaptureSecurityAsync(RecoverySecurityScope scope,
         RecoveryPhase phase, CancellationToken cancellationToken = default) =>
-        new ReadOnlyRecoverySecurityProvider(new SqlRecoverySecurityCatalogReader(
+        new ReadOnlyRecoverySecurityProvider(LegacyRecoverySecurityReader.Create(
             new SqlClientSecurityCatalogTransport(() => inspectionConnection, Binding), Binding))
             .CaptureSecurityAsync(scope, phase, cancellationToken);
 
@@ -55,7 +55,7 @@ internal sealed class SqlLegacyRehearsalRuntimeV1(
             new SqlLegacyScopeSafetySource(
                 new SqlClientSecurityCatalogTransport(() => inspectionConnection, Binding), Binding),
             handoff.Governance.Binding, token);
-        var analysis = new SqlScriptAnalyzer().Analyze("rollback", rollback.Text, post1.Snapshot);
+        var analysis = new SqlScriptAnalyzer(LegacySqlProfile.ModulesV1).Analyze("rollback", rollback.Text, post1.Snapshot);
         var impact = RecoveryImpact.Derive(qualification.StaticSafety!.ForwardAnalysis, analysis);
         if (!impact.Complete || impact.DataRequired != qualification.StaticSafety.Impact.DataRequired
             || impact.SecurityScope.Sha256 != handoff.Recovery.SecurityScopeHash)
@@ -65,20 +65,30 @@ internal sealed class SqlLegacyRehearsalRuntimeV1(
     public async Task ApplyExactAsync(ReleaseScript script, string expectedHash,
         string transactionPolicy, ObservedCurrentSnapshotV1 expectedPre, CancellationToken token)
     {
-        if (Interlocked.Exchange(ref activeOrFailed,1) != 0)
+        if (Interlocked.Exchange(ref activeOrFailed, 1) != 0)
             throw new LegacyContractException("REHEARSAL_RESUME_NOT_SUPPORTED");
-        try { await ApplyCoreAsync(script,expectedHash,transactionPolicy,expectedPre,token); }
+        try { await ApplyCoreAsync(script, expectedHash, transactionPolicy, expectedPre, token); }
         catch (SqlException exception) when (exception.Number == -2)
         { throw new LegacyContractException("REHEARSAL_SQL_TIMEOUT"); }
         // Remains latched on every failure, including uncertain commit outcome.
-        Volatile.Write(ref activeOrFailed,0);
+        Volatile.Write(ref activeOrFailed, 0);
     }
 
     private async Task ApplyCoreAsync(ReleaseScript script, string expectedHash,
         string transactionPolicy, ObservedCurrentSnapshotV1 expectedPre, CancellationToken token)
     {
-        var phase = singlePhase ?? (executions switch { 0 => "FORWARD1", 1 => "ROLLBACK", 2 => "FORWARD2",
-            _ => throw new LegacyContractException("REHEARSAL_PHASE_ORDER_INVALID") });
+        RequireEffectiveChange(qualification.StaticSafety!);
+        // The former run-local latch cannot prevent a second data-only release
+        // attempt in another workflow run. Fail before acquisition/mutation until
+        // a corporate durable fencing adapter has been approved and bound.
+        if (executionLease is null) throw new LegacyContractException("DURABLE_EXECUTION_FENCE_REQUIRED");
+        var phase = singlePhase ?? (executions switch
+        {
+            0 => "FORWARD1",
+            1 => "ROLLBACK",
+            2 => "FORWARD2",
+            _ => throw new LegacyContractException("REHEARSAL_PHASE_ORDER_INVALID")
+        });
         if (singlePhase is not null && (executions != 0
                 || singlePhase is not ("FORWARD1" or "ROLLBACK" or "FORWARD2")))
             throw new LegacyContractException("REHEARSAL_PHASE_ORDER_INVALID");
@@ -87,7 +97,7 @@ internal sealed class SqlLegacyRehearsalRuntimeV1(
         // Consume the attempt before opening the connection: failure cannot be retried.
         executions++;
         await authority.VerifyAsync(handoff, phase, token);
-        VerifyExactScript(handoff,script,expectedHash,transactionPolicy);
+        VerifyExactScript(handoff, script, expectedHash, transactionPolicy);
         var current = await CaptureAsync(token);
         if (current.TargetId != expectedPre.TargetId || current.ObservedIdentity != expectedPre.ObservedIdentity
             || current.ObservedSchemaHash != expectedPre.ObservedSchemaHash
@@ -100,6 +110,7 @@ internal sealed class SqlLegacyRehearsalRuntimeV1(
             new SqlLegacyScopeSafetySource(new SqlClientSecurityCatalogTransport(() => inspectionConnection, Binding), Binding),
             handoff.Governance.Binding, token);
         var batches = ExactBatches(script);
+        executionLease.Begin(handoff, context, phase);
         var options = SqlClientSecurityCatalogTransport.BuildConnectionOptions(mutationConnection(), Binding);
         options.ApplicationName = "legacy-rehearsal-v1";
         await using var connection = new SqlConnection(options.ConnectionString);
@@ -115,6 +126,19 @@ internal sealed class SqlLegacyRehearsalRuntimeV1(
                 || row.GetString(0) != current.ObservedIdentity.ServerInstance
                 || row.GetString(1) != current.ObservedIdentity.DatabaseName)
                 throw new LegacyContractException("MUTATION_CONNECTION_TARGET_MISMATCH");
+        }
+        if (qualification.StaticSafety!.ForwardAnalysis.Operations.Concat(qualification.StaticSafety.RollbackAnalysis.Operations)
+            .Any(x => x.Operation.Contains("PROCEDURE", StringComparison.Ordinal)
+                || x.Operation.Contains("FUNCTION", StringComparison.Ordinal)
+                || x.Operation.Contains("VIEW", StringComparison.Ordinal)))
+        {
+            await using var settings = connection.CreateCommand();
+            settings.CommandText = "SELECT CONVERT(int,SESSIONPROPERTY('ANSI_NULLS')), CONVERT(int,SESSIONPROPERTY('QUOTED_IDENTIFIER'))";
+            settings.CommandTimeout = 15;
+            await using var row = await settings.ExecuteReaderAsync(token);
+            if (!await row.ReadAsync(token) || row.IsDBNull(0) || row.IsDBNull(1)
+                || row.GetInt32(0) != 1 || row.GetInt32(1) != 1)
+                throw new LegacyContractException("SQL_MODULE_SESSION_PROPERTIES_UNSUPPORTED");
         }
         // Supported V1 statements are constrained by Static Safety. Script-owned
         // transactions and nontransactional statement families are rejected.
@@ -141,6 +165,13 @@ internal sealed class SqlLegacyRehearsalRuntimeV1(
             || script.Role is not ("forward" or "rollback")
             || policy != "HARNESS_OWNS_PHASE_TRANSACTIONS_V1")
             throw new LegacyContractException("REQUALIFICATION_REQUIRED");
+    }
+
+    internal static void RequireEffectiveChange(LegacyStaticSafetyEvidenceV1 safety)
+    {
+        if (!safety.ForwardAnalysis.Operations.Any(x => x.IsSchemaMutation || x.IsDataMutation
+            || x.Operation == "DATABASE_SECURITY"))
+            throw new LegacyContractException("NO_EFFECTIVE_CHANGE_NO_SQL_WRITE");
     }
 
     public static IReadOnlyList<string> ExactBatches(ReleaseScript script)

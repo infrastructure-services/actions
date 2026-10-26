@@ -10,7 +10,8 @@ public sealed record LegacyPhasedRequestV1(int ContractVersion,
 
 public static class LegacyPhasedCli
 {
-    internal static readonly JsonSerializerOptions CheckpointJson = new(JsonDefaults.Compact) {
+    internal static readonly JsonSerializerOptions CheckpointJson = new(JsonDefaults.Compact)
+    {
         DefaultIgnoreCondition = JsonIgnoreCondition.Never
     };
     public static async Task<int> RunAsync(string[] args, string phase)
@@ -24,6 +25,7 @@ public static class LegacyPhasedCli
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(20));
         ConsoleCancelEventHandler handler = (_, e) => { e.Cancel = true; deadline.Cancel(); };
         Console.CancelKeyPress += handler;
+        LegacyExecutionLeaseV1? executionLease = null;
         try
         {
             var token = deadline.Token;
@@ -96,16 +98,32 @@ public static class LegacyPhasedCli
             }
             var context = continuation ? phaseSource!.Runtime : qualification.TrustedRuntime!.Runtime!;
             var authority = new ProtectedEnvironmentLegacyAuthorityV1(phase, context);
+            if (continuation)
+            {
+                // Reject corrupt/out-of-order checkpoints before reserving a
+                // durable resource; a claim is intentionally never auto-released.
+                LegacyPhaseCheckpoint.Verify(previous!, args[7], phase, context, package);
+                await authority.VerifyAsync(handoff, phase, token);
+                executionLease = LegacyExecutionFence.AcquireProtected(handoff, context, phase, args[7]);
+            }
             var runtime = new SqlLegacyRehearsalRuntimeV1(qualification, session.InspectionConnection,
                 () => mutationConnection ?? throw new LegacyContractException("MUTATION_CONNECTION_REQUIRED"),
-                Freshness, context, authority, continuation ? phase : null);
+                Freshness, context, authority, continuation ? phase : null, executionLease);
             Directory.CreateDirectory(output);
             var journalPath = Path.Combine(output, "phase-journal.jsonl");
             using var journal = new FileStream(journalPath, FileMode.CreateNew, FileAccess.Write);
             void Append(string status, string? reason = null)
             {
-                var entry = new { contractVersion = 1, phase, status, reason,
-                    runId = context.RunId, jobId = context.JobId, atUtc = DateTimeOffset.UtcNow };
+                var entry = new
+                {
+                    contractVersion = 1,
+                    phase,
+                    status,
+                    reason,
+                    runId = context.RunId,
+                    jobId = context.JobId,
+                    atUtc = DateTimeOffset.UtcNow
+                };
                 var bytes = System.Text.Encoding.UTF8.GetBytes(
                     JsonSerializer.Serialize(entry, JsonDefaults.Compact) + "\n");
                 journal.Write(bytes); journal.Flush(true);
@@ -125,6 +143,7 @@ public static class LegacyPhasedCli
                 if (result.Checkpoint is { } checkpoint)
                 {
                     WriteNew(output, "legacy-phase-checkpoint.json", checkpoint);
+                    executionLease!.Confirm(checkpoint.CheckpointHash);
                     Console.WriteLine("CHECKPOINT_HASH=" + checkpoint.CheckpointHash);
                 }
                 if (result.Receipt is { } receipt)
@@ -132,6 +151,7 @@ public static class LegacyPhasedCli
                     WriteNew(output, "legacy-rehearsal-receipt.json", receipt);
                     WriteNew(output, "legacy-promotion-freeze.json",
                         LegacyPromotionFreeze.CreateFromTrustedProducer(receipt));
+                    executionLease!.Confirm(receipt.ReceiptHash);
                 }
             }
             Append("COMPLETE");
@@ -139,6 +159,8 @@ public static class LegacyPhasedCli
         }
         catch (Exception error)
         {
+            try { executionLease?.PreserveFailure(); }
+            catch { /* Durable uncertainty is never replaced with a retry. */ }
             Directory.CreateDirectory(output);
             var reason = error is LegacyContractException contract ? contract.Code
                 : error is OperationCanceledException ? "REHEARSAL_CANCELLED" : "REHEARSAL_TECHNICAL_ERROR";
@@ -191,7 +213,8 @@ public static class LegacyPhasedCli
             definition.MaximumRowsPerTable);
         var binding = qualification.TrustedRuntime!.Evidence!.Governance.Binding;
         return new LegacyDataContractResolverV1([governed],
-            new Dictionary<string, Func<LegacyDataContractDefinitionV1, ILegacyDataEvidenceReaderV1>> {
+            new Dictionary<string, Func<LegacyDataContractDefinitionV1, ILegacyDataEvidenceReaderV1>>
+            {
                 ["SCOPED_ROWSET_SHA256_V1"] = _ =>
                     new SqlLegacyDataEvidenceReaderV1(session.InspectionConnection, binding)
             }).Resolve(selector, qualification.TrustedRuntime!.Request.TargetId, hash,
@@ -219,7 +242,7 @@ public static class LegacyPhasedCli
     {
         public Task<RecoverySecuritySnapshot> ReadAsync(RecoverySecurityScope scope,
             RecoveryPhase phase, CancellationToken token = default) =>
-            new SqlRecoverySecurityCatalogReader(session.SecurityTransport(), session.Binding())
+            LegacyRecoverySecurityReader.Create(session.SecurityTransport(), session.Binding())
                 .ReadAsync(scope, phase, token);
     }
 }

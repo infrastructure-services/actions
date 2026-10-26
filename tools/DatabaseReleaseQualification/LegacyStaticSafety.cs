@@ -30,18 +30,28 @@ public sealed record LegacyStaticSafetyEvidenceV1(
 public sealed class LegacyStaticSafety
 {
     private static readonly UTF8Encoding Utf8 = new(false, true);
-    private static readonly JsonSerializerOptions RequiredNulls = new(JsonDefaults.Compact) {
+    private static readonly JsonSerializerOptions RequiredNulls = new(JsonDefaults.Compact)
+    {
         DefaultIgnoreCondition = JsonIgnoreCondition.Never
     };
     public static string Serialize(LegacyStaticSafetyEvidenceV1 evidence) =>
         JsonSerializer.Serialize(evidence, RequiredNulls);
 
     public static string CalculateHash(LegacyStaticSafetyEvidenceV1 result) =>
-        Hashing.Sha256(JsonSerializer.Serialize(new {
-            result.ContractVersion, result.PolicyVersion, result.PackageIdentity,
-            result.ForwardHash, result.RollbackHash, result.ParserVersion, result.State,
-            result.ReasonCodes, result.ForwardAnalysis, result.RollbackAnalysis,
-            result.Impact, result.ScopeSafetyHash
+        Hashing.Sha256(JsonSerializer.Serialize(new
+        {
+            result.ContractVersion,
+            result.PolicyVersion,
+            result.PackageIdentity,
+            result.ForwardHash,
+            result.RollbackHash,
+            result.ParserVersion,
+            result.State,
+            result.ReasonCodes,
+            result.ForwardAnalysis,
+            result.RollbackAnalysis,
+            result.Impact,
+            result.ScopeSafetyHash
         }, RequiredNulls));
 
     internal static bool CatalogExpressionSafe(string? definition, bool predicate)
@@ -166,7 +176,7 @@ public sealed class LegacyStaticSafety
         }
         if (sql.Contains('\0')) reasons.Add("ARTIFACT_ENCODING_INVALID");
         var parsed = SqlScriptAnalyzer.Parse(sql);
-        var analysis = new SqlScriptAnalyzer().AnalyzeParsed(role, parsed.Fragment, parsed.Errors, snapshot);
+        var analysis = new SqlScriptAnalyzer(LegacySqlProfile.ModulesV1).AnalyzeParsed(role, parsed.Fragment, parsed.Errors, snapshot);
         if (parsed.Errors.Count != 0) reasons.Add("SQL_UNSUPPORTED");
         if (parsed.Fragment is not TSqlScript script || !script.Batches
             .SelectMany(x => x.Statements).Any(Effective))
@@ -197,10 +207,32 @@ public sealed class LegacyStaticSafety
             }
         if (analysis.Confidence != AnalysisConfidence.Complete || analysis.UnknownStatementTypes.Count != 0)
             reasons.Add("SQL_UNSUPPORTED");
+        foreach (var operation in analysis.Operations.Where(x => x.Operation.Contains("VIEW", StringComparison.Ordinal)))
+        {
+            var view = snapshot.Objects.SingleOrDefault(x => x.Kind == "view" && x.Schema == operation.Schema && x.Name == operation.Object);
+            if (view is not null && (view.Properties.GetValueOrDefault("legacy-profile") != "LEGACY_MODULES_V1"
+                || view.Properties.GetValueOrDefault("legacy-ansinulls") != "true"
+                || view.Properties.GetValueOrDefault("legacy-quotedidentifier") != "true"))
+                reasons.Add("SQL_VIEW_PROPERTIES_UNSUPPORTED");
+        }
+        foreach (var operation in analysis.Operations.Where(x =>
+            x.Operation.Contains("PROCEDURE", StringComparison.Ordinal)
+            || x.Operation.Contains("FUNCTION", StringComparison.Ordinal)))
+        {
+            var observed = snapshot.Objects.SingleOrDefault(x => x.Schema == operation.Schema
+                && x.Name == operation.Object && x.Kind is "procedure" or "function");
+            if (observed is not null && (observed.Properties.GetValueOrDefault("profile") != "LEGACY_MODULES_V1"
+                || observed.Properties.GetValueOrDefault("ansinulls") != "true"
+                || observed.Properties.GetValueOrDefault("quotedidentifier") != "true"
+                || observed.Properties.GetValueOrDefault("executeas") != "CALLER"
+                || observed.Properties.GetValueOrDefault("nativeorsigned") != "false"))
+                reasons.Add("SQL_MODULE_PROPERTIES_UNSUPPORTED");
+        }
         return (analysis, references.ToArray());
     }
 
-    private static bool Effective(TSqlStatement statement) => statement switch {
+    private static bool Effective(TSqlStatement statement) => statement switch
+    {
         BeginEndBlockStatement block => block.StatementList?.Statements.Any(Effective) == true,
         TryCatchStatement compound => compound.TryStatements?.Statements.Any(Effective) == true
             || compound.CatchStatements?.Statements.Any(Effective) == true,
@@ -209,11 +241,39 @@ public sealed class LegacyStaticSafety
         _ => true
     };
 
-    private static void CheckStatement(TSqlStatement statement, ISet<string> reasons)
+    private static void CheckStatement(TSqlStatement statement, ISet<string> reasons, bool moduleBody = false)
     {
+        if (moduleBody && statement is ReturnStatement) return;
+        if (statement is ProcedureStatementBodyBase module)
+        {
+            if (moduleBody || module.MethodSpecifier is not null
+                || module.Parameters.Any(x => x.DataType is not SqlDataTypeReference))
+                reasons.Add("SQL_MODULE_UNSUPPORTED");
+            if (module is ProcedureStatementBody procedure
+                && (procedure.Options.Count != 0 || procedure.IsForReplication
+                    || procedure.ProcedureReference.Number is not null))
+                reasons.Add("SQL_MODULE_UNSUPPORTED");
+            if (module is FunctionStatementBody function
+                && (function.Options.Any(x => x.OptionKind.ToString() != "SchemaBinding")
+                    || function.OrderHint is not null
+                    || function.ReturnType is TableValuedFunctionReturnType
+                    || function.ReturnType is ScalarFunctionReturnType scalar
+                        && scalar.DataType is not SqlDataTypeReference))
+                reasons.Add("SQL_MODULE_UNSUPPORTED");
+            foreach (var nested in module.StatementList?.Statements ?? [])
+                CheckStatement(nested, reasons, moduleBody: true);
+            return;
+        }
+        if (moduleBody && statement is not (BeginEndBlockStatement or IfStatement or TryCatchStatement
+            or SelectStatement or InsertStatement or UpdateStatement or DeleteStatement
+            or DeclareVariableStatement or SetVariableStatement or ThrowStatement or PrintStatement
+            or SetOnOffStatement))
+            reasons.Add("SQL_MODULE_BODY_UNSUPPORTED");
+        if (moduleBody && statement is SelectStatement { Into: not null })
+            reasons.Add("SQL_MODULE_BODY_UNSUPPORTED");
         if (statement is BeginEndBlockStatement block)
         {
-            foreach (var nested in block.StatementList?.Statements ?? []) CheckStatement(nested, reasons);
+            foreach (var nested in block.StatementList?.Statements ?? []) CheckStatement(nested, reasons, moduleBody);
             return;
         }
         if (statement is IfStatement condition)
@@ -222,8 +282,8 @@ public sealed class LegacyStaticSafety
                 || condition.ElseStatement is not null
                     && ContainsNewObjectCreation(condition.ElseStatement))
                 reasons.Add("SQL_INDIRECT_EFFECT_UNPROVEN");
-            CheckStatement(condition.ThenStatement, reasons);
-            if (condition.ElseStatement is not null) CheckStatement(condition.ElseStatement, reasons);
+            CheckStatement(condition.ThenStatement, reasons, moduleBody);
+            if (condition.ElseStatement is not null) CheckStatement(condition.ElseStatement, reasons, moduleBody);
             return;
         }
         if (statement is TryCatchStatement tryCatch)
@@ -231,8 +291,8 @@ public sealed class LegacyStaticSafety
             if ((tryCatch.TryStatements?.Statements ?? []).Any(ContainsNewObjectCreation)
                 || (tryCatch.CatchStatements?.Statements ?? []).Any(ContainsNewObjectCreation))
                 reasons.Add("SQL_INDIRECT_EFFECT_UNPROVEN");
-            foreach (var nested in tryCatch.TryStatements?.Statements ?? []) CheckStatement(nested, reasons);
-            foreach (var nested in tryCatch.CatchStatements?.Statements ?? []) CheckStatement(nested, reasons);
+            foreach (var nested in tryCatch.TryStatements?.Statements ?? []) CheckStatement(nested, reasons, moduleBody);
+            foreach (var nested in tryCatch.CatchStatements?.Statements ?? []) CheckStatement(nested, reasons, moduleBody);
             if (tryCatch.CatchStatements?.Statements.LastOrDefault() is not ThrowStatement)
                 reasons.Add("SQL_UNSUPPORTED");
             return;
@@ -275,6 +335,7 @@ public sealed class LegacyStaticSafety
         if (statement is not (CreateTableStatement or AlterTableStatement or DropTableStatement
             or CreateIndexStatement or DropIndexStatement or AlterIndexStatement
             or CreateViewStatement or CreateOrAlterViewStatement or AlterViewStatement or DropViewStatement
+            or DropProcedureStatement or DropFunctionStatement
             or InsertStatement or UpdateStatement or DeleteStatement or MergeStatement
             or TruncateTableStatement or SelectStatement or DeclareVariableStatement
             or SetVariableStatement or ThrowStatement or PrintStatement))
@@ -283,7 +344,7 @@ public sealed class LegacyStaticSafety
 
     private static bool ContainsNewObjectCreation(TSqlStatement statement) => statement switch
     {
-        CreateTableStatement or CreateViewStatement => true,
+        CreateTableStatement or CreateViewStatement or ProcedureStatementBodyBase => true,
         SelectStatement { Into: not null } => true,
         BeginEndBlockStatement block => block.StatementList?.Statements
             .Any(ContainsNewObjectCreation) == true,
@@ -390,10 +451,15 @@ public sealed class LegacyStaticSafety
         IEnumerable<RecoverySecuritySecurable> references,
         ScriptAnalysis forward, ScriptAnalysis rollback, bool phaseOnly = false)
     {
-        var expectedHash = Hashing.Sha256(JsonSerializer.Serialize(new {
-            metadata.ContractVersion, metadata.Complete, metadata.ServerInstance,
-            metadata.DatabaseName, metadata.DatabaseDdlTriggersComplete,
-            metadata.ServerDdlTriggersComplete, metadata.HasEnabledDdlTrigger,
+        var expectedHash = Hashing.Sha256(JsonSerializer.Serialize(new
+        {
+            metadata.ContractVersion,
+            metadata.Complete,
+            metadata.ServerInstance,
+            metadata.DatabaseName,
+            metadata.DatabaseDdlTriggersComplete,
+            metadata.ServerDdlTriggersComplete,
+            metadata.HasEnabledDdlTrigger,
             metadata.Objects
         }, JsonDefaults.Compact));
         if (metadata.ContractVersion != 1 || !metadata.Complete
@@ -414,7 +480,7 @@ public sealed class LegacyStaticSafety
             {
                 if (readReferences.Contains(objectScope)
                     || !(phaseOnly ? forward.Operations.Any(x => x.Schema == objectScope.Schema
-                        && x.Object == objectScope.Name && x.Operation is "CREATE_TABLE" or "CREATE_VIEW" or "SELECT_INTO")
+                        && x.Object == objectScope.Name && IsCreation(x.Operation))
                         : CompatibleNewObject(objectScope, forward, rollback))
                     || item.Schema is "sys" or "INFORMATION_SCHEMA")
                     throw new LegacyContractException("SECURABLE_ABSENCE_UNPROVEN");
@@ -423,8 +489,12 @@ public sealed class LegacyStaticSafety
             if (readReferences.Contains(objectScope) && item.Kind != "TABLE")
                 throw new LegacyContractException("SQL_INDIRECT_EFFECT_UNPROVEN");
             var operations = all.Where(x => x.Schema == item.Schema && x.Object == item.Name).ToArray();
+            if (operations.Any(x => x.Operation.Contains("PROCEDURE", StringComparison.Ordinal) && item.Kind != "PROCEDURE"
+                || x.Operation.Contains("FUNCTION", StringComparison.Ordinal) && item.Kind != "FUNCTION"
+                || x.Operation.Contains("VIEW", StringComparison.Ordinal) && item.Kind != "VIEW"))
+                throw new LegacyContractException("SQL_MODULE_KIND_MISMATCH");
             if (forward.Operations.Any(x => x.Schema == item.Schema && x.Object == item.Name
-                && x.Operation is "CREATE_TABLE" or "CREATE_VIEW" or "SELECT_INTO"))
+                && IsCreation(x.Operation) && !x.Operation.StartsWith("CREATE_OR_ALTER_", StringComparison.Ordinal)))
                 throw new LegacyContractException("SECURABLE_COLLISION");
             if (operations.Any(x => x.Operation == "DATABASE_SECURITY"
                 && x.SecuritySecurable?.Kind == "OBJECT"
@@ -452,11 +522,15 @@ public sealed class LegacyStaticSafety
             && x.Object == objectScope.Name).ToArray();
         var second = rollback.Operations.Where(x => x.Schema == objectScope.Schema
             && x.Object == objectScope.Name).ToArray();
-        var creation = first.Where(x => x.Operation is "CREATE_TABLE" or "CREATE_VIEW"
-            or "SELECT_INTO").ToArray();
+        var creation = first.Where(x => IsCreation(x.Operation)).ToArray();
         if (creation.Length != 1 || second.Length != 1) return false;
-        var expectedDrop = creation[0].Operation == "CREATE_VIEW"
-            ? "DROP_VIEW" : "DROP_TABLE";
+        var expectedDrop = creation[0].Operation switch
+        {
+            "CREATE_VIEW" or "CREATE_OR_ALTER_VIEW" => "DROP_VIEW",
+            "CREATE_PROCEDURE" or "CREATE_OR_ALTER_PROCEDURE" => "DROP_PROCEDURE",
+            "CREATE_FUNCTION" or "CREATE_OR_ALTER_FUNCTION" => "DROP_FUNCTION",
+            _ => "DROP_TABLE"
+        };
         if (second[0].Operation != expectedDrop) return false;
         return first.All(x => ReferenceEquals(x, creation[0])
             || creation[0].Operation == "CREATE_TABLE"
@@ -471,6 +545,12 @@ public sealed class LegacyStaticSafety
             or "TAKE OWNERSHIP",
         "VIEW" => permission is "SELECT" or "INSERT" or "UPDATE" or "DELETE"
             or "VIEW DEFINITION" or "ALTER" or "CONTROL" or "TAKE OWNERSHIP",
+        "PROCEDURE" => permission is "EXECUTE" or "VIEW DEFINITION" or "ALTER" or "CONTROL" or "TAKE OWNERSHIP",
+        "FUNCTION" => permission is "SELECT" or "EXECUTE" or "REFERENCES" or "VIEW DEFINITION" or "ALTER" or "CONTROL" or "TAKE OWNERSHIP",
         _ => false
     };
+
+    private static bool IsCreation(string operation) => operation is "CREATE_TABLE" or "CREATE_VIEW"
+        or "SELECT_INTO" or "CREATE_PROCEDURE" or "CREATE_FUNCTION"
+        or "CREATE_OR_ALTER_PROCEDURE" or "CREATE_OR_ALTER_FUNCTION" or "CREATE_OR_ALTER_VIEW";
 }

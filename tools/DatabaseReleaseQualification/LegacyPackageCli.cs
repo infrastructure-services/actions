@@ -10,6 +10,8 @@ public static class LegacyPackageCli
         LegacyPackageQualificationAdapter? trustedAdapter = null,
         CancellationToken token = default)
     {
+        if (args.FirstOrDefault() == "--adoption-request")
+            return await LegacyAdoptionCli.RunAsync(args, token);
         try
         {
             if (args.Length != 4 || args[0] != "--request" || args[2] != "--output")
@@ -32,7 +34,8 @@ public static class LegacyPackageCli
             if (outcome.Rejected is not null)
             {
                 WriteNew(Path.Combine(output, "legacy-blocked.json"),
-                    JsonSerializer.Serialize(new {
+                    JsonSerializer.Serialize(new
+                    {
                         rejected = outcome.Rejected,
                         trustedRuntime = outcome.TrustedRuntime is null ? (object?)null
                             : JsonDocument.Parse(LegacyRuntimeEvidenceHash.Serialize(
@@ -45,7 +48,8 @@ public static class LegacyPackageCli
                 || outcome.CertifiedBaseline is null || outcome.ObservedSnapshot is null)
             {
                 WriteNew(Path.Combine(output, "legacy-blocked.json"),
-                    JsonSerializer.Serialize(new {
+                    JsonSerializer.Serialize(new
+                    {
                         artifact = (object?)outcome.ArtifactBlocked ?? outcome.Package?.Evidence,
                         trustedRuntime = outcome.TrustedRuntime is null ? (object?)null
                             : JsonDocument.Parse(LegacyRuntimeEvidenceHash.Serialize(

@@ -35,9 +35,12 @@ public static class LegacyReadinessTests
     private static async Task Ready()
     {
         var outcome = await Adapter().EvaluateAsync(new(1, Selection, "target1", null));
-        if (outcome.Readiness is not { Status: "READY_FOR_TEST_REHEARSAL",
+        if (outcome.Readiness is not
+            {
+                Status: "READY_FOR_TEST_REHEARSAL",
                 QualificationStatus: "ANALYZED_NOT_REHEARSED",
-                CanProceedToPromotion: false, Handoff: not null })
+                CanProceedToPromotion: false, Handoff: not null
+            })
             throw new Exception("Expected ready analyze-only handoff: " +
                 string.Join(",", outcome.Readiness?.ReasonCodes ?? outcome.Rejected?.ReasonCodes ?? []));
         if (outcome.Readiness.Handoff.ExecutionAuthorized
@@ -184,13 +187,16 @@ public static class LegacyReadinessTests
         try
         {
             var requestPath = Path.Combine(root, "request.json");
-            await File.WriteAllTextAsync(requestPath, JsonSerializer.Serialize(new {
+            await File.WriteAllTextAsync(requestPath, JsonSerializer.Serialize(new
+            {
                 contractVersion = 1,
-                artifactSelection = new {
+                artifactSelection = new
+                {
                     contractVersion = 1,
                     manifestPath = Selection.ManifestPath,
                     expectedCommit = Selection.ExpectedCommit,
-                    expectedRepository = new {
+                    expectedRepository = new
+                    {
                         host = Selection.ExpectedRepository.Host,
                         repositoryId = Selection.ExpectedRepository.RepositoryId,
                         fullName = Selection.ExpectedRepository.FullName
@@ -220,7 +226,8 @@ public static class LegacyReadinessTests
     private static async Task WriterRejectsStale()
     {
         var outcome = await Adapter().EvaluateAsync(new(1, Selection, "target1", null));
-        var stale = outcome with {
+        var stale = outcome with
+        {
             Readiness = outcome.Readiness! with { EvidenceHash = new string('0', 64) }
         };
         var root = Path.Combine(Path.GetTempPath(), "lpqv1-stale-" + Guid.NewGuid().ToString("N"));
@@ -244,8 +251,11 @@ public static class LegacyReadinessTests
     private static async Task WriterRejectsMutation()
     {
         var outcome = await Adapter().EvaluateAsync(new(1, Selection, "target1", null));
-        outcome.ObservedSnapshot!.Snapshot.ImpactMetrics.Add(new TableImpactMetric {
-            Schema = "dbo", Table = "Widget", RowCount = 1
+        outcome.ObservedSnapshot!.Snapshot.ImpactMetrics.Add(new TableImpactMetric
+        {
+            Schema = "dbo",
+            Table = "Widget",
+            RowCount = 1
         });
         var root = Path.Combine(Path.GetTempPath(), "lpqv1-mutated-" + Guid.NewGuid().ToString("N"));
         try
@@ -270,8 +280,11 @@ public static class LegacyReadinessTests
         if (LegacyRuntimeEvidenceHash.Bind(reordered).EvidenceSetHash != trusted.EvidenceSetHash)
             throw new Exception("Source order affected evidenceSetHash");
         var oldHash = trusted.EvidenceSetHash;
-        trusted.Evidence!.ObservedSnapshot.Snapshot.ImpactMetrics.Add(new TableImpactMetric {
-            Schema = "dbo", Table = "Widget", RowCount = 2
+        trusted.Evidence!.ObservedSnapshot.Snapshot.ImpactMetrics.Add(new TableImpactMetric
+        {
+            Schema = "dbo",
+            Table = "Widget",
+            RowCount = 2
         });
         if (LegacyRuntimeEvidenceHash.Verify(trusted)
             || LegacyRuntimeEvidenceHash.Bind(trusted).EvidenceSetHash == oldHash)
@@ -285,8 +298,10 @@ public static class LegacyReadinessTests
         var payload = trusted.Evidence!;
         var changedClassification = JsonDocument.Parse("{\"status\":\"CLASSIFIED\",\"classificationInvoked\":true,\"targetId\":\"target1\",\"classification\":{\"classificationResult\":{\"inferences\":{\"scenario\":\"EXISTING_EF\"}}}}").RootElement.Clone();
         var snapshot = payload.ObservedSnapshot.Snapshot;
-        var changedSnapshot = new SchemaSnapshot {
-            Objects = [.. snapshot.Objects], ImpactMetrics = [.. snapshot.ImpactMetrics],
+        var changedSnapshot = new SchemaSnapshot
+        {
+            Objects = [.. snapshot.Objects],
+            ImpactMetrics = [.. snapshot.ImpactMetrics],
             UnsupportedSchemaFeatures = [.. snapshot.UnsupportedSchemaFeatures, "feature"]
         };
         var changed = new[] {
@@ -315,23 +330,23 @@ public static class LegacyReadinessTests
         string scenario = "EXISTING_LEGACY",
         bool governanceMismatch = false, bool registryMismatch = false,
         string? observedFailure = null, bool stateMismatch = false,
-        byte[]? forwardBytes = null, byte[]? rollbackBytes = null, SchemaSnapshot? snapshot = null)
+        byte[]? forwardBytes = null, byte[]? rollbackBytes = null, SchemaSnapshot? snapshot = null, string releaseId = "r1")
     {
         return new(new FakeEvidence(onboarding, certified, scenario,
                 governanceMismatch, registryMismatch, observedFailure, stateMismatch,
-                forwardBytes ?? Forward, rollbackBytes ?? Rollback, snapshot),
-            LegacyArtifactTests.Transport(forwardBytes ?? Forward, rollbackBytes ?? Rollback),
-            new FakeSafety(observedFailure == "safetyServer" ? "OTHER" : "SQL1"),
+                forwardBytes ?? Forward, rollbackBytes ?? Rollback, snapshot, releaseId),
+            LegacyArtifactTests.Transport(forwardBytes ?? Forward, rollbackBytes ?? Rollback, releaseId),
+            new FakeSafety(observedFailure == "safetyServer" ? "OTHER" : "SQL1", snapshot),
             snapshot is null ? new UnusedSecurity() : new SyntheticSecurity(snapshot));
     }
 
     internal static Task<LegacyQualificationOutcomeV1> SyntheticQualification(byte[]? forward = null,
-        byte[]? rollback = null, SchemaSnapshot? snapshot = null, LegacyDataValidationDescriptorV1? data = null) =>
-        Adapter(forwardBytes: forward, rollbackBytes: rollback, snapshot: snapshot).EvaluateAsync(new(1, Selection, "target1", data));
+        byte[]? rollback = null, SchemaSnapshot? snapshot = null, LegacyDataValidationDescriptorV1? data = null, string releaseId = "r1") =>
+        Adapter(forwardBytes: forward, rollbackBytes: rollback, snapshot: snapshot, releaseId: releaseId).EvaluateAsync(new(1, Selection, "target1", data));
 
     private sealed class FakeEvidence(string onboardingStatus, bool certified, string scenario,
         bool governanceMismatch, bool registryMismatch, string? observedFailure,
-        bool stateMismatch, byte[] forwardBytes, byte[] rollbackBytes, SchemaSnapshot? suppliedSnapshot)
+        bool stateMismatch, byte[] forwardBytes, byte[] rollbackBytes, SchemaSnapshot? suppliedSnapshot, string releaseId)
         : ILegacyVerifiedEvidenceSource
     {
         public Task VerifyFreshnessAsync(LegacyQualificationRequestV1 request,
@@ -345,19 +360,26 @@ public static class LegacyReadinessTests
             var onboardingBytes = Encoding.UTF8.GetBytes("onboarding");
             var snapshot = suppliedSnapshot ?? new SchemaSnapshot();
             var canonical = SchemaCanonicalizer.Canonicalize(snapshot);
-            var registryTarget = new DatabaseTarget {
-                ApplicationId = "app1", Environment = "TEST", DatabaseName = "TestDb",
+            var registryTarget = new DatabaseTarget
+            {
+                ApplicationId = "app1",
+                Environment = "TEST",
+                DatabaseName = "TestDb",
                 Lifecycle = "EXISTING",
                 CertificationStatus = certified ? "CERTIFIED" : "BASELINE_REQUIRED",
                 CertifiedSchemaHash = certified ? canonical.Sha256 : null
             };
             var registryBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(
-                new DatabaseRegistryDocument { RegistryFormatVersion = 1,
-                    Targets = [registryTarget] }, DatabaseStateJson.Compact));
+                new DatabaseRegistryDocument
+                {
+                    RegistryFormatVersion = 1,
+                    Targets = [registryTarget]
+                }, DatabaseStateJson.Compact));
             var provenance = new LegacySourceProvenanceV1("team/registry", "governance.json",
                 new string('b', 40), governanceMismatch
                     ? new string('0', 64) : Hashing.Sha256(governanceBytes));
-            var onboardingProvenance = provenance with {
+            var onboardingProvenance = provenance with
+            {
                 SourcePath = "onboarding.json",
                 SourceSha256 = Hashing.Sha256(onboardingBytes)
             };
@@ -367,14 +389,19 @@ public static class LegacyReadinessTests
                 "app1", "TEST", targetId, "EXISTING", "LEGACY_UNMANAGED");
             var onboarding = new LegacyOnboardingV1(onboardingProvenance,
                 new("ONBOARDING_GIT_PR", "onboarding-policy.json"), onboardingStatus);
-            var registry = new RegistryProvenance {
-                RegistryRepository = "team/registry", RegistryRef = new string('b', 40),
+            var registry = new RegistryProvenance
+            {
+                RegistryRepository = "team/registry",
+                RegistryRef = new string('b', 40),
                 RegistryCommitSha = new string(registryMismatch ? 'c' : 'b', 40),
                 RegistryFilePath = "targets.json",
                 RegistryFileSha256 = Hashing.Sha256(registryBytes)
             };
-            var state = new DatabaseStateEvaluation {
-                ApplicationId = "app1", Environment = "TEST", DatabaseName = "TestDb",
+            var state = new DatabaseStateEvaluation
+            {
+                ApplicationId = "app1",
+                Environment = "TEST",
+                DatabaseName = "TestDb",
                 ObservedSchemaHash = canonical.Sha256,
                 CertifiedSchemaHash = canonical.Sha256,
                 RegistryStatus = certified ? "CERTIFIED" : "BASELINE_REQUIRED",
@@ -399,14 +426,21 @@ public static class LegacyReadinessTests
                     observedFailure == "metrics" ? "PARTIAL" : "COMPLETE"),
                 new(canonical.Sha256, canonical.Sha256, identity, identity, true, true),
                 DateTimeOffset.UtcNow);
-            var classification = JsonDocument.Parse(JsonSerializer.Serialize(new {
-                status = "CLASSIFIED", classificationInvoked = true, targetId,
-                classification = new { classificationResult = new {
-                    inferences = new { scenario }
-                } }
+            var classification = JsonDocument.Parse(JsonSerializer.Serialize(new
+            {
+                status = "CLASSIFIED",
+                classificationInvoked = true,
+                targetId,
+                classification = new
+                {
+                    classificationResult = new
+                    {
+                        inferences = new { scenario }
+                    }
+                }
             })).RootElement.Clone();
             var discovered = await new LegacyArtifactDiscovery(
-                LegacyArtifactTests.Transport(forwardBytes, rollbackBytes)).DiscoverAsync(
+                LegacyArtifactTests.Transport(forwardBytes, rollbackBytes, releaseId)).DiscoverAsync(
                     Selection, targetId, token);
             var sourceDocument = new LegacyGitDocumentV1(Selection.ExpectedRepository,
                 Selection.ExpectedCommit, "scripts/producer.mjs", new string('1', 64));
@@ -436,18 +470,25 @@ public static class LegacyReadinessTests
         }
     }
 
-    private sealed class FakeSafety(string server) : ILegacyScopeSafetySource
+    private sealed class FakeSafety(string server, SchemaSnapshot? snapshot) : ILegacyScopeSafetySource
     {
         public Task<LegacyScopeSafetySnapshotV1> CaptureAsync(
             IReadOnlyList<RecoverySecuritySecurable> scope, CancellationToken token)
         {
             var result = new LegacyScopeSafetySnapshotV1(1, true, server, "TestDb",
-                true, true, false, scope.Select(x => new LegacySafetyObject(x.Schema,x.Name,
-                    x.Name == "V" ? "VIEW" : "TABLE",false,false,false,false,false,false,false,false,false)).ToArray(), "");
-            var hash = Hashing.Sha256(JsonSerializer.Serialize(new {
-                result.ContractVersion, result.Complete, result.ServerInstance,
-                result.DatabaseName, result.DatabaseDdlTriggersComplete,
-                result.ServerDdlTriggersComplete, result.HasEnabledDdlTrigger,
+                true, true, false, scope.Select(x => new LegacySafetyObject(x.Schema, x.Name,
+                    snapshot?.Objects.FirstOrDefault(o => o.Schema == x.Schema && o.Name == x.Name
+                        && o.Kind is "procedure" or "function" or "view")?.Kind.ToUpperInvariant()
+                        ?? (x.Name == "V" ? "VIEW" : "TABLE"), false, false, false, false, false, false, false, false, false)).ToArray(), "");
+            var hash = Hashing.Sha256(JsonSerializer.Serialize(new
+            {
+                result.ContractVersion,
+                result.Complete,
+                result.ServerInstance,
+                result.DatabaseName,
+                result.DatabaseDdlTriggersComplete,
+                result.ServerDdlTriggersComplete,
+                result.HasEnabledDdlTrigger,
                 result.Objects
             }, JsonDefaults.Compact));
             return Task.FromResult(result with { Sha256 = hash });
@@ -458,7 +499,7 @@ public static class LegacyReadinessTests
     {
         public Task<RecoverySecuritySnapshot> ReadAsync(RecoverySecurityScope scope, RecoveryPhase phase,
             CancellationToken cancellationToken = default) => Task.FromResult(
-                RecoveryCoverageTests.Security(scope,phase,snapshot) with { ServerInstance="SQL1",DatabaseName="TestDb" });
+                RecoveryCoverageTests.Security(scope, phase, snapshot) with { ServerInstance = "SQL1", DatabaseName = "TestDb" });
     }
 
     private sealed class UnusedSecurity : IRecoverySecurityCatalogReader

@@ -47,9 +47,11 @@ internal static class LegacyRehearsalTests
         ("macro2 phase contract version mismatch", () => Negative("version",0)),
         ("macro2 evidenceSetHash rebinding cannot hide mismatch", () => Negative("evidenceSet",0)),
         ("macro2 request parser rejects truth claims and duplicate properties", RequestParsing),
-        ("macro2 public CLI default cannot start execution", DefaultCli)
+        ("macro2 public CLI default cannot start execution", DefaultCli),
+        ("macro2 monolithic CLI rejects explicit execution before acquisition", MonolithicExecutionBlocked)
         ,("macro2 phased checkpoint exact ordering and final coverage", PhasedComplete)
         ,("macro2 phased adversarial predecessor and authority reject before write", PhasedAdversarial)
+        ,("macro2 fake REAL_TEST runtime cannot mint promotion freeze", () => PhasedFlow(true))
     ];
     private static void Assert(bool condition, string message = "Macro2 assertion failed")
     { if (!condition) throw new Exception(message); }
@@ -69,15 +71,20 @@ internal static class LegacyRehearsalTests
             && receipt.Evaluation?.RecoveryCoverage?.Complete == true && lab.Writes == 3);
         Assert(receipt.Phases.Select(x => x.Phase).SequenceEqual(new[] { "PRE", "FORWARD1", "POST1", "ROLLBACK", "PRE2", "FORWARD2", "POST2" }));
         Assert(events.Count(x => x.Status == "STARTED") == 3 && LegacyRehearsalReceiptHash.VerifyIntegrity(receipt));
-        ExportSynthetic("complete",receipt);
+        ExportSynthetic("complete", receipt);
     }
     private static async Task Negative(string fault, int expectedWrites)
     {
         var q = await LegacyReadinessTests.SyntheticQualification();
         if (fault == "package") q = q with { Readiness = q.Readiness! with { PackageIdentity = "forged" } };
-        if (fault == "baseline") q = q with { CertifiedBaseline = q.CertifiedBaseline! with { CertifiedSchemaHash = new string('0',64) } };
-        if (fault == "evidenceSet") q = q with { Readiness = LegacyReadinessHash.Bind(q.Readiness! with {
-            Handoff=q.Readiness!.Handoff! with {EvidenceSetHash=new string('0',64)} }) };
+        if (fault == "baseline") q = q with { CertifiedBaseline = q.CertifiedBaseline! with { CertifiedSchemaHash = new string('0', 64) } };
+        if (fault == "evidenceSet") q = q with
+        {
+            Readiness = LegacyReadinessHash.Bind(q.Readiness! with
+            {
+                Handoff = q.Readiness!.Handoff! with { EvidenceSetHash = new string('0', 64) }
+            })
+        };
         var lab = new Lab(q, fault);
         using var cancel = new CancellationTokenSource();
         lab.Cancel = cancel;
@@ -85,16 +92,16 @@ internal static class LegacyRehearsalTests
             .RunAsync(q, fault == "timeout" ? TimeSpan.FromMilliseconds(100) : TimeSpan.FromSeconds(10), token: cancel.Token);
         Assert(receipt.Status == "REHEARSAL_BLOCKED" && receipt.RecoveryClass != "FULL_REVERSIBLE"
             && !receipt.CanProceedToPromotion, fault + " false success");
-        Assert(lab.Writes == expectedWrites, fault + " writes " + lab.Writes + " reasons " + string.Join(",",receipt.ReasonCodes));
+        Assert(lab.Writes == expectedWrites, fault + " writes " + lab.Writes + " reasons " + string.Join(",", receipt.ReasonCodes));
         if (fault is "timeout" or "cancel") Assert(receipt.State == (fault == "timeout"
             ? LegacyRehearsalStateV1.TimedOut : LegacyRehearsalStateV1.Cancelled));
-        ExportSynthetic("blocked-" + fault,receipt);
+        ExportSynthetic("blocked-" + fault, receipt);
     }
-    private static void ExportSynthetic(string name,LegacyRehearsalReceiptV1 receipt)
+    private static void ExportSynthetic(string name, LegacyRehearsalReceiptV1 receipt)
     {
         if (Environment.GetEnvironmentVariable("LEGACY_SYNTHETIC_EVIDENCE_OUTPUT") is not { Length: > 0 } root) return;
         Directory.CreateDirectory(root);
-        File.WriteAllText(Path.Combine(root,"synthetic-" + name + ".json"),JsonSerializer.Serialize(receipt,JsonDefaults.Compact));
+        File.WriteAllText(Path.Combine(root, "synthetic-" + name + ".json"), JsonSerializer.Serialize(receipt, JsonDefaults.Compact));
     }
     private static Task Ordering()
     {
@@ -135,27 +142,33 @@ internal static class LegacyRehearsalTests
         var h = q.Readiness!.Handoff!;
         var source = q.TrustedRuntime!.Resolver!.Source;
         var now = DateTimeOffset.UtcNow;
-        var grant = new LegacyRehearsalAuthorizationV1(1,"synthetic",h.TargetId,h.PackageIdentity,
-            GovernedLegacyRehearsalAuthorityV1.PreconditionIdentity(h),h.EngineCommit,"TEST","synthetic-actor",now.AddMinutes(-1),now.AddMinutes(10),
-            ["FORWARD1","ROLLBACK","FORWARD2"],true,"SYNTHETIC-APPROVAL");
+        var grant = new LegacyRehearsalAuthorizationV1(1, "synthetic", h.TargetId, h.PackageIdentity,
+            GovernedLegacyRehearsalAuthorityV1.PreconditionIdentity(h), h.EngineCommit, "TEST", "synthetic-actor", now.AddMinutes(-1), now.AddMinutes(10),
+            ["FORWARD1", "ROLLBACK", "FORWARD2"], true, "SYNTHETIC-APPROVAL");
         GovernedLegacyRehearsalAuthorityV1 Make(LegacyRehearsalAuthorizationV1 g, bool explicitConsent = true) =>
-            new(g, source, source.Repository, source.Revision,"synthetic-actor",explicitConsent,_ => Task.CompletedTask);
-        await Make(grant).VerifyAsync(h,"PRE",default);
+            new(g, source, source.Repository, source.Revision, "synthetic-actor", explicitConsent, _ => Task.CompletedTask);
+        await Make(grant).VerifyAsync(h, "PRE", default);
         foreach (var bad in new[] { grant with { ExecutionAuthorized = false }, grant with { PackageIdentity = "wrong" },
             grant with { Actor = "other" }, grant with { ExpiresAtUtc = now.AddMinutes(-1) },
             grant with { ApprovedPhases = ["FORWARD1"] }, grant with { Environment = "OTHER" } })
-            await Throws(() => Make(bad).VerifyAsync(h,"FORWARD1",default));
-        await Throws(() => Make(grant,false).VerifyAsync(h,"PRE",default));
-        await Throws(() => Make(grant with {DataContractIdentity=new string('a',64)}).VerifyAsync(h,"PRE",default));
+            await Throws(() => Make(bad).VerifyAsync(h, "FORWARD1", default));
+        await Throws(() => Make(grant, false).VerifyAsync(h, "PRE", default));
+        await Throws(() => Make(grant with { DataContractIdentity = new string('a', 64) }).VerifyAsync(h, "PRE", default));
     }
     private static async Task WrongScriptHash()
     {
         var q = await LegacyReadinessTests.SyntheticQualification();
         var h = q.Readiness!.Handoff!;
-        await Throws(() => { SqlLegacyRehearsalRuntimeV1.VerifyExactScript(h,
-            new ReleaseScript("forward",q.Package!.ForwardBytes),new string('0',64),h.TransactionPolicy); return Task.CompletedTask; });
-        await Throws(() => { SqlLegacyRehearsalRuntimeV1.VerifyExactScript(h,
-            new ReleaseScript("forward",Encoding.UTF8.GetBytes("SELECT 999;")),h.Artifacts.Forward.Sha256,h.TransactionPolicy); return Task.CompletedTask; });
+        await Throws(() =>
+        {
+            SqlLegacyRehearsalRuntimeV1.VerifyExactScript(h,
+            new ReleaseScript("forward", q.Package!.ForwardBytes), new string('0', 64), h.TransactionPolicy); return Task.CompletedTask;
+        });
+        await Throws(() =>
+        {
+            SqlLegacyRehearsalRuntimeV1.VerifyExactScript(h,
+            new ReleaseScript("forward", Encoding.UTF8.GetBytes("SELECT 999;")), h.Artifacts.Forward.Sha256, h.TransactionPolicy); return Task.CompletedTask;
+        });
     }
     private static async Task RequestParsing()
     {
@@ -169,46 +182,69 @@ internal static class LegacyRehearsalTests
     }
     private static async Task DefaultCli()
     {
-        var q=await LegacyReadinessTests.SyntheticQualification();
-        var root=Path.Combine(Path.GetTempPath(),"synthetic-legacy-default-"+Guid.NewGuid().ToString("N"));
+        var q = await LegacyReadinessTests.SyntheticQualification();
+        var root = Path.Combine(Path.GetTempPath(), "synthetic-legacy-default-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
-        try {
-            var request=new LegacyRehearsalRequestV1(1,q.TrustedRuntime!.Request.ArtifactSelection,q.Readiness!.TargetId,
-                q.Package!.Evidence.PackageIdentity,"synthetic",null);
-            var path=Path.Combine(root,"request.json");
-            var json = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(request,JsonDefaults.Compact))!.AsObject();
+        try
+        {
+            var request = new LegacyRehearsalRequestV1(1, q.TrustedRuntime!.Request.ArtifactSelection, q.Readiness!.TargetId,
+                q.Package!.Evidence.PackageIdentity, "synthetic", null);
+            var path = Path.Combine(root, "request.json");
+            var json = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(request, JsonDefaults.Compact))!.AsObject();
             json.Remove("executionAuthorized");
             json.Remove("dataContractSelector");
             Assert(!LegacyRehearsalCli.Parse<LegacyRehearsalRequestV1>(Encoding.UTF8.GetBytes(json.ToJsonString())).ExecutionAuthorized);
-            await File.WriteAllTextAsync(path,json.ToJsonString());
-            var output=Path.Combine(root,"output");
-            Assert(await LegacyRehearsalCli.RunAsync(["--request",path,"--output",output])==66);
-            Assert(!File.Exists(Path.Combine(output,"phase-journal.jsonl")));
-            Assert(File.ReadAllText(Path.Combine(output,"legacy-rehearsal-blocked.json")).Contains("EXECUTION_AUTHORIZATION_INVALID"));
-        } finally { Directory.Delete(root,true); }
+            await File.WriteAllTextAsync(path, json.ToJsonString());
+            var output = Path.Combine(root, "output");
+            Assert(await LegacyRehearsalCli.RunAsync(["--request", path, "--output", output]) == 66);
+            Assert(!File.Exists(Path.Combine(output, "phase-journal.jsonl")));
+            Assert(!Directory.Exists(output), "Disabled CLI accessed output artifacts");
+        }
+        finally { Directory.Delete(root, true); }
     }
     private static Task Batches()
     {
-        var script = new ReleaseScript("forward",Encoding.UTF8.GetBytes("SELECT 'GO';\r\nGO\r\nSELECT 2;"));
+        var script = new ReleaseScript("forward", Encoding.UTF8.GetBytes("SELECT 'GO';\r\nGO\r\nSELECT 2;"));
         var batches = SqlLegacyRehearsalRuntimeV1.ExactBatches(script);
         Assert(batches.Count == 2 && batches[0].Contains("'GO'") && batches[1].Contains("SELECT 2;"));
-        try { SqlLegacyRehearsalRuntimeV1.ExactBatches(new("forward",Encoding.UTF8.GetBytes("SELECT 1;\nGO 2"))); throw new Exception("GO count allowed"); }
+        try { SqlLegacyRehearsalRuntimeV1.ExactBatches(new("forward", Encoding.UTF8.GetBytes("SELECT 1;\nGO 2"))); throw new Exception("GO count allowed"); }
         catch (LegacyContractException) { }
         return Task.CompletedTask;
     }
+
+    private static async Task MonolithicExecutionBlocked()
+    {
+        // Invalid paths prove the boundary runs before reading any request or
+        // acquiring environment, Git, credentials or SQL capabilities.
+        var error = new StringWriter();
+        var previous = Console.Error;
+        try
+        {
+            Console.SetError(error);
+            var code = await QualificationCli.RunAsync(["rehearse-legacy-package",
+                "--request", "nonexistent-request.json", "--output", ""]);
+            Assert(code == 66 && error.ToString().Contains("LEGACY_PHASED_EXECUTION_REQUIRED"),
+                "Monolithic entrypoint still reaches runtime acquisition");
+        }
+        finally { Console.SetError(previous); }
+    }
     private static async Task Data(string fault)
     {
-        var source = new LegacyGitDocumentV1(new("github.com","1","synthetic/contracts"),new string('a',40),"synthetic/data.json",new string('b',64));
-        var definition = new LegacyDataContractDefinitionV1(1,"synthetic-data",1,"target1",new string('c',64),"SYNTHETIC","EXACT_CONTENT_HASH_V1",source);
-        var resolver = new LegacyDataContractResolverV1([definition],new Dictionary<string,Func<LegacyDataContractDefinitionV1,ILegacyDataEvidenceReaderV1>> {
+        var source = new LegacyGitDocumentV1(new("github.com", "1", "synthetic/contracts"), new string('a', 40), "synthetic/data.json", new string('b', 64));
+        var definition = new LegacyDataContractDefinitionV1(1, "synthetic-data", 1, "target1", new string('c', 64), "SYNTHETIC", "EXACT_CONTENT_HASH_V1", source);
+        var resolver = new LegacyDataContractResolverV1([definition], new Dictionary<string, Func<LegacyDataContractDefinitionV1, ILegacyDataEvidenceReaderV1>>
+        {
             ["SYNTHETIC"] = _ => new DataReader(fault)
         });
         if (fault is "unknown" or "scope")
         {
-            await Throws(() => { resolver.Resolve(fault == "unknown" ? "unknown" : definition.Selector,definition.TargetId,
-                fault == "scope" ? "wrong" : definition.ScopeHash,source.Repository,source.Revision); return Task.CompletedTask; }); return;
+            await Throws(() =>
+            {
+                resolver.Resolve(fault == "unknown" ? "unknown" : definition.Selector, definition.TargetId,
+                fault == "scope" ? "wrong" : definition.ScopeHash, source.Repository, source.Revision); return Task.CompletedTask;
+            }); return;
         }
-        var provider = (LegacyDataValidationProviderV1)resolver.Resolve(definition.Selector,definition.TargetId,definition.ScopeHash,source.Repository,source.Revision).Provider;
+        var provider = (LegacyDataValidationProviderV1)resolver.Resolve(definition.Selector, definition.TargetId, definition.ScopeHash, source.Repository, source.Revision).Provider;
         if (fault is "incomplete" or "stale") { await Throws(() => provider.CapturePreDataAsync()); return; }
         await provider.CapturePreDataAsync(); await provider.CapturePostDataAsync();
         Assert(await provider.ValidateRollbackDataAsync() == (fault == "recovery" ? DataRollbackValidity.Invalid : DataRollbackValidity.Valid));
@@ -218,26 +254,29 @@ internal static class LegacyRehearsalTests
     private sealed class DataReader(string fault) : ILegacyDataEvidenceReaderV1
     {
         public Task<LegacyDataPhaseEvidenceV1> CaptureAsync(LegacyDataContractDefinitionV1 d, RecoveryPhase phase, CancellationToken token) =>
-            Task.FromResult(new LegacyDataPhaseEvidenceV1(1,d.Selector,d.Version,d.TargetId,d.ScopeHash,phase,
+            Task.FromResult(new LegacyDataPhaseEvidenceV1(1, d.Selector, d.Version, d.TargetId, d.ScopeHash, phase,
                 fault == "stale" ? DateTimeOffset.UtcNow.AddHours(-1) : DateTimeOffset.UtcNow, fault != "incomplete",
                 Hashing.Sha256(fault == "recovery" && phase == RecoveryPhase.Pre2 || fault == "reapply" && phase == RecoveryPhase.Post2
                     ? "mismatch" : phase is RecoveryPhase.Pre or RecoveryPhase.Pre2 ? "pre" : "post")));
     }
     private static async Task RequiredData(string fault)
     {
-        var snapshot = new SchemaSnapshot { Objects = [new() {Kind="table",Schema="dbo",Name="T"},
+        var snapshot = new SchemaSnapshot
+        {
+            Objects = [new() {Kind="table",Schema="dbo",Name="T"},
             new() {Kind="column",Schema="dbo",Parent="T",Name="Value"}],
-            ImpactMetrics = [new() {Schema="dbo",Table="T",RowCount=1}] };
+            ImpactMetrics = [new() { Schema = "dbo", Table = "T", RowCount = 1 }]
+        };
         var forward = Encoding.UTF8.GetBytes("UPDATE dbo.T SET Value = Value + 1;");
         var rollback = Encoding.UTF8.GetBytes("UPDATE dbo.T SET Value = Value - 1;");
         var analyzer = new SqlScriptAnalyzer();
-        var (_,hash) = LegacyReadinessHash.DataScope(analyzer.Analyze("forward",Encoding.UTF8.GetString(forward),snapshot),
-            analyzer.Analyze("rollback",Encoding.UTF8.GetString(rollback),snapshot));
-        var definition = new LegacyDataContractDefinitionV1(1,"synthetic-data",1,"target1",hash,"SYNTHETIC","EXACT_CONTENT_HASH_V1",
-            new(new("github.com","1","synthetic/contracts"),new string('a',40),"synthetic/data.json",new string('b',64)));
-        var data = new LegacyDataValidationDescriptorV1(definition.Selector,1,hash,new LegacyDataValidationProviderV1(definition,new DataReader(fault)));
-        var q = await LegacyReadinessTests.SyntheticQualification(forward,rollback,snapshot,data);
-        Assert(q.Readiness?.Handoff is not null,"DATA Macro1 blocked: " + string.Join(",",q.Readiness?.ReasonCodes ?? q.Rejected?.ReasonCodes ?? []));
+        var (_, hash) = LegacyReadinessHash.DataScope(analyzer.Analyze("forward", Encoding.UTF8.GetString(forward), snapshot),
+            analyzer.Analyze("rollback", Encoding.UTF8.GetString(rollback), snapshot));
+        var definition = new LegacyDataContractDefinitionV1(1, "synthetic-data", 1, "target1", hash, "SYNTHETIC", "EXACT_CONTENT_HASH_V1",
+            new(new("github.com", "1", "synthetic/contracts"), new string('a', 40), "synthetic/data.json", new string('b', 64)));
+        var data = new LegacyDataValidationDescriptorV1(definition.Selector, 1, hash, new LegacyDataValidationProviderV1(definition, new DataReader(fault)));
+        var q = await LegacyReadinessTests.SyntheticQualification(forward, rollback, snapshot, data);
+        Assert(q.Readiness?.Handoff is not null, "DATA Macro1 blocked: " + string.Join(",", q.Readiness?.ReasonCodes ?? q.Rejected?.ReasonCodes ?? []));
         var lab = new Lab(q);
         ILegacyRehearsalAuthorityV1 authority = new Authority();
         if (fault == "changed")
@@ -246,34 +285,36 @@ internal static class LegacyRehearsalTests
             var source = q.TrustedRuntime!.Resolver!.Source;
             var original = (LegacyDataValidationProviderV1)data.Provider;
             var now = DateTimeOffset.UtcNow;
-            var grant = new LegacyRehearsalAuthorizationV1(1,"synthetic",h.TargetId,h.PackageIdentity,
-                GovernedLegacyRehearsalAuthorityV1.PreconditionIdentity(h),h.EngineCommit,"TEST","synthetic-actor",
-                now.AddMinutes(-1),now.AddMinutes(10),["FORWARD1","ROLLBACK","FORWARD2"],true,
-                "SYNTHETIC-APPROVAL",original.ApprovalIdentity);
-            var changed = new LegacyDataValidationProviderV1(definition with {
-                Source = definition.Source with { RawSha256 = new string('d',64) }
-            },new DataReader("valid"));
+            var grant = new LegacyRehearsalAuthorizationV1(1, "synthetic", h.TargetId, h.PackageIdentity,
+                GovernedLegacyRehearsalAuthorityV1.PreconditionIdentity(h), h.EngineCommit, "TEST", "synthetic-actor",
+                now.AddMinutes(-1), now.AddMinutes(10), ["FORWARD1", "ROLLBACK", "FORWARD2"], true,
+                "SYNTHETIC-APPROVAL", original.ApprovalIdentity);
+            var changed = new LegacyDataValidationProviderV1(definition with
+            {
+                Source = definition.Source with { RawSha256 = new string('d', 64) }
+            }, new DataReader("valid"));
             data = data with { Provider = changed };
-            authority = new GovernedLegacyRehearsalAuthorityV1(grant,source,source.Repository,source.Revision,
-                "synthetic-actor",true,_ => Task.CompletedTask,changed.ApprovalIdentity);
+            authority = new GovernedLegacyRehearsalAuthorityV1(grant, source, source.Repository, source.Revision,
+                "synthetic-actor", true, _ => Task.CompletedTask, changed.ApprovalIdentity);
         }
-        var receipt = await new LegacyRehearsalHarnessV1(lab,authority).RunAsync(q,TimeSpan.FromSeconds(10),fault == "absent" ? null : data);
-        Assert((receipt.Status == "REHEARSAL_COMPLETE") == (fault == "valid"),fault + ": " + string.Join(",",receipt.ReasonCodes));
+        var receipt = await new LegacyRehearsalHarnessV1(lab, authority).RunAsync(q, TimeSpan.FromSeconds(10), fault == "absent" ? null : data);
+        Assert((receipt.Status == "REHEARSAL_COMPLETE") == (fault == "valid"), fault + ": " + string.Join(",", receipt.ReasonCodes));
         Assert((receipt.RecoveryClass == "FULL_REVERSIBLE") == (fault == "valid"));
-        Assert(lab.Writes == (fault is "absent" or "incomplete" or "changed" ? 0 : fault == "recovery" ? 2 : 3),"Unexpected DATA writes: " + lab.Writes);
+        Assert(lab.Writes == (fault is "absent" or "incomplete" or "changed" ? 0 : fault == "recovery" ? 2 : 3), "Unexpected DATA writes: " + lab.Writes);
         if (fault == "changed") Assert(receipt.ReasonCodes.Contains("EXECUTION_AUTHORIZATION_INVALID"));
         if (fault == "valid") Assert(receipt.DataEvidence.Count == 4);
     }
     private static async Task Security(bool lost)
     {
-        var snapshot = new SchemaSnapshot {Objects=[new() {Kind="view",Schema="dbo",Name="V",Properties=new(StringComparer.Ordinal) { ["definitionSha256"]=Hashing.Sha256("SELECT 1 AS N") }}]};
+        var snapshot = new SchemaSnapshot { Objects = [new() { Kind = "view", Schema = "dbo", Name = "V", Properties = new(StringComparer.Ordinal) { ["definitionSha256"] = Hashing.Sha256("SELECT 1 AS N") } }] };
+        LegacySchemaCapture.Enrich(snapshot, [new("dbo", "V", true, true)]);
         var q = await LegacyReadinessTests.SyntheticQualification(Encoding.UTF8.GetBytes("DROP VIEW dbo.V;"),
-            Encoding.UTF8.GetBytes("CREATE VIEW dbo.V AS SELECT 1 AS N;"),snapshot);
-        Assert(q.Readiness?.Handoff is not null,"SECURITY Macro1 blocked: " + string.Join(",",q.Readiness?.ReasonCodes ?? q.Rejected?.ReasonCodes ?? []));
-        var lab = new Lab(q,lost ? "lostGrant" : "restoreGrant");
-        var receipt = await new LegacyRehearsalHarnessV1(lab,new Authority()).RunAsync(q,TimeSpan.FromSeconds(10));
-        Assert((receipt.Status == "REHEARSAL_COMPLETE") == !lost,string.Join(",",receipt.ReasonCodes));
-        Assert(lab.Writes == (lost ? 2 : 3),"Unexpected SECURITY writes: " + lab.Writes);
+            Encoding.UTF8.GetBytes("CREATE VIEW dbo.V AS SELECT 1 AS N;"), snapshot);
+        Assert(q.Readiness?.Handoff is not null, "SECURITY Macro1 blocked: " + string.Join(",", q.Readiness?.ReasonCodes ?? q.Rejected?.ReasonCodes ?? []));
+        var lab = new Lab(q, lost ? "lostGrant" : "restoreGrant");
+        var receipt = await new LegacyRehearsalHarnessV1(lab, new Authority()).RunAsync(q, TimeSpan.FromSeconds(10));
+        Assert((receipt.Status == "REHEARSAL_COMPLETE") == !lost, string.Join(",", receipt.ReasonCodes));
+        Assert(lab.Writes == (lost ? 2 : 3), "Unexpected SECURITY writes: " + lab.Writes);
         if (lost) Assert(receipt.RecoveryClass != "FULL_REVERSIBLE" && receipt.RecoveryClass != "SCHEMA_ONLY");
     }
     private static async Task<(LegacyQualificationOutcomeV1 Q, LegacyRehearsalCheckpointV1 Pre)>
@@ -286,7 +327,9 @@ internal static class LegacyRehearsalTests
         return (q, pre);
     }
 
-    private static async Task PhasedComplete()
+    private static Task PhasedComplete() => PhasedFlow(false);
+
+    private static async Task PhasedFlow(bool impersonate)
     {
         var (q, pre) = await PhasedPre();
         pre = LegacyRehearsalCli.Parse<LegacyRehearsalCheckpointV1>(
@@ -303,12 +346,38 @@ internal static class LegacyRehearsalTests
         var pre2 = LegacyRehearsalCli.Parse<LegacyRehearsalCheckpointV1>(
             Encoding.UTF8.GetBytes(JsonSerializer.Serialize(second.Checkpoint!, LegacyPhasedCli.CheckpointJson)), 8 * 1024 * 1024);
         Assert(pre2.CompletedPhase == "PRE2" && second.Receipt is null);
-        var final = await new LegacyPhasedRehearsalV1(
-            new Lab(q, job: "legacy_forward2"), new Authority())
-            .RunNextAsync(pre2, pre2.CheckpointHash, "FORWARD2", q.Package!, null, CancellationToken.None);
+        var lab = new Lab(q, job: "legacy_forward2", evidenceKind: impersonate ? "REAL_TEST" : "SYNTHETIC");
+        var environment = new Dictionary<string, string>
+        {
+            ["GITHUB_JOB"] = "legacy_forward2",
+            ["GITHUB_RUN_ID"] = lab.Context.RunId,
+            ["GITHUB_RUN_ATTEMPT"] = "1",
+            ["GITHUB_ACTIONS"] = "true",
+            ["LEGACY_PROTECTED_ENVIRONMENT"] = "legacy-rehearsal-test"
+        };
+        var saved = environment.Keys.ToDictionary(x => x, Environment.GetEnvironmentVariable);
+        (LegacyRehearsalCheckpointV1? Checkpoint, LegacyRehearsalReceiptV1? Receipt) final;
+        try
+        {
+            if (impersonate)
+                foreach (var (key, value) in environment) Environment.SetEnvironmentVariable(key, value);
+            ILegacyRehearsalAuthorityV1 authority = impersonate
+                ? new ProtectedEnvironmentLegacyAuthorityV1("FORWARD2", lab.Context) : new Authority();
+            final = await new LegacyPhasedRehearsalV1(lab, authority)
+                .RunNextAsync(pre2, pre2.CheckpointHash, "FORWARD2", q.Package!, null, CancellationToken.None);
+        }
+        finally
+        {
+            foreach (var (key, value) in saved) Environment.SetEnvironmentVariable(key, value);
+        }
         Assert(final.Checkpoint is null && final.Receipt?.Evaluation?.RecoveryCoverage?.Complete == true);
         Assert(final.Receipt!.Phases.Select(x => x.Phase).SequenceEqual(
             new[] { "PRE", "FORWARD1", "POST1", "ROLLBACK", "PRE2", "FORWARD2", "POST2" }));
+        await Throws(() =>
+        {
+            LegacyPromotionFreeze.CreateFromTrustedProducer(final.Receipt!);
+            return Task.CompletedTask;
+        });
     }
 
     private static async Task PhasedAdversarial()
@@ -318,9 +387,12 @@ internal static class LegacyRehearsalTests
             string phase, string job, LegacyFrozenPackage? package = null, bool deny = false)
         {
             var lab = new Lab(q, job: job);
-            await Throws(async () => { await new LegacyPhasedRehearsalV1(
+            await Throws(async () =>
+            {
+                await new LegacyPhasedRehearsalV1(
                 lab, new Authority(deny)).RunNextAsync(checkpoint, trustedHash,
-                phase, package ?? q.Package!, null, CancellationToken.None); });
+                phase, package ?? q.Package!, null, CancellationToken.None);
+            });
             Assert(lab.Writes == 0, "phased rejection wrote SQL");
         }
         await Reject(pre, pre.CheckpointHash, "ROLLBACK", "legacy_rollback");
@@ -337,10 +409,13 @@ internal static class LegacyRehearsalTests
             Environment.SetEnvironmentVariable("GITHUB_ACTIONS", "true");
             Environment.SetEnvironmentVariable("LEGACY_PROTECTED_ENVIRONMENT", null);
             var protectedLab = new Lab(q, job: "legacy_forward1");
-            await Throws(async () => { await new LegacyPhasedRehearsalV1(protectedLab,
+            await Throws(async () =>
+            {
+                await new LegacyPhasedRehearsalV1(protectedLab,
                 new ProtectedEnvironmentLegacyAuthorityV1("FORWARD1", protectedLab.Context))
                 .RunNextAsync(pre, pre.CheckpointHash, "FORWARD1", q.Package!, null,
-                    CancellationToken.None); });
+                    CancellationToken.None);
+            });
             Assert(protectedLab.Writes == 0, "missing protected environment wrote SQL");
         }
         finally
@@ -358,12 +433,19 @@ internal static class LegacyRehearsalTests
             "FORWARD1", "legacy_forward1");
         await Reject(pre with { Runtime = pre.Runtime with { RunId = "other" } },
             pre.CheckpointHash, "FORWARD1", "legacy_forward1");
-        await Reject(pre with { CheckpointHash = LegacyPhaseCheckpoint.Bind(
-            pre with { TargetId = "other", CheckpointHash = "" }).CheckpointHash },
+        await Reject(pre with
+        {
+            CheckpointHash = LegacyPhaseCheckpoint.Bind(
+            pre with { TargetId = "other", CheckpointHash = "" }).CheckpointHash
+        },
             pre.CheckpointHash, "FORWARD1", "legacy_forward1");
-        await Reject(pre with { Observations = new Dictionary<RecoveryPhase, ObservedCurrentSnapshotV1> {
-            [RecoveryPhase.Pre] = pre.Observations[RecoveryPhase.Pre] with { TargetId = "other" }
-        } }, pre.CheckpointHash, "FORWARD1", "legacy_forward1");
+        await Reject(pre with
+        {
+            Observations = new Dictionary<RecoveryPhase, ObservedCurrentSnapshotV1>
+            {
+                [RecoveryPhase.Pre] = pre.Observations[RecoveryPhase.Pre] with { TargetId = "other" }
+            }
+        }, pre.CheckpointHash, "FORWARD1", "legacy_forward1");
         await Reject(pre with { PhaseResult = "FAILED", Terminal = true }, pre.CheckpointHash,
             "FORWARD1", "legacy_forward1");
         await Reject(pre with { CompletedAtUtc = DateTimeOffset.UtcNow.AddDays(-2) },
@@ -380,52 +462,63 @@ internal static class LegacyRehearsalTests
         await Reject(second.Checkpoint!, second.Checkpoint!.CheckpointHash,
             "FORWARD1", "legacy_forward1");
         var failedForward = new Lab(q, fault: "forwardPhase", job: "legacy_forward1");
-        await Throws(async () => { await new LegacyPhasedRehearsalV1(failedForward, new Authority())
-            .RunNextAsync(pre, pre.CheckpointHash, "FORWARD1", q.Package!, null, CancellationToken.None); });
+        await Throws(async () =>
+        {
+            await new LegacyPhasedRehearsalV1(failedForward, new Authority())
+            .RunNextAsync(pre, pre.CheckpointHash, "FORWARD1", q.Package!, null, CancellationToken.None);
+        });
         Assert(failedForward.Writes == 1);
         var failedRollback = new Lab(q, fault: "rollbackPhase", job: "legacy_rollback");
-        await Throws(async () => { await new LegacyPhasedRehearsalV1(failedRollback, new Authority())
+        await Throws(async () =>
+        {
+            await new LegacyPhasedRehearsalV1(failedRollback, new Authority())
             .RunNextAsync(first.Checkpoint, first.Checkpoint.CheckpointHash,
-                "ROLLBACK", q.Package!, null, CancellationToken.None); });
+                "ROLLBACK", q.Package!, null, CancellationToken.None);
+        });
         Assert(failedRollback.Writes == 1);
     }
 
     private sealed class Authority(bool denied = false) : ILegacyRehearsalAuthorityV1
     {
-        public Task VerifyAsync(LegacyHandoffV1 handoff,string phase,CancellationToken token) =>
+        public Task VerifyAsync(LegacyHandoffV1 handoff, string phase, CancellationToken token) =>
             denied ? throw new LegacyContractException("EXECUTION_AUTHORIZATION_INVALID") : Task.CompletedTask;
     }
-    private sealed class Lab(LegacyQualificationOutcomeV1 q, string fault = "", string? job = null) : ILegacyRehearsalRuntimeV1
+    private sealed class Lab(LegacyQualificationOutcomeV1 q, string fault = "", string? job = null,
+        string evidenceKind = "SYNTHETIC") : ILegacyRehearsalRuntimeV1
     {
-        public string EvidenceKind => "SYNTHETIC";
+        public string EvidenceKind => evidenceKind;
         public LegacyRuntimeContextV1 Context => job is null ? q.TrustedRuntime!.Runtime!
             : q.TrustedRuntime!.Runtime! with { JobId = job };
         public int Writes;
         private int captures;
         public CancellationTokenSource? Cancel;
-        public Task RevalidateAsync(LegacyHandoffV1 h,CancellationToken token) => Task.CompletedTask;
+        public Task RevalidateAsync(LegacyHandoffV1 h, CancellationToken token) => Task.CompletedTask;
         public Task VerifyRollbackAgainstPost1Async(ReleaseScript rollback,
             ObservedCurrentSnapshotV1 post1, CancellationToken token) => Task.CompletedTask;
         public Task<ObservedCurrentSnapshotV1> CaptureAsync(CancellationToken token)
         {
             captures++;
             var original = q.ObservedSnapshot!;
-            var snapshot = JsonSerializer.Deserialize<SchemaSnapshot>(JsonSerializer.Serialize(original.Snapshot,JsonDefaults.Compact),JsonDefaults.Compact)!;
+            var snapshot = JsonSerializer.Deserialize<SchemaSnapshot>(JsonSerializer.Serialize(original.Snapshot, JsonDefaults.Compact), JsonDefaults.Compact)!;
             if ((fault is "lostGrant" or "restoreGrant") && (Writes is 1 or 3)) snapshot.Objects.Clear();
             if (fault == "drift" || fault == "pre2" && Writes == 2 || fault == "post2" && Writes == 3)
-                snapshot.Objects.Add(new() { Kind="table",Schema="dbo",Name="different" });
+                snapshot.Objects.Add(new() { Kind = "table", Schema = "dbo", Name = "different" });
             if (fault == "unsupported" && Writes == 1) snapshot.UnsupportedSchemaFeatures.Add("UNKNOWN_FEATURE");
             var hash = SchemaCanonicalizer.Canonicalize(snapshot).Sha256;
-            var observed = original with { Snapshot = snapshot, ObservedSchemaHash=hash,
-                ContractVersion=fault=="version" ? 2 : 1,
+            var observed = original with
+            {
+                Snapshot = snapshot,
+                ObservedSchemaHash = hash,
+                ContractVersion = fault == "version" ? 2 : 1,
                 TargetId = fault == "target" ? "other" : original.TargetId,
                 CapturedAtUtc = fault == "stale" ? DateTimeOffset.UtcNow.AddHours(-1) : DateTimeOffset.UtcNow,
-                CaptureComparison = original.CaptureComparison with { FirstSchemaHash=hash, SecondSchemaHash=hash },
+                CaptureComparison = original.CaptureComparison with { FirstSchemaHash = hash, SecondSchemaHash = hash },
                 Metadata = fault == "pre" || fault == "post1" && Writes == 1
-                    ? new("PARTIAL","COMPLETE","COMPLETE") : original.Metadata };
+                    ? new("PARTIAL", "COMPLETE", "COMPLETE") : original.Metadata
+            };
             return Task.FromResult(observed);
         }
-        public async Task ApplyExactAsync(ReleaseScript script,string hash,string policy,ObservedCurrentSnapshotV1 expectedPre,CancellationToken token)
+        public async Task ApplyExactAsync(ReleaseScript script, string hash, string policy, ObservedCurrentSnapshotV1 expectedPre, CancellationToken token)
         {
             Assert(script.Sha256 == hash && policy == "HARNESS_OWNS_PHASE_TRANSACTIONS_V1");
             Writes++;
@@ -434,18 +527,23 @@ internal static class LegacyRehearsalTests
             if (fault == "forward" || fault == "rollback" && Writes == 2
                 || fault == "reapply" && Writes == 3)
                 throw new Exception("sensitive database error MUST NOT BE EXPORTED");
-            if (fault == "mutation") q.ObservedSnapshot!.Snapshot.Objects.Add(new() {Kind="table",Schema="dbo",Name="tamper"});
+            if (fault == "mutation") q.ObservedSnapshot!.Snapshot.Objects.Add(new() { Kind = "table", Schema = "dbo", Name = "tamper" });
             if (fault == "cancel") { Cancel!.Cancel(); token.ThrowIfCancellationRequested(); }
-            if (fault == "timeout") await Task.Delay(TimeSpan.FromMinutes(1),token);
+            if (fault == "timeout") await Task.Delay(TimeSpan.FromMinutes(1), token);
         }
-        public Task<RecoverySecuritySnapshot> CaptureSecurityAsync(RecoverySecurityScope scope,RecoveryPhase phase,CancellationToken cancellationToken=default)
+        public Task<RecoverySecuritySnapshot> CaptureSecurityAsync(RecoverySecurityScope scope, RecoveryPhase phase, CancellationToken cancellationToken = default)
         {
             var snapshot = (fault is "lostGrant" or "restoreGrant") && (Writes is 1 or 3) ? new SchemaSnapshot() : q.ObservedSnapshot!.Snapshot;
-            var security = RecoveryCoverageTests.Security(scope,phase,snapshot) with {ServerInstance="SQL1",DatabaseName="TestDb"};
+            var security = RecoveryCoverageTests.Security(scope, phase, snapshot) with { ServerInstance = "SQL1", DatabaseName = "TestDb" };
             if (fault is "lostGrant" or "restoreGrant")
-                security = security with { Securables=security.Securables.Select(s => s with {
-                    Permissions=s.Exists && !(fault == "lostGrant" && phase == RecoveryPhase.Pre2)
-                        ? [new RecoverySecurityPermission("SELECT","G","dbo","dbo")] : [] }).ToArray() };
+                security = security with
+                {
+                    Securables = security.Securables.Select(s => s with
+                    {
+                        Permissions = s.Exists && !(fault == "lostGrant" && phase == RecoveryPhase.Pre2)
+                        ? [new RecoverySecurityPermission("SELECT", "G", "dbo", "dbo")] : []
+                    }).ToArray()
+                };
             return Task.FromResult(security);
         }
     }

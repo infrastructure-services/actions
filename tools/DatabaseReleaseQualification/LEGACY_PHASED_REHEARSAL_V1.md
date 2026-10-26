@@ -1,12 +1,19 @@
 # Legacy phased rehearsal V1 — TEST runtime boundary
 
+**Current execution gate:** real mutating phases require an authenticated durable
+execution fence. No production binding is registered; they stop with
+`DURABLE_EXECUTION_FENCE_REQUIRED` before SQL mutation. GitHub concurrency is
+repository-scoped and does not replace this requirement. The in-memory fence is
+restricted to offline tests. See `LEGACY_INTEGRAL_OFFLINE_REVIEW.md` for scope,
+validation and pending adoption/certification adapters.
+
 The published reusable workflow `legacy-rehearsal-v1-test.yml` contains four
 ordered jobs: read-only `legacy_pre`, then `legacy_forward1`,
 `legacy_rollback`, and `legacy_forward2`. The last three each reference
 the **same** `legacy-rehearsal-test` GitHub Environment. GitHub creates a
 separate deployment for each job, so each job waits for a new review before
 its own mutation. The workflow holds a target-wide concurrency lock across
-the entire run. Reruns are refused.
+the entire run within the calling repository. Reruns are refused.
 
 Before any real run, repository administrators must configure
 `legacy-rehearsal-test` in the **application repository** with Required
@@ -40,5 +47,5 @@ identity mismatch, incomplete evidence or uncertain commit stops the chain.
 Neither rollback nor the next phase starts on its own. The partial journal and
 sanitized block code are uploaded when possible. Human operators inspect
 the target read-only and obtain a new approval before a later, separately
-designed recovery mutation. The old monolithic CLI is retained only for
-synthetic regression and is not called by the production workflow.
+designed recovery mutation. The old monolithic CLI rejects execution at entry;
+synthetic regressions use the typed harness directly.

@@ -30,7 +30,8 @@ public static class LegacyPhaseCheckpoint
 {
     private static readonly Regex Hash = new(@"\A[0-9a-f]{64}\z");
     private static readonly IReadOnlyDictionary<string, (string Next, RecoveryPhase Observation, string Job)> Steps =
-        new Dictionary<string, (string, RecoveryPhase, string)>(StringComparer.Ordinal) {
+        new Dictionary<string, (string, RecoveryPhase, string)>(StringComparer.Ordinal)
+        {
             ["PRE"] = ("FORWARD1", RecoveryPhase.Pre, "legacy_pre"),
             ["POST1"] = ("ROLLBACK", RecoveryPhase.Post1, "legacy_forward1"),
             ["PRE2"] = ("FORWARD2", RecoveryPhase.Pre2, "legacy_rollback")
@@ -155,9 +156,13 @@ public sealed class ProtectedEnvironmentLegacyAuthorityV1(string phase,
     public Task VerifyAsync(LegacyHandoffV1 handoff, string requested, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        var job = phase switch {
-            "FORWARD1" => "legacy_forward1", "ROLLBACK" => "legacy_rollback",
-            "FORWARD2" => "legacy_forward2", "PRE" => "legacy_pre", _ => ""
+        var job = phase switch
+        {
+            "FORWARD1" => "legacy_forward1",
+            "ROLLBACK" => "legacy_rollback",
+            "FORWARD2" => "legacy_forward2",
+            "PRE" => "legacy_pre",
+            _ => ""
         };
         if (requested != phase || runtime.JobId != job
             || Environment.GetEnvironmentVariable("GITHUB_JOB") != job
@@ -198,7 +203,8 @@ public sealed class LegacyPhasedRehearsalV1(
         var security = new Dictionary<RecoveryPhase, CanonicalRecoverySecurity>();
         await CaptureSecurity(h, observation, RecoveryPhase.Pre, security, token);
         var now = DateTimeOffset.UtcNow;
-        var observations = new Dictionary<RecoveryPhase, ObservedCurrentSnapshotV1> {
+        var observations = new Dictionary<RecoveryPhase, ObservedCurrentSnapshotV1>
+        {
             [RecoveryPhase.Pre] = observation
         };
         var phases = new[] { Captured("PRE", observation, now) };
@@ -236,8 +242,10 @@ public sealed class LegacyPhasedRehearsalV1(
         }
         await authority.VerifyAsync(h, phase, token);
         await runtime.RevalidateAsync(h, token);
-        var preceding = phase switch {
-            "FORWARD1" => RecoveryPhase.Pre, "ROLLBACK" => RecoveryPhase.Post1,
+        var preceding = phase switch
+        {
+            "FORWARD1" => RecoveryPhase.Pre,
+            "ROLLBACK" => RecoveryPhase.Post1,
             "FORWARD2" => RecoveryPhase.Pre2,
             _ => throw new LegacyContractException("REHEARSAL_PHASE_ORDER_INVALID")
         };
@@ -268,8 +276,10 @@ public sealed class LegacyPhasedRehearsalV1(
         mutationJournal?.Invoke("MUTATION_STARTED");
         await runtime.ApplyExactAsync(script, expected, h.TransactionPolicy, current, token);
         mutationJournal?.Invoke("MUTATION_APPLIED");
-        var observedPhase = phase switch {
-            "FORWARD1" => RecoveryPhase.Post1, "ROLLBACK" => RecoveryPhase.Pre2,
+        var observedPhase = phase switch
+        {
+            "FORWARD1" => RecoveryPhase.Post1,
+            "ROLLBACK" => RecoveryPhase.Pre2,
             _ => RecoveryPhase.Post2
         };
         var observed = await CaptureAsync(h, last.HashContract, token);
@@ -299,7 +309,8 @@ public sealed class LegacyPhasedRehearsalV1(
         if (phase == "FORWARD2" && h.Recovery.Security == "REQUIRED"
             && security[RecoveryPhase.Post1].Sha256 != security[RecoveryPhase.Post2].Sha256)
             throw new LegacyContractException("BLOCKED_SECURITY_MISMATCH");
-        var observations = new Dictionary<RecoveryPhase, ObservedCurrentSnapshotV1>(previous.Observations) {
+        var observations = new Dictionary<RecoveryPhase, ObservedCurrentSnapshotV1>(previous.Observations)
+        {
             [observedPhase] = observed
         };
         var phases = previous.Phases.Concat(new[] {
@@ -308,13 +319,18 @@ public sealed class LegacyPhasedRehearsalV1(
         }).ToArray();
         if (phase == "FORWARD2")
             return (null, FinalReceipt(previous, h, package, data, observations, security, phases));
-        return (LegacyPhaseCheckpoint.Bind(previous with {
-            Runtime = runtime.Context, CompletedPhase = observedPhase.ToString().ToUpperInvariant(),
+        return (LegacyPhaseCheckpoint.Bind(previous with
+        {
+            Runtime = runtime.Context,
+            CompletedPhase = observedPhase.ToString().ToUpperInvariant(),
             ExpectedNextPhase = phase == "FORWARD1" ? "ROLLBACK" : "FORWARD2",
-            Phases = phases, Observations = observations,
+            Phases = phases,
+            Observations = observations,
             DataEvidence = data?.Evidence ?? new Dictionary<RecoveryPhase, LegacyDataPhaseEvidenceV1>(),
-            SecurityEvidence = security, CompletedAtUtc = DateTimeOffset.UtcNow,
-            PreviousCheckpointHash = trustedPreviousHash, CheckpointHash = ""
+            SecurityEvidence = security,
+            CompletedAtUtc = DateTimeOffset.UtcNow,
+            PreviousCheckpointHash = trustedPreviousHash,
+            CheckpointHash = ""
         }), null);
     }
 
@@ -343,13 +359,22 @@ public sealed class LegacyPhasedRehearsalV1(
         var post1 = SchemaCanonicalizer.Canonicalize(observations[RecoveryPhase.Post1].Snapshot);
         var pre2 = SchemaCanonicalizer.Canonicalize(observations[RecoveryPhase.Pre2].Snapshot);
         var post2 = SchemaCanonicalizer.Canonicalize(observations[RecoveryPhase.Post2].Snapshot);
-        var evaluation = new RehearsalResult {
-            QualificationStatus = "QUALIFIED", SchemaRollbackValidity = SchemaRollbackValidity.Valid,
+        var evaluation = new RehearsalResult
+        {
+            QualificationStatus = "QUALIFIED",
+            SchemaRollbackValidity = SchemaRollbackValidity.Valid,
             DataRollbackValidity = requiredData ? DataRollbackValidity.Valid : DataRollbackValidity.NotApplicable,
-            RollbackCapability = RollbackCapability.FullReversible, ForwardCertified = true,
-            RollbackCertified = true, ReapplyCertified = true, Pre = pre, Post1 = post1,
-            Pre2 = pre2, Post2 = post2, RollbackDiff = SchemaComparer.Compare(pre, pre2),
-            ReapplyDiff = SchemaComparer.Compare(post1, post2), RecoveryCoverage = coverage
+            RollbackCapability = RollbackCapability.FullReversible,
+            ForwardCertified = true,
+            RollbackCertified = true,
+            ReapplyCertified = true,
+            Pre = pre,
+            Post1 = post1,
+            Pre2 = pre2,
+            Post2 = post2,
+            RollbackDiff = SchemaComparer.Compare(pre, pre2),
+            ReapplyDiff = SchemaComparer.Compare(post1, post2),
+            RecoveryCoverage = coverage
         };
         var receipt = LegacyRehearsalReceiptHash.Bind(new(1, "LEGACY_REHEARSAL_RECEIPT",
             runtime.EvidenceKind, runtime.Context, h.TargetId, h.PackageIdentity,
@@ -358,7 +383,8 @@ public sealed class LegacyPhasedRehearsalV1(
             "REHEARSAL_COMPLETE", "FULL_REVERSIBLE", false, null, data?.Definition,
             phases, observations, data?.Evidence ?? new Dictionary<RecoveryPhase, LegacyDataPhaseEvidenceV1>(),
             evaluation, [], previous.StartedAtUtc, DateTimeOffset.UtcNow, ""));
-        if (runtime.EvidenceKind == "REAL_TEST" && authority is ProtectedEnvironmentLegacyAuthorityV1)
+        if (runtime is SqlLegacyRehearsalRuntimeV1
+            && runtime.EvidenceKind == "REAL_TEST" && authority is ProtectedEnvironmentLegacyAuthorityV1)
             LegacyPromotionFreeze.RegisterProducedReceipt(receipt);
         return receipt;
     }

@@ -14,8 +14,9 @@ public sealed record StructuralHashContractV1(int ContractVersion, string Profil
     LegacyProducerRefV1 Canonicalizer, LegacyProducerRefV1 CompatibilityVerifier)
 {
     public const string SupportedProfile = "REGISTRY_V1_CANONICAL_SCHEMA_V1";
+    public const string ModulesProfile = "LEGACY_MODULES_V1_CANONICAL_SCHEMA_V1";
 
-    public bool IsSupported => ContractVersion == 1 && Profile == SupportedProfile
+    public bool IsSupported => ContractVersion == 1 && Profile is SupportedProfile or ModulesProfile
         && RegistryFormatVersion == 1 && CanonicalSchemaFormatVersion == 1
         && Algorithm == "SHA-256" && Canonicalizer.ContractVersion > 0
         && CompatibilityVerifier.ContractVersion > 0;
@@ -60,7 +61,8 @@ public sealed record ObservedCurrentSnapshotV1(int ContractVersion, string Kind,
 
 public static class LegacyStructuralEvidence
 {
-    private static readonly JsonSerializerOptions RequiredNulls = new(JsonDefaults.Compact) {
+    private static readonly JsonSerializerOptions RequiredNulls = new(JsonDefaults.Compact)
+    {
         DefaultIgnoreCondition = JsonIgnoreCondition.Never
     };
 
