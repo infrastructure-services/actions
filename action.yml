@@ -1,5 +1,7 @@
+
 name: 'Generic Build and Push'
-description: 'Build y push de imagen de docker'
+description: 'Build y push de imagen Docker en Andreani y Witwot'
+
 inputs:
   ACR_USERNAME:
     description: "user de acr"
@@ -13,83 +15,157 @@ inputs:
   ACR_FULL_NAME:
     description: "nombre del acr con azurecr.io"
     required: true
+
+  ACR_USERNAME_WITWOT:
+    description: "user de acr de witwot"
+    required: true
+  ACR_PASSWORD_WITWOT:
+    description: "password de acr de witwot"
+    required: true
+  ACR_NAME_WITWOT:
+    description: "nombre del acr de witwot"
+    required: true
+  ACR_FULL_NAME_WITWOT:
+    description: "nombre del acr de witwot con azurecr.io"
+    required: true
+
   appName:
-    description: "Nombre de la aplicacion (dentro del proyecto)"
+    description: "Nombre de la aplicacion"
     required: true
   teamProject:
     description: "Nombre del proyecto/equipo"
     required: true
   appVersion:
-    description: "tag para subir imagen"
+    description: "Tag de la imagen"
     required: true
+
   matrix_deploy:
-    description: "deploy en multiples ambientes"
+    description: "Deploy en multiples ambientes"
     required: false
     default: "[]"
 
 outputs:
   digest:
-    description: Digest de la iamgen generada en build
+    description: "Digest de la imagen generada"
     value: ${{ steps.build.outputs.digest }}
 
 runs:
   using: "composite"
   steps:
-      - name: Generate Docker Tags
-        id: tags
-        uses: actions/github-script@v8
-        with:
-          script: |
-            let tags = [];
-            let matrix_deploy = ${{ inputs.matrix_deploy }};
-            if (matrix_deploy.length > 0) {
-              matrix_deploy.forEach(deploy => {
-                let tag = `${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}-${deploy}:${{ inputs.appVersion}}`
-                tags.push(tag);
+
+    #########################################################
+    # GENERATE DOCKER TAGS
+    #########################################################
+
+    - name: Generate Docker Tags
+      id: tags
+      uses: actions/github-script@v8
+      env:
+        MATRIX_DEPLOY: ${{ inputs.matrix_deploy }}
+        ACR_FULL_NAME: ${{ inputs.ACR_FULL_NAME }}
+        ACR_FULL_NAME_WITWOT: ${{ inputs.ACR_FULL_NAME_WITWOT }}
+        TEAM_PROJECT: ${{ inputs.teamProject }}
+        APP_NAME: ${{ inputs.appName }}
+        APP_VERSION: ${{ inputs.appVersion }}
+      with:
+        result-encoding: string
+        script: |
+          const matrixDeploy = JSON.parse(process.env.MATRIX_DEPLOY);
+
+          if (!Array.isArray(matrixDeploy)) {
+            throw new Error("matrix_deploy debe ser un array");
+          }
+
+          const registries = [
+            process.env.ACR_FULL_NAME,
+            process.env.ACR_FULL_NAME_WITWOT
+          ];
+
+          const project = process.env.TEAM_PROJECT;
+          const app = process.env.APP_NAME;
+          const version = process.env.APP_VERSION;
+
+          const tags = [];
+
+          registries.forEach(registry => {
+            if (matrixDeploy.length > 0) {
+              matrixDeploy.forEach(deploy => {
+                tags.push(
+                  `${registry}/${project}-${app}-${deploy}:${version}`
+                );
               });
             } else {
-              tags.push(`${{ inputs.ACR_FULL_NAME }}/${{inputs.teamProject}}-${{inputs.appName}}:${{ inputs.appVersion}}`);
+              tags.push(
+                `${registry}/${project}-${app}:${version}`
+              );
             }
+          });
 
-            return tags.join('\n');
-          result-encoding: string
-        # Setup .NET Core SDK
-      - name: checkout
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-# Se debe sacar si se utiliza la estrategia de RH
-      #- name: setear docker
-      #  uses: docker/setup-buildx-action@v3
-      #  with:
-      #      install: true
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-            
-      - name: Run a multi-line script
-        shell: bash
-        run: |-
-          echo  ${{ inputs.ACR_USERNAME }}
-          echo ${{ inputs.ACR_PASSWORD }}
-          echo ${{inputs.teamProject}}-${{inputs.appName}}
+          console.log("Tags generados:");
+          console.log(tags.join('\n'));
 
-      - name: Login to Azure Container Registry
-        uses: azure/docker-login@v2
-        with:
-          login-server: ${{ inputs.ACR_NAME }}.azurecr.io 
-          username: ${{ inputs.ACR_USERNAME }}
-          password: ${{ inputs.ACR_PASSWORD }}
+          return tags.join('\n');
 
-      - name: Build and push
-        id: build
-        uses: docker/build-push-action@v7
-        env: 
-          DOCKER_BUILD_RECORD_UPLOAD: "false"
-        with:
-          context: . 
-          file: Dockerfile 
-          push: true
-          tags: |
-            ${{ steps.tags.outputs.result }}
+    #########################################################
+    # CHECKOUT
+    #########################################################
 
+    - name: Checkout
+      uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
 
+    #########################################################
+    # DOCKER BUILDX
+    #########################################################
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v4
+
+    #########################################################
+    # LOGIN ANDREANI
+    #########################################################
+
+    - name: Login to Andreani ACR
+      uses: azure/docker-login@v2
+      with:
+        login-server: ${{ inputs.ACR_NAME }}.azurecr.io
+        username: ${{ inputs.ACR_USERNAME }}
+        password: ${{ inputs.ACR_PASSWORD }}
+
+    #########################################################
+    # LOGIN WITWOT
+    #########################################################
+
+    - name: Login to Witwot ACR
+      uses: azure/docker-login@v2
+      with:
+        login-server: ${{ inputs.ACR_NAME_WITWOT }}.azurecr.io
+        username: ${{ inputs.ACR_USERNAME_WITWOT }}
+        password: ${{ inputs.ACR_PASSWORD_WITWOT }}
+
+    #########################################################
+    # BUILD AND PUSH
+    #########################################################
+
+    - name: Build and push to Andreani and Witwot
+      id: build
+      uses: docker/build-push-action@v7
+      env:
+        DOCKER_BUILD_RECORD_UPLOAD: "false"
+      with:
+        context: .
+        file: Dockerfile
+        push: true
+        tags: |
+          ${{ steps.tags.outputs.result }}
+
+    #########################################################
+    # FINISHED
+    #########################################################
+
+    - name: Finish
+      shell: bash
+      run: |
+        echo "Build y Push completado correctamente"
+        echo "Registries: Andreani y Witwot"
