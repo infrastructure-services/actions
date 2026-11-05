@@ -11,8 +11,10 @@ runs:
           if ! command -v jq &> /dev/null; then
             if grep -qiE 'debian|ubuntu' /etc/os-release; then
               sudo apt-get update -y && sudo apt-get install -y wget jq
+              echo "Instalados wget y/o jq"
             elif grep -qiE 'rhel|fedora|centos' /etc/os-release; then
               sudo yum install -y wget jq
+              echo "Instalados wget y/o jq"
             fi
           fi
           
@@ -20,4 +22,5 @@ runs:
             sudo yum install -y wget
             sudo wget -qO /usr/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
             sudo chmod a+x /usr/bin/yq
+            echo "Instalado yq"
           fi
