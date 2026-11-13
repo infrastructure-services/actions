@@ -4,6 +4,7 @@ description: Tras un deploy a producción, un agente (Copilot CLI) analiza la ve
 # Se usa como un paso del job de deploy (runner del grupo Production, con red hacia Overmind y GitHub Copilot).
 # Un composite action no ve secrets ni vars: el workflow los pasa como inputs. Sin overmindMcpUrl o appId se omite sin fallar.
 # overmindTokenUrl vacío = Overmind sin autenticación (solo desarrollo local); con él se exigen scope, client id y secret.
+# Con un gateway MCP de LiteLLM: overmindMcpUrl es la URL del gateway y overmindApiKey su virtual key (sin OAuth).
 # copilotToken: PAT fine-grained con "Copilot Requests" (o github.token si el job declara copilot-requests: write).
 
 inputs:
@@ -44,6 +45,14 @@ inputs:
     default: ""
   overmindClientSecret:
     description: Client secret M2M del MCP
+    required: false
+    default: ""
+  overmindApiKey:
+    description: Virtual key del gateway MCP (LiteLLM); si se completa se envía en x-litellm-api-key y no se usa OAuth
+    required: false
+    default: ""
+  overmindToolPrefix:
+    description: Prefijo que el gateway antepone a las herramientas de Overmind (por ejemplo overmind-); vacío se detecta solo si no es ambiguo
     required: false
     default: ""
   copilotToken:
@@ -301,12 +310,18 @@ runs:
         OVERMIND_SCOPE: ${{ inputs.overmindScope }}
         OVERMIND_CLIENT_ID: ${{ inputs.overmindClientId }}
         OVERMIND_CLIENT_SECRET: ${{ inputs.overmindClientSecret }}
+        OVERMIND_API_KEY: ${{ inputs.overmindApiKey }}
+        OVERMIND_TOOL_PREFIX: ${{ inputs.overmindToolPrefix }}
       shell: bash
       run: |
         node --input-type=module -e '
-          import { writeFileSync } from "node:fs";
+          import { appendFileSync, writeFileSync } from "node:fs";
           const headers = {};
-          if (process.env.OVERMIND_TOKEN_URL) {
+          if (process.env.OVERMIND_API_KEY) {
+            // Gateway MCP de LiteLLM: la virtual key va en x-litellm-api-key y LiteLLM autentica contra Overmind.
+            console.log("::add-mask::" + process.env.OVERMIND_API_KEY);
+            headers["x-litellm-api-key"] = "Bearer " + process.env.OVERMIND_API_KEY;
+          } else if (process.env.OVERMIND_TOKEN_URL) {
             const body = new URLSearchParams({
               grant_type: "client_credentials",
               client_id: process.env.OVERMIND_CLIENT_ID,
@@ -319,14 +334,62 @@ runs:
             console.log("::add-mask::" + access_token);
             headers.Authorization = "Bearer " + access_token;
           }
+
+          // Un gateway antepone el nombre del servidor a cada herramienta (por ejemplo overmind-get_document): se resuelve el nombre real.
+          const wanted = ["get_document", "ingest_document", "execute_read_query", "build_document_graph"];
+          const names = Object.fromEntries(wanted.map((name) => [name, name]));
+          try {
+            let session;
+            let id = 0;
+            const call = async (method, params, notify = false) => {
+              const body = { jsonrpc: "2.0", method, params, ...(notify ? {} : { id: ++id }) };
+              const response = await fetch(process.env.OVERMIND_MCP_URL, {
+                method: "POST",
+                headers: { ...headers, "Content-Type": "application/json", Accept: "application/json, text/event-stream",
+                  ...(session ? { "mcp-session-id": session } : {}) },
+                body: JSON.stringify(body),
+              });
+              if (!response.ok) throw new Error("HTTP " + response.status);
+              session ??= response.headers.get("mcp-session-id") ?? undefined;
+              if (notify) return undefined;
+              const text = await response.text();
+              const message = (response.headers.get("content-type") ?? "").includes("text/event-stream")
+                ? text.split("\n").filter((line) => line.startsWith("data:")).map((line) => JSON.parse(line.slice(5))).find((m) => m.id === id)
+                : JSON.parse(text);
+              if (message?.error) throw new Error(message.error.message);
+              return message?.result;
+            };
+            await call("initialize", { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "release-agent", version: "1" } });
+            await call("notifications/initialized", {}, true);
+            const listed = ((await call("tools/list", {}))?.tools ?? []).map((tool) => tool.name);
+            for (const base of wanted) {
+              const prefixed = (process.env.OVERMIND_TOOL_PREFIX ?? "") + base;
+              const hits = process.env.OVERMIND_TOOL_PREFIX
+                ? listed.filter((name) => name === prefixed)
+                : listed.filter((name) => name === base || (name.endsWith(base) && /[-_.\/:]/.test(name[name.length - base.length - 1])));
+              if (hits.length === 1) names[base] = hits[0];
+              else if (hits.length > 1) console.log("::warning::Hay varias herramientas " + base + " en el gateway (" + hits.join(", ") + "): definir overmindToolPrefix");
+            }
+            const missing = wanted.filter((base) => !listed.includes(names[base]));
+            if (missing.length) console.log("::warning::El MCP no publica: " + missing.join(", "));
+          } catch (error) {
+            console.log("::warning::No se pudieron listar las herramientas del MCP (" + error.message + "); se usan los nombres sin prefijo");
+          }
+
           // Solo las dos herramientas que el agente necesita.
           const config = { mcpServers: { overmind: {
             type: "http",
             url: process.env.OVERMIND_MCP_URL,
             headers,
-            tools: ["get_document", "ingest_document"],
+            tools: [names.get_document, names.ingest_document],
           } } };
-          writeFileSync(process.env.RUNNER_TEMP + "/overmind/mcp.json", JSON.stringify(config), { mode: 0o600 });
+          const dir = process.env.RUNNER_TEMP + "/overmind/";
+          writeFileSync(dir + "mcp.json", JSON.stringify(config), { mode: 0o600 });
+          writeFileSync(dir + "tools.json", JSON.stringify(names));
+          appendFileSync(process.env.GITHUB_ENV, "OVERMIND_TOOL_GET=" + names.get_document + "\nOVERMIND_TOOL_INGEST=" + names.ingest_document + "\n");
+          if (names.get_document !== "get_document" || names.ingest_document !== "ingest_document") {
+            appendFileSync(dir + "prompt.md", "\nNombres reales de las herramientas del servidor overmind: get_document = " + names.get_document + "; ingest_document = " + names.ingest_document + ". Usalos tal cual.\n");
+          }
         '
 
     - name: Sync documentation
@@ -338,12 +401,14 @@ runs:
       run: |
         cat > docs-sync.mjs <<'JS'
         import { createHash } from "node:crypto";
-        import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+        import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
         import { basename, extname, join, relative, sep } from "node:path";
 
         const { APP_ID: appId, GITHUB_REPOSITORY: repo, WORK: work } = process.env;
         const sha = /^sha: (\w+)/m.exec(readFileSync(`${work}/ctx/meta.txt`, "utf8"))[1];
         const config = JSON.parse(readFileSync(`${work}/mcp.json`, "utf8")).mcpServers.overmind;
+        // Nombres reales de las herramientas (un gateway los prefija con el servidor); lo escribe el paso de configuración del MCP.
+        const toolNames = existsSync(`${work}/tools.json`) ? JSON.parse(readFileSync(`${work}/tools.json`, "utf8")) : {};
         const [org] = repo.split("/");
         const prefix = `github/${repo}/`;
         const appNode = `gitops:prod:app:${appId}`;
@@ -370,7 +435,7 @@ runs:
           return message?.result;
         }
         async function tool(name, args) {
-          const result = await rpc("tools/call", { name, arguments: { agent_name: "overmind-release-docs", ...args } });
+          const result = await rpc("tools/call", { name: toolNames[name] ?? name, arguments: { agent_name: "overmind-release-docs", ...args } });
           const text = result.content?.find((c) => c.type === "text")?.text;
           if (result.isError) throw new Error(`${name}: ${text}`);
           const data = result.structuredContent ?? JSON.parse(text);
@@ -493,7 +558,7 @@ runs:
           --disable-builtin-mcps \
           --additional-mcp-config "@mcp.json" \
           --allow-tool='read' \
-          --allow-tool='overmind(get_document)' --allow-tool='overmind(ingest_document)' \
+          --allow-tool="overmind(${OVERMIND_TOOL_GET:-get_document})" --allow-tool="overmind(${OVERMIND_TOOL_INGEST:-ingest_document})" \
           --deny-tool='shell' --deny-tool='write' --deny-tool='url' \
           | tee result.md
         { echo "### 🧠 Overmind Release"; cat result.md; } >> "$GITHUB_STEP_SUMMARY"

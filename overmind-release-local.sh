@@ -3,6 +3,7 @@
 # Uso: [KIND=docs|code] overmind-release-local.sh <repo> <version> <app_id> [app_name]
 # Sin KIND se detecta como en la action: docs si el repo tiene mkdocs.yml, si no code.
 # Requiere git, node, uv y Copilot CLI (copilot login o COPILOT_GITHUB_TOKEN). OVERMIND_MCP_URL por defecto http://localhost:8081/mcp.
+# Con un gateway MCP de LiteLLM: OVERMIND_MCP_URL=<url del gateway> y OVERMIND_API_KEY=<virtual key>.
 set -euo pipefail
 [[ $# -ge 3 ]] || { sed -n '2,4p' "$0"; exit 2; }
 repo="$(cd "$1" && pwd)"; version="$2"; app_id="$3"; app_name="${4:-$(basename "$repo")}"
