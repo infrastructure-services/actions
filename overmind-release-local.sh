@@ -22,7 +22,8 @@ import sys, yaml
 steps = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["runs"]["steps"]
 by_name = {s["name"]: s["run"] for s in steps if "run" in s}
 for name, file in (("Prepare context", "prepare"), ("Write agent prompt", "prompt"), ("Write documentation prompt", "prompt-docs"),
-                   ("Configure Overmind MCP", "mcp"), ("Sync documentation", "docs-sync"), ("Analyze and ingest", "analyze")):
+                   ("Configure Overmind MCP", "mcp"), ("Collect dependencies", "collect"), ("Sync documentation", "docs-sync"),
+                   ("Analyze and ingest", "analyze"), ("Apply dependencies", "apply")):
     open(f"{sys.argv[2]}/{file}.sh", "w", encoding="utf-8", newline="\n").write(by_name[name])
 PY
 
@@ -36,6 +37,11 @@ echo "== Write agent prompt ($kind) + Configure Overmind MCP ($mcp_url)"
 if [[ "$kind" == docs ]]; then bash "$steps/prompt-docs.sh"; else bash "$steps/prompt.sh"; fi
 OVERMIND_MCP_URL="$mcp_url" OVERMIND_TOKEN_URL="" bash "$steps/mcp.sh"
 
+if [[ "$kind" != docs ]]; then
+  echo "== Collect dependencies"
+  (cd "$repo" && bash "$steps/collect.sh")
+fi
+
 if [[ "$kind" == docs ]]; then
   echo "== Sync documentation"
   (cd "$work" && APP_ID="$app_id" bash "$steps/docs-sync.sh")
@@ -47,11 +53,15 @@ cat "$work/ctx/meta.txt"; echo "-- commits: $(wc -l < "$work/ctx/commits.txt"), 
 
 echo "== Analyze and ingest (Copilot CLI)"
 (cd "$work" && GITHUB_STEP_SUMMARY="$work/summary.md" bash "$steps/analyze.sh")
+if [[ "$kind" != docs ]]; then
+  echo "== Apply dependencies"
+  (cd "$work" && APP_ID="$app_id" bash "$steps/apply.sh")
+fi
 
 echo "== Documentos en Overmind"
 api="${mcp_url%/mcp}/api/v1/documents"
-sha="$(git -C "$repo" rev-parse HEAD)"
-for id in "gitops:prod:app-profile:$app_id" "gitops:prod:release:$app_id:$sha"; do
+release_id="$(sed -n 's/^release_id: //p' "$work/ctx/meta.txt")"
+for id in "gitops:prod:app-profile:$app_id" "$release_id"; do
   echo "-- $id"; curl -fsS "$api/$id" || echo "(no existe)"; echo
 done
 echo "Archivos de la corrida: $work"
