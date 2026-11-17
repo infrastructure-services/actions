@@ -180,7 +180,7 @@ runs:
         - ctx/meta.txt: datos del despliegue (app_id, app_name, version, sha, previous_version, previous_sha, release_id,
           previous_release_id, deployed_at).
         - ctx/commits.txt, ctx/changed-files.txt, ctx/changes.diff: cambios desde la versión productiva anterior.
-        - ctx/dependencies.md: librerías directas de cada capa (proyecto o carpeta), extraídas de csproj, package.json, go.mod y requirements.
+        - ctx/dependencies.md: librerías directas de cada capa (proyecto o carpeta), extraídas de csproj/fsproj/vbproj, packages.config, package.json, go.mod, composer.json, pyproject.toml y requirements.
         - ctx/deploy-values.md: dependencias del despliegue por ambiente (URLs, hosts, bases de datos), ya saneadas por el workflow.
         - src/: código del repositorio, sin archivos de configuración ni de despliegue.
 
@@ -450,9 +450,9 @@ runs:
         for (const f of files) {
           const file = rel(f);
           const folder = dirname(file) === "." ? "raíz" : dirname(file);
-          if (/\.csproj$/i.test(f)) {
+          if (/\.(cs|fs|vb)proj$/i.test(f)) {
             const text = read(f);
-            const layer = basename(f).replace(/\.csproj$/i, "");
+            const layer = basename(f).replace(/\.(cs|fs|vb)proj$/i, "");
             const test = /(^|[.\-_])(tests?|specs?)$/i.test(layer) || /^(src\/)?tests?\//i.test(file) || /Microsoft\.NET\.Test\.Sdk|<IsTestProject>\s*true/i.test(text);
             for (const m of text.matchAll(/<PackageReference\b([^>]*?)(\/?)>/gi)) {
               const name = /Include="([^"]+)"/i.exec(m[1])?.[1];
@@ -476,6 +476,34 @@ runs:
               if (block && /^\s*\)/.test(line)) { block = false; continue; }
               const m = /^\s*(?:require\s+)?([\w.\-\/~]+\.[\w.\-\/~]+)\s+(v[\w.\-+]+)(\s*\/\/\s*indirect)?/.exec(line);
               if (m && (block || /^\s*require\s/.test(line)) && !m[3]) libs.push({ ecosystem: "go", name: m[1], version: m[2], layer: folder, file, test: false, dev: false });
+            }
+          } else if (basename(f).toLowerCase() === "packages.config") {
+            for (const m of read(f).matchAll(/<package\s+id="([^"]+)"\s+version="([^"]+)"([^>]*)>/gi)) {
+              libs.push({ ecosystem: "nuget", name: m[1], version: m[2], layer: folder, file, test: false, dev: /developmentDependency="true"/i.test(m[3]) });
+            }
+          } else if (basename(f) === "composer.json") {
+            let json = {};
+            try { json = JSON.parse(read(f)); } catch { continue; }
+            for (const [dev, section] of [[false, "require"], [true, "require-dev"]]) {
+              // Solo paquetes vendor/nombre: se descartan php y ext-*.
+              for (const [name, version] of Object.entries(json[section] ?? {})) if (name.includes("/")) libs.push({ ecosystem: "packagist", name, version, layer: folder, file, test: false, dev });
+            }
+          } else if (basename(f) === "pyproject.toml") {
+            const text = read(f);
+            const add = (name, version, dev) => libs.push({ ecosystem: "pypi", name, version, layer: folder, file, test: false, dev });
+            // PEP 621: lista dependencies del proyecto.
+            const pep = /^dependencies\s*=\s*\[([\s\S]*?)\]\s*$/m.exec(text)?.[1] ?? "";
+            for (const m of pep.matchAll(/["']([A-Za-z0-9_.\-]+)(?:\[[^\]]*\])?\s*(?:[=<>~!]=?\s*([\w.*+\-]+))?/g)) add(m[1], m[2], false);
+            // Poetry: tablas de dependencias, las de desarrollo y pruebas quedan como dev.
+            let section = "";
+            for (const raw of text.split("\n")) {
+              const line = raw.trim();
+              const header = /^\[([^\]]+)\]$/.exec(line);
+              if (header) { section = header[1]; continue; }
+              const dev = /^tool\.poetry\.(dev-dependencies|group\.[\w-]+\.dependencies)$/.test(section);
+              if (!dev && section !== "tool.poetry.dependencies") continue;
+              const m = /^([A-Za-z0-9_.\-]+)\s*=\s*(?:"([^"]*)"|\{[^}]*version\s*=\s*"([^"]*)")/.exec(line);
+              if (m && m[1].toLowerCase() !== "python") add(m[1], m[2] ?? m[3], dev);
             }
           } else if (/^requirements[\w.\-]*\.txt$/i.test(basename(f))) {
             for (const line of read(f).split("\n")) {
@@ -511,7 +539,7 @@ runs:
           const key = `${lib.layer} (${lib.ecosystem}${lib.test ? ", pruebas" : lib.dev ? ", desarrollo" : ""}, ${lib.file})`;
           groups.set(key, [...(groups.get(key) ?? []), lib]);
         }
-        const libraryReport = ["# Librerías directas por capa", "Extraídas de csproj, package.json, go.mod y requirements; la capa es el proyecto o la carpeta.", ""];
+        const libraryReport = ["# Librerías directas por capa", "Extraídas de csproj, package.json, go.mod, composer.json, pyproject.toml y requirements; la capa es el proyecto o la carpeta.", ""];
         if (!libs.length) libraryReport.push("No se encontraron archivos de dependencias reconocidos.");
         for (const [key, items] of [...groups].sort(([a], [b]) => a.localeCompare(b))) {
           libraryReport.push(`## ${key}`, ...items.sort((a, b) => a.name.localeCompare(b.name)).slice(0, 80).map((l) => `- ${l.name}${l.version ? " " + l.version : ""}`));
@@ -850,7 +878,7 @@ runs:
           if (!libraries.length) console.log("Sin librerías con versión concreta para registrar");
           else {
             await tool("get_document", { document_id: releaseId });
-            const TECH = { nuget: "dotnet", npm: "javascript", go: "go", pypi: "python" };
+            const TECH = { nuget: "dotnet", npm: "javascript", go: "go", pypi: "python", packagist: "php" };
             let failed = 0;
             const register = async (lib) => {
               const id = `lib:${lib.ecosystem}:${lib.name.toLowerCase()}:${lib.version}`;
