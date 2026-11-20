@@ -6,6 +6,8 @@ description: Tras un deploy a producción, un agente (Copilot CLI) analiza la ve
 # overmindTokenUrl vacío = Overmind sin autenticación (solo desarrollo local); con él se exigen scope, client id y secret.
 # Con un gateway MCP de LiteLLM: overmindMcpUrl es la URL del gateway y overmindApiKey su virtual key (sin OAuth).
 # copilotToken: PAT fine-grained con "Copilot Requests" (o github.token si el job declara copilot-requests: write).
+# apmServerUrl (por defecto https://apm-mon.andreani.com, sin secret token): al final se envía una transacción a Elastic APM
+# con la duración de cada paso, el resultado y datos de la ejecución (sin secretos). Un fallo del reporte nunca hace fallar el action.
 
 inputs:
   appVersion:
@@ -63,6 +65,22 @@ inputs:
     description: Modelo de Copilot CLI; vacío usa el de la CLI
     required: false
     default: ""
+  apmServerUrl:
+    description: URL del servidor Elastic APM; vacía usa la de Andreani
+    required: false
+    default: https://apm-mon.andreani.com
+  apmSecretToken:
+    description: Secret token del servidor APM, si lo exige (se envía como Bearer)
+    required: false
+    default: ""
+  apmEnvironment:
+    description: Ambiente con el que se reporta a APM
+    required: false
+    default: prod
+  apmServiceName:
+    description: Nombre del servicio en APM
+    required: false
+    default: overmind-release
 
 runs:
   using: composite
@@ -78,6 +96,7 @@ runs:
         APP_ID: ${{ inputs.appId }}
       shell: bash
       run: |
+        printf 'config\t%s\n' "$(date +%s%3N)" >> "${RUNNER_TEMP:-/tmp}/overmind-timing.tsv"
         required=(OVERMIND_MCP_URL APP_ID)
         # Sin OVERMIND_TOKEN_URL se asume un Overmind sin autenticación (solo desarrollo local).
         if [[ -n "$OVERMIND_TOKEN_URL" ]]; then required+=(OVERMIND_SCOPE OVERMIND_CLIENT_ID OVERMIND_CLIENT_SECRET); fi
@@ -97,6 +116,7 @@ runs:
         fetch-depth: 0
 
     - name: Prepare context
+      id: prepare
       if: steps.config.outputs.enabled == 'true'
       env:
         APP_VERSION: ${{ inputs.appVersion }}
@@ -107,6 +127,7 @@ runs:
         RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       shell: bash
       run: |
+        printf 'prepare\t%s\n' "$(date +%s%3N)" >> "${RUNNER_TEMP:-/tmp}/overmind-timing.tsv"
         set -euo pipefail
         kind="$INPUT_KIND"
         if [[ "$kind" == auto ]]; then
@@ -321,7 +342,9 @@ runs:
     - name: Install Copilot CLI
       if: steps.config.outputs.enabled == 'true'
       shell: bash
-      run: npm install -g @github/copilot
+      run: |
+        printf 'install\t%s\n' "$(date +%s%3N)" >> "${RUNNER_TEMP:-/tmp}/overmind-timing.tsv"
+        npm install -g @github/copilot
 
     - name: Configure Overmind MCP
       if: steps.config.outputs.enabled == 'true'
@@ -335,6 +358,7 @@ runs:
         OVERMIND_TOOL_PREFIX: ${{ inputs.overmindToolPrefix }}
       shell: bash
       run: |
+        printf 'mcp\t%s\n' "$(date +%s%3N)" >> "${RUNNER_TEMP:-/tmp}/overmind-timing.tsv"
         node --input-type=module -e '
           import { appendFileSync, writeFileSync } from "node:fs";
           const headers = {};
@@ -414,9 +438,11 @@ runs:
         '
 
     - name: Collect dependencies
+      id: collect
       if: steps.config.outputs.enabled == 'true' && env.KIND != 'docs'
       shell: bash
       run: |
+        printf 'collect\t%s\n' "$(date +%s%3N)" >> "${RUNNER_TEMP:-/tmp}/overmind-timing.tsv"
         # Extrae librerías y valores de despliegue ya saneados: el agente lee solo ctx/, nunca los archivos originales.
         cat > "$work/collect-deps.mjs" <<'JS'
         import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -634,12 +660,14 @@ runs:
         OUT_DIR="$work/ctx" node "$work/collect-deps.mjs"
 
     - name: Sync documentation
+      id: docs
       if: steps.config.outputs.enabled == 'true' && env.KIND == 'docs'
       working-directory: ${{ env.work }}
       env:
         APP_ID: ${{ inputs.appId }}
       shell: bash
       run: |
+        printf 'docs-sync\t%s\n' "$(date +%s%3N)" >> "${RUNNER_TEMP:-/tmp}/overmind-timing.tsv"
         cat > docs-sync.mjs <<'JS'
         import { createHash } from "node:crypto";
         import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
@@ -787,6 +815,7 @@ runs:
         WORK="$work" node docs-sync.mjs
 
     - name: Analyze and ingest
+      id: analyze
       if: steps.config.outputs.enabled == 'true'
       working-directory: ${{ env.work }}
       env:
@@ -794,6 +823,7 @@ runs:
         COPILOT_MODEL: ${{ inputs.copilotModel }}
       shell: bash
       run: |
+        printf 'analyze\t%s\n' "$(date +%s%3N)" >> "${RUNNER_TEMP:-/tmp}/overmind-timing.tsv"
         set -o pipefail
         timeout 25m copilot -p "$(cat prompt.md)" -s --no-ask-user --no-custom-instructions \
           --disable-builtin-mcps \
@@ -805,12 +835,14 @@ runs:
         { echo "### 🧠 Overmind Release"; cat result.md; } >> "$GITHUB_STEP_SUMMARY"
 
     - name: Apply dependencies
+      id: apply
       if: ${{ !cancelled() && steps.config.outputs.enabled == 'true' && env.KIND != 'docs' }}
       working-directory: ${{ env.work }}
       env:
         APP_ID: ${{ inputs.appId }}
       shell: bash
       run: |
+        printf 'apply\t%s\n' "$(date +%s%3N)" >> "${RUNNER_TEMP:-/tmp}/overmind-timing.tsv"
         # Los tags library: y resource-type: del perfil y los nodos Library (con DEPENDS_ON desde la Release) los pone este paso, no el agente.
         cat > apply-tags.mjs <<'JS'
         import { existsSync, readFileSync } from "node:fs";
@@ -935,6 +967,97 @@ runs:
         }
         JS
         WORK="$work" node apply-tags.mjs
+
+    - name: Report to APM
+      if: ${{ always() && steps.config.outputs.enabled == 'true' }}
+      continue-on-error: true
+      env:
+        APM_SERVER_URL: ${{ inputs.apmServerUrl || 'https://apm-mon.andreani.com' }}
+        APM_SECRET_TOKEN: ${{ inputs.apmSecretToken }}
+        APM_ENVIRONMENT: ${{ inputs.apmEnvironment }}
+        APM_SERVICE_NAME: ${{ inputs.apmServiceName }}
+        APP_ID: ${{ inputs.appId }}
+        APP_NAME: ${{ inputs.appName }}
+        APP_VERSION: ${{ inputs.appVersion }}
+        PROJECT: ${{ inputs.project }}
+        MODEL: ${{ inputs.copilotModel }}
+        REPOSITORY: ${{ github.repository }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        OUTCOME_prepare: ${{ steps.prepare.outcome }}
+        OUTCOME_collect: ${{ steps.collect.outcome }}
+        OUTCOME_docs_sync: ${{ steps.docs.outcome }}
+        OUTCOME_analyze: ${{ steps.analyze.outcome }}
+        OUTCOME_apply: ${{ steps.apply.outcome }}
+      shell: bash
+      run: |
+        # Una transacci\u00f3n por ejecuci\u00f3n con un span por paso (Elastic APM, intake v2); sin secretos ni valores de configuraci\u00f3n.
+        cat > "$RUNNER_TEMP/apm-report.mjs" <<'JS'
+        import { existsSync, readFileSync } from "node:fs";
+        import { randomBytes } from "node:crypto";
+
+        const e = process.env;
+        const timing = `${e.RUNNER_TEMP}/overmind-timing.tsv`;
+        if (!existsSync(timing)) { console.log("APM: sin marcas de tiempo, no se reporta"); process.exit(0); }
+        if (e.APM_SECRET_TOKEN) console.log("::add-mask::" + e.APM_SECRET_TOKEN);
+
+        const marks = readFileSync(timing, "utf8").trim().split("\n")
+          .map((line) => { const [name, time] = line.split("\t"); return { name, time: Number(time) }; })
+          .filter((m) => m.name && Number.isFinite(m.time));
+        if (!marks.length) process.exit(0);
+        const now = Date.now();
+
+        const LABEL = { config: "configuracion y checkout", prepare: "preparar contexto", install: "instalar copilot cli", mcp: "configurar mcp de overmind",
+          collect: "recolectar dependencias", "docs-sync": "sincronizar documentacion", analyze: "analisis del agente e ingesta", apply: "aplicar dependencias" };
+        const OUTCOME = { prepare: e.OUTCOME_prepare, collect: e.OUTCOME_collect, "docs-sync": e.OUTCOME_docs_sync, analyze: e.OUTCOME_analyze, apply: e.OUTCOME_apply };
+        const ok = (name) => !["failure", "cancelled"].includes(OUTCOME[name] ?? "success");
+
+        const hex = (bytes) => randomBytes(bytes).toString("hex");
+        const traceId = hex(16), transactionId = hex(8);
+        let libraries = 0, libraryTags = 0, releaseId = "";
+        try {
+          const deps = JSON.parse(readFileSync(`${e.work}/ctx/dependency-tags.json`, "utf8"));
+          libraries = deps.libraries?.length ?? 0;
+          libraryTags = (deps.tags ?? []).filter((t) => t.startsWith("library:")).length;
+        } catch { /* modo docs o sin dependencias */ }
+        try { releaseId = /^release_id: (\S+)/m.exec(readFileSync(`${e.work}/ctx/meta.txt`, "utf8"))?.[1] ?? ""; } catch { /* sin meta */ }
+
+        const failed = marks.some((m) => !ok(m.name));
+        const outcome = failed ? "failure" : "success";
+        const spans = marks.map((m, i) => {
+          const end = marks[i + 1]?.time ?? now;
+          return { span: {
+            id: hex(8), transaction_id: transactionId, trace_id: traceId, parent_id: transactionId,
+            name: LABEL[m.name] ?? m.name, type: "app", subtype: m.name === "analyze" ? "copilot" : "action", action: "exec",
+            timestamp: m.time * 1000, duration: Math.max(end - m.time, 0), outcome: ok(m.name) ? "success" : "failure",
+          } };
+        });
+
+        const tags = { app_id: e.APP_ID, app_name: e.APP_NAME, version: e.APP_VERSION, project: e.PROJECT, repository: e.REPOSITORY,
+          model: e.MODEL || "default", release_id: releaseId, libraries_versioned: libraries, library_tags: libraryTags, run_url: e.RUN_URL };
+        for (const key of Object.keys(tags)) if (tags[key] === "" || tags[key] === undefined) delete tags[key];
+
+        const lines = [
+          { metadata: { service: { name: e.APM_SERVICE_NAME || "overmind-release", environment: e.APM_ENVIRONMENT || "prod", version: e.APP_VERSION,
+            agent: { name: "github-action", version: "1.0.0" }, language: { name: "javascript" } } } },
+          { transaction: { id: transactionId, trace_id: traceId, name: "overmind-release", type: "ci", timestamp: marks[0].time * 1000,
+            duration: Math.max(now - marks[0].time, 0), result: outcome, outcome, sampled: true, span_count: { started: spans.length },
+            context: { tags } } },
+          ...spans,
+        ];
+
+        const headers = { "Content-Type": "application/x-ndjson" };
+        if (e.APM_SECRET_TOKEN) headers.Authorization = `Bearer ${e.APM_SECRET_TOKEN}`;
+        try {
+          const response = await fetch(`${e.APM_SERVER_URL.replace(/\/+$/, "")}/intake/v2/events`, {
+            method: "POST", headers, body: lines.map((l) => JSON.stringify(l)).join("\n") + "\n", signal: AbortSignal.timeout(15000),
+          });
+          if (response.ok) console.log(`APM: transaccion enviada (${outcome}, ${spans.length} spans, HTTP ${response.status})`);
+          else console.log(`::warning::APM respondio HTTP ${response.status}: ${(await response.text()).slice(0, 200)}`);
+        } catch (error) {
+          console.log(`::warning::No se pudo reportar a APM: ${error.message}`.slice(0, 300));
+        }
+        JS
+        work="$work" node "$RUNNER_TEMP/apm-report.mjs" || true
 
     - name: Remove credentials
       if: always() && steps.config.outputs.enabled == 'true'

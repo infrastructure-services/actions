@@ -37,4 +37,6 @@ En repositorios de código el action además:
 
 `kind` (`auto`, `code` o `docs`) es opcional: en `auto` se usa `docs` si el repo tiene `mkdocs.yml`. Sin `overmindMcpUrl` o `appId` el paso se omite.
 
+**Monitoreo en APM.** El action envía a Elastic APM (`https://apm-mon.andreani.com` por defecto, sin secret token), al final de cada ejecución (también si falla), una transacción `overmind-release` con un span por paso (configuración y checkout, preparar contexto, instalar la CLI, configurar el MCP, recolectar dependencias o sincronizar documentación, análisis del agente e ingesta, aplicar dependencias). El resultado es `success` o `failure` según los pasos, y lleva como labels `app_id`, `app_name`, `version`, `project`, `repository`, `model`, `release_id`, `libraries_versioned`, `library_tags` y `run_url`; no incluye secretos ni valores de configuración. Inputs opcionales: `apmServerUrl` (otro servidor), `apmSecretToken` (si el servidor lo exige, se envía como Bearer), `apmEnvironment` (por defecto `prod`) y `apmServiceName` (por defecto `overmind-release`). Un fallo del reporte solo genera un warning.
+
 Prueba local contra un Overmind sin autenticación: `bash overmind-release-local.sh <repo> <version> <app_id> [app_name]`.
