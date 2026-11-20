@@ -24,7 +24,7 @@ Overmind_release:
         overmindScope: ${{ vars.OVERMIND_SCOPE }}
         overmindClientId: ${{ secrets.OVERMIND_CLIENT_ID }}
         overmindClientSecret: ${{ secrets.OVERMIND_CLIENT_SECRET }}
-        copilotToken: ${{ secrets.COPILOT_GITHUB_TOKEN || github.token }}
+        copilotToken: ${{ secrets.COPILOT_GITHUB_TOKEN || secrets.ARQUITECTURA_DEPLOY }}
         copilotModel: ${{ vars.OVERMIND_RELEASE_MODEL }}
 ```
 

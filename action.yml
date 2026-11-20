@@ -607,11 +607,14 @@ runs:
         }
 
         const valuesReport = ["# Dependencias de despliegue por ambiente", "Valores saneados: sin credenciales, tokens ni claves; los secretos figuran solo por nombre.", ""];
-        const valueFiles = files.filter((f) => /(^|\/)\.devops\/[^\/]*\.ya?ml$/i.test(rel(f)));
-        if (!valueFiles.length) valuesReport.push("No hay archivos .devops/*.yaml con valores por ambiente.");
+        const valueFiles = files.filter((f) => /(^|\/)\.devops\/([^\/]+\/)*[^\/]+\.ya?ml$/i.test(rel(f)));
+        if (!valueFiles.length) valuesReport.push("No hay archivos .devops/**/*.yaml con valores por ambiente.");
         for (const f of valueFiles.sort()) {
           const text = read(f);
-          const env = /(prod(uction)?|preprod|qa|test|uat|dev)/i.exec(basename(f))?.[1]?.toLowerCase().replace("production", "prod") ?? "desconocido";
+          // El ambiente sale de la carpeta (.devops/<ambiente>/value-<instancia>.yaml) o, si no, del nombre del archivo.
+          const folders = rel(f).split("/").slice(rel(f).split("/").lastIndexOf(".devops") + 1, -1).join("/");
+          const envPattern = /(prod(uction)?|preprod|qa|test|uat|dev)/i;
+          const env = (envPattern.exec(folders) ?? envPattern.exec(basename(f)))?.[1]?.toLowerCase().replace("production", "prod") ?? "desconocido";
           const { normal, secret } = parseEnv(text);
           valuesReport.push(`## Ambiente: ${env} (${rel(f)})`);
           const entries = normal.map(([key, value]) => [key, classify(key, value)]).filter(([, c]) => c);
