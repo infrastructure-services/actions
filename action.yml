@@ -111,7 +111,7 @@ runs:
       with:
         gradlePath: android/app/build.gradle # or app/build.gradle.kts
         versionName: ${{ inputs.appVersion }} 
-        versionCode: ${{ github.run_number }}
+        versionCode: ${{ vars.VERSION_CODE }}
 
     - name: Make Gradlew Executable
       run: cd android && chmod +x ./gradlew
