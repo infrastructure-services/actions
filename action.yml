@@ -106,12 +106,26 @@ runs:
         restore-keys: |
           ${{ runner.os }}-gradle-caches-
 
+    - name: Calculate next version code
+      id: version_code
+      shell: bash
+      env:
+        CURRENT_VERSION_CODE: ${{ vars.VERSION_CODE }}
+      run: |
+        if [[ ! "$CURRENT_VERSION_CODE" =~ ^[0-9]+$ ]]; then
+          echo "::error::VERSION_CODE must be a non-negative integer repository variable."
+          exit 1
+        fi
+
+        NEXT_VERSION_CODE=$((10#$CURRENT_VERSION_CODE + 1))
+        echo "value=$NEXT_VERSION_CODE" >> "$GITHUB_OUTPUT"
+
     - name: Bump version
       uses: chkfung/android-version-actions@v1.2.3
       with:
         gradlePath: android/app/build.gradle # or app/build.gradle.kts
         versionName: ${{ inputs.appVersion }} 
-        versionCode: ${{ vars.VERSION_CODE }}
+        versionCode: ${{ steps.version_code.outputs.value }}
 
     - name: Make Gradlew Executable
       run: cd android && chmod +x ./gradlew
@@ -125,7 +139,20 @@ runs:
       shell: bash
       run: |
         cd android && ${{ inputs.command }}
-      
+
+    - name: Save VERSION_CODE after successful build
+      uses: actions/github-script@v7
+      env:
+        NEXT_VERSION_CODE: ${{ steps.version_code.outputs.value }}
+      with:
+        script: |
+          await github.rest.actions.updateRepoVariable({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            name: 'VERSION_CODE',
+            value: process.env.NEXT_VERSION_CODE,
+          });
+
     - run: cd android && ls -la app/build/outputs/apk/release
       shell: bash
 
@@ -153,7 +180,7 @@ runs:
       with:
         name: ${{ steps.setOutputs.outputs.artifact_name }}
         path: ${{steps.sign_app.outputs.signedReleaseFile}}
-        
+
     - name: Sign app APK
       uses: r0adkll/sign-android-release@v1
       id: sign_app_aab
